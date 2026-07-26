@@ -2,7 +2,7 @@
 
 **Sample-based Quantum Diagonalization for TensorCircuit**
 
-一个适配 TensorCircuit + numpy 1.x + PySCF 的轻量级 SQD 包，参考 `qiskit-addon-sqd` 设计，但不依赖 numpy>=2 / jax。
+一个适配 TensorCircuit + numpy 1.x/2.x + PySCF 的轻量级 SQD 包，参考 `qiskit-addon-sqd` 设计，但不依赖 numpy>=2 / jax。
 
 ## 目录结构
 
@@ -25,7 +25,8 @@ tc_sqd/
 │   └── h2_sqd_demo.py       # H2 SQD 完整演示
 └── docs/                     # 文档
     ├── README.md            # 详细 API 说明
-    └── API.md               # API 速查表
+    ├── API.md               # API 速查表
+    └── usage.md             # 简要用法介绍
 ```
 
 ## 安装

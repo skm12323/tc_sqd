@@ -5,7 +5,7 @@
 ```bash
 conda create -n tc python=3.10
 conda activate tc
-pip install tensorcircuit "numpy<2.0" pyscf scipy
+pip install tensorcircuit numpy pyscf scipy
 ```
 
 ## 2. 三步完成 SQD 计算
@@ -115,7 +115,7 @@ print(f"Ground energy = {vals[0]:.6f}")
 ## 7. 运行测试
 
 ```bash
-cd ~/Desktop/tc_sqd
+cd tc_sqd            # 进入项目根目录
 PYTHONPATH=src python -m tests.test_h2_sqd
 ```
 

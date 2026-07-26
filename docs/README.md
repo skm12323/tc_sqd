@@ -2,14 +2,14 @@
 
 **Sample-based Quantum Diagonalization for TensorCircuit**
 
-A lightweight SQD package adapted for TensorCircuit + numpy 1.x + PySCF, inspired by [`qiskit-addon-sqd`](https://github.com/qiskit/qiskit-addon-sqd) but free of the numpy>=2 / jax hard dependencies.
+A lightweight SQD package adapted for TensorCircuit + numpy 1.x/2.x + PySCF, inspired by [`qiskit-addon-sqd`](https://github.com/qiskit/qiskit-addon-sqd) but free of the numpy>=2 / jax hard dependencies.
 
 ## 安装
 
 ```bash
 conda create -n tc python=3.10
 conda activate tc
-pip install tensorcircuit "numpy<2.0" pyscf scipy
+pip install tensorcircuit numpy pyscf scipy
 ```
 
 ## 从 tex 文档中识别的 SQD 函数
