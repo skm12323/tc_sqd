@@ -13,6 +13,7 @@ numpy≥2 / jax 的硬性要求**。
 - 基于平均占据数的配置恢复（纠正噪声导致的粒子数违例）
 - 批量子采样、汉明权重后选择
 - CI 矩阵构造（Slater–Condon）、子空间对角化、迭代 SQD、轨道优化
+- CCSD 振幅驱动的 LUCJ ansatz 电路构造（量子态制备侧）
 - Pauli 哈密顿量在比特串子空间的投影与对角化（非费米子问题，如 QAOA-MaxCut）
 
 ## 安装
@@ -100,6 +101,21 @@ hamiltonian = [("ZZI", -1.0), ("IZZ", -1.0), ("XII", -0.5)]
 vals, vecs = tc_sqd.solve_qubit(bsm, hamiltonian)   # 支持稠密 k 与稀疏 eigsh 分支
 ```
 
+## LUCJ ansatz（CCSD 振幅驱动）
+
+从 PySCF CCSD 双激发振幅 t2 构造 LUCJ 电路，采样后交给 SQD（替代上文的手写纠缠电路）：
+
+```python
+c = tc_sqd.build_lucj_circuit(mf, norb, nelec, ccsd_scale=1.0)
+bsm, probs = tc_sqd.sample_from_circuit(c, n_samples=3000)
+e = tc_sqd.compute_ground_state_energy(
+    h1e, eri, norb, nelec, ecore=ecore, method="sqd",
+    bitstring_matrix=bsm, probabilities=probs)
+# H2: e = -1.13728383 (= FCI)；LiH: 误差 ~7.5e-4 vs FCI
+```
+
+关键：必须由 t2（而非 t1）驱动 —— H2/STO-3G 的 t1≈0（Brillouin 定理），相关能几乎全来自 t2 双激发。
+
 ## API 速查
 
 | 模块 | 函数 | 作用 |
@@ -125,6 +141,8 @@ vals, vecs = tc_sqd.solve_qubit(bsm, hamiltonian)   # 支持稠密 k 与稀疏 e
 | qubit | `matrix_elements_from_pauli(bsm, pauli)` | 单个 Pauli 算符的子空间矩阵元 |
 | qubit | `project_operator_to_subspace(bsm, hamiltonian)` | Pauli 哈密顿量投影为稀疏矩阵 |
 | qubit | `solve_qubit(bsm, hamiltonian)` | Pauli 哈密顿量子空间求解 |
+| lucj | `get_ccsd_amplitudes(mf)` | 跑 RHF-CCSD，返回 (t1, t2, mycc) |
+| lucj | `build_lucj_circuit(mf, norb, nelec, *, ccsd_scale)` | 从 CCSD t2 构造简化 LUCJ 电路（HF + 占据-空 Givens） |
 
 ## 比特串约定
 
@@ -160,6 +178,7 @@ PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 - **`max_dim`**：未实现（显式 `NotImplementedError`）；子空间维度由 `samples_per_batch` / `num_batches` 控制。
 - **`spin_sq`**：在 `solve_sci` / `fci` 路径通过多根 S² 匹配实现真正的目标自旋选态（不可达时 raise）；`sqd` / `direct` 路径显式拒绝。
 - **状态持久化**：`SCIState.save/load` 后通过 `_as_scivector` 重建 PySCF `SCIvector` 元数据，`rdm` / `spin_square` 在加载后仍可用。
+- **LUCJ**：`build_lucj_circuit` 为简化实现（t2 范数驱动 Givens，未做 ffsim 的精确 SVD + 对角 Coulomb Jastrow）；仅支持闭壳层。H₂ 精确复现 FCI，LiH 误差 ~7.5e-4。
 
 ## 目录结构
 
@@ -168,7 +187,7 @@ tc_sqd/
 ├── README.md                 # 本文件
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
-├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit
+├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj
 ├── tests/test_h2_sqd.py      # 9 个测试函数
 └── examples/h2_sqd_demo.py   # H2 完整演示
 ```

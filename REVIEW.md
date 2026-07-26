@@ -1,7 +1,8 @@
 # 代码审查与验证历史
 
-本项目经历了 4 轮审查 / 修复 / 验证。前 3 轮为**静态审查**（受限于运行环境缺少
-numpy，无法动态复现数值结果）；第 4 轮在 `WSL + conda tc` 环境首次完成**动态验证**。
+本项目经历了 4 轮审查 / 修复 / 验证，并新增了 LUCJ 量子态制备模块。前 3 轮为
+**静态审查**（受限于运行环境缺少 numpy，无法动态复现数值结果）；第 4 轮在
+`WSL + conda tc` 环境首次完成**动态验证**；随后新增 LUCJ 模块填补"量子侧"空缺。
 
 ## 当前状态（第 4 轮验证结论）
 
@@ -71,6 +72,23 @@ pyscf 2.14.0 / tensorcircuit 0.12.0。
 
 本轮同步修正：`requirements.txt` 放宽 `numpy>=1.17`（实测兼容 2.x）、移除未被引用的
 `h5py`、文档安装命令与版本表述同步。
+
+## LUCJ 模块（新增）
+
+为补齐 tc_sqd 在"量子态制备"侧的空缺（原仅经典后处理），新增 `tc_sqd.lucj` 模块：
+从 PySCF CCSD 的 t2 双激发振幅构造简化 LUCJ 电路（HF + 占据-空 Givens-like 门）。
+关键设计：必须由 t2（而非 t1）驱动 —— H2/STO-3G 的 t1≈0（Brillouin 定理），相关能
+几乎全来自 t2。
+
+动态验证（Python 3.10.20 / numpy 2.2.6 / pyscf 2.14 / tensorcircuit 0.12）：
+
+| 体系 | HF-SQD 误差 vs FCI | LUCJ-SQD 误差 vs FCI |
+|---|---|---|
+| H₂/STO-3G | +2.05e-2 | **−4.44e-16（= FCI）** |
+| LiH/STO-3G | +1.97e-2 | **+7.53e-4**（捕获 96% 相关能） |
+
+当前为简化实现（t2 范数驱动 Givens），未做 ffsim `UCJOpSpinBalanced.from_t_amplitudes`
+的精确 SVD 分解与对角 Coulomb Jastrow；闭壳层专用。
 
 ## 后续可选改进（非阻塞）
 

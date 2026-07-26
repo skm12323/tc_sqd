@@ -46,6 +46,10 @@ from .qubit import (
     project_operator_to_subspace,
     solve_qubit,
 )
+from .lucj import (
+    get_ccsd_amplitudes,
+    build_lucj_circuit,
+)
 
 __version__ = "0.1.0"
 
@@ -79,4 +83,7 @@ __all__ = [
     "matrix_elements_from_pauli",
     "project_operator_to_subspace",
     "solve_qubit",
+    # lucj
+    "get_ccsd_amplitudes",
+    "build_lucj_circuit",
 ]
