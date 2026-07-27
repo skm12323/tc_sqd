@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tc_sqd"
+version = "0.1.0"
+description = "Sample-based Quantum Diagonalization (SQD) for TensorCircuit"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = [
+    "tensorcircuit",
+    "numpy>=1.17",
+    "scipy>=1.6.0",
+    "pyscf>=2.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]

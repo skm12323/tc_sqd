@@ -21,8 +21,12 @@ numpy≥2 / jax 的硬性要求**。
 ```bash
 conda create -n tc python=3.10
 conda activate tc
-pip install -r requirements.txt
+pip install -e .          # editable 安装, 之后任何目录都可 import tc_sqd
 ```
+
+`pip install -e .` 以 editable 模式安装 tc_sqd（源码改动即时生效，无需 PYTHONPATH）。
+也可仅装依赖：`pip install -r requirements.txt`，但运行范例时需手动设置
+`PYTHONPATH=/mnt/d/tc_sqd/src`。
 
 依赖：`tensorcircuit`、`numpy>=1.17`（实测兼容至 2.2.6）、`scipy`、`pyscf`。
 
