@@ -90,6 +90,53 @@ pyscf 2.14.0 / tensorcircuit 0.12.0。
 当前为简化实现（t2 范数驱动 Givens），未做 ffsim `UCJOpSpinBalanced.from_t_amplitudes`
 的精确 SVD 分解与对角 Coulomb Jastrow；闭壳层专用。
 
+## 已知扩展：与 Vayesta 共存（numpy 2.x 路径）
+
+tc_sqd 默认走 numpy 1.x 路径（tensorcircuit 0.12 原生兼容）。但若要与 **Vayesta**
+（BoothGroup 量子嵌入库，倾向 numpy 2.x 生态）共存，可用 numpy 2.x + tc_sqd 兼容
+补丁的路径。实测可行（`tc_vayesta` 环境）。
+
+### 兼容组合（实测：tensorcircuit 0.12.0 + vayesta 1.0.1 + numpy 2.2.6）
+
+| 包 | 版本 |
+|---|---|
+| python | 3.10 |
+| numpy | 2.2.6（标准，配 `_compat` 补丁） |
+| scipy | 1.15.3 |
+| pyscf | 2.14.0 |
+| cvxpy | 任意新版 |
+| tensorcircuit | 0.12.0 |
+| vayesta | 1.0.1（github clone，`.pth` 装载） |
+
+### 三个关键步骤
+
+1. **numpy 2.x ↔ tensorcircuit 0.12 补丁**（tc_sqd 已机制化到 `_compat`）：
+   ```bash
+   pip install -e /path/to/tc_sqd
+   python -m tc_sqd._compat install   # 写 sitecustomize, 自动补 np.ComplexWarning + np.reshape(newshape)
+   ```
+
+2. **Vayesta 安装**：`pip install vayesta @ git+...` 的 wheel build 会因 Vayesta
+   pyproject 的 `[tools.setuptools]` typo（多了一个 s）失败。绕过：clone + `.pth`：
+   ```bash
+   git clone https://github.com/BoothGroup/Vayesta ~/vayesta      # 需联网
+   SITE=$(python -c "import site;print(site.getsitepackages()[0])")
+   echo "$HOME/vayesta" > $SITE/vayesta_path.pth
+   ```
+   且必须 `--no-deps`：Vayesta 声明 `pyscf @ git+master`，不抑制会重新编译 pyscf。
+
+3. **WSL 联网**（NAT 模式）：Windows Clash 开 "Allow LAN"，WSL 经 gateway 代理
+   （如 `http://172.29.128.1:7897`）装 github 包。
+
+### 验证
+
+- `import tensorcircuit + vayesta + numpy 2.2.6` 共存 OK
+- Vayesta DMET 示例（`examples/dmet/01-simple-dmet.py`）跑通：`E=−2.8776 Ha`，
+  自洽 7 次迭代收敛（error 0.9 mHa）
+
+> 待 Vayesta 上游修了 `[tools.setuptools]` typo，`pip install` 即可直接用，第 2 步
+> 的 `.pth` workaround 可省。
+
 ## 后续可选改进（非阻塞）
 
 - 完整开壳层（`n_alpha ≠ n_beta` 的独立 alpha/beta CI 空间）与自旋分辨哈密顿量

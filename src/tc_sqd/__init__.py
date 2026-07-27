@@ -13,6 +13,11 @@ Modules
 - ``tc_sqd.integrated``              -- one-call ``solve_sqd`` entry point
 """
 
+# numpy 2.x ↔ tensorcircuit 0.12 兼容补丁: 导入 tc_sqd 即自动 apply。
+# 若脚本先 import tensorcircuit 再 import tc_sqd, 需调整顺序, 或运行
+# `python -m tc_sqd._compat install` 写入 sitecustomize 一劳永逸。
+from . import _compat  # noqa: F401
+
 from .counts import (
     bitarray_to_int,
     int_to_bitarray,
