@@ -18,8 +18,10 @@ numpy≥2 / jax 的硬性要求**。
 
 ## 安装
 
+支持 Python **3.10–3.12**（实测 3.10.20；3.11/3.12 下 tensorcircuit/pyscf/numpy/scipy 均有 wheel）。
+
 ```bash
-conda create -n tc python=3.10
+conda create -n tc python=3.10   # 3.10 / 3.11 / 3.12 均可
 conda activate tc
 pip install -e .          # editable 安装, 之后任何目录都可 import tc_sqd
 ```
