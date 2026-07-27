@@ -10,6 +10,7 @@ Modules
 - ``tc_sqd.subsampling``            -- batch subsampling & Hamming-weight postselection
 - ``tc_sqd.fermion``                -- CI matrix, SQD diagonalisation, orbital optimisation
 - ``tc_sqd.qubit``                  -- qubit-subspace projection & diagonalisation
+- ``tc_sqd.integrated``              -- one-call ``solve_sqd`` entry point
 """
 
 from .counts import (
@@ -46,6 +47,7 @@ from .qubit import (
     project_operator_to_subspace,
     solve_qubit,
 )
+from .integrated import solve_sqd
 from .lucj import (
     get_ccsd_amplitudes,
     build_lucj_circuit,
@@ -83,6 +85,8 @@ __all__ = [
     "matrix_elements_from_pauli",
     "project_operator_to_subspace",
     "solve_qubit",
+    # integrated
+    "solve_sqd",
     # lucj
     "get_ccsd_amplitudes",
     "build_lucj_circuit",
