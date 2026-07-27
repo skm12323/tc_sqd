@@ -34,6 +34,7 @@ def make_tc_circuit(norb, theta=0.8):
     For H2 (norb=2): qubits [3=b1, 2=b0, 1=a1, 0=a0]
     HF: a0=1, b0=1 -> x(0), x(2)
     """
+    norb = int(norb)   # int(): pyscf 某些版本 mol.nao_nr() 返回 numpy int, 会让 tensorcircuit 崩
     nq = 2 * norb
     c = tc.Circuit(nq)
     # HF state

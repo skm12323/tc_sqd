@@ -23,7 +23,7 @@ def main():
     eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri_ao, mo, mo, mo, mo)
     ecore = mf.energy_nuc()
 
-    norb = mol.nao_nr()
+    norb = int(mol.nao_nr())   # int(): pyscf 2.7 等返回 np.int64 会让 tensorcircuit 的 c.x 崩
     nelec = (mol.nelectron // 2, mol.nelectron // 2)
     nq = 2 * norb
 

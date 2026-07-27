@@ -74,9 +74,11 @@ def _qubit(spin: str, orb: int, norb: int) -> int:
 
     α_i → 2norb-1-i ; β_i → norb-1-i  (q0=MSB, [β|α] 布局)。
     """
+    # int() 防御: pyscf 某些版本 (如 2.7) mol.nao_nr() 返回 numpy int,
+    # 传给 tensorcircuit 的 c.x(index) 会触发 "Illegal index specification"
     if spin == "a":
-        return 2 * norb - 1 - orb
-    return norb - 1 - orb
+        return int(2 * norb - 1 - orb)
+    return int(norb - 1 - orb)
 
 
 def build_lucj_circuit(
