@@ -30,7 +30,14 @@ pip install -e .          # editable 安装, 之后任何目录都可 import tc_
 也可仅装依赖：`pip install -r requirements.txt`，但运行范例时需手动设置
 `PYTHONPATH=/mnt/d/tc_sqd/src`。
 
-依赖：`tensorcircuit`、`numpy>=1.17`（实测兼容至 2.2.6）、`scipy`、`pyscf`。
+依赖：`tensorcircuit==0.12.0`、`numpy>=1.17,<2.0`、`scipy>=1.10,<1.14`、`pyscf>=2.0`。
+
+> **重要（numpy 版本）**：tensorcircuit 0.12.0 用了 numpy 已移除的
+> `np.ComplexWarning` 与 `np.reshape(..., newshape=)`，因此**仅兼容 numpy 1.x**。
+> python 3.12 下若装了标准 numpy 2.x，`import tensorcircuit` 会直接
+> `AttributeError: module 'numpy' has no attribute 'ComplexWarning'`。
+> 实测可用的组合：`numpy==1.26.4 + scipy==1.13.1`（python 3.10/3.11/3.12 均通过全部测试）。
+> 若必须用 numpy 2.x，需手动 patch 这两个 alias。
 
 ## 快速开始（H₂ 三步）
 
