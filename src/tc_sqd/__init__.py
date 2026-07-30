@@ -57,6 +57,26 @@ from .lucj import (
     get_ccsd_amplitudes,
     build_lucj_circuit,
 )
+from . import noise
+from .noise import (
+    has_gpu,
+    statevector_to_density,
+    apply_dephasing,
+    apply_amp_damping,
+    apply_depolarizing,
+    density_to_bitstring_matrix,
+)
+from .predict import (
+    gamma_T1,
+    predict_sqd_error,
+    max_depth_for_accuracy,
+)
+from .hardware import (
+    select_qubits,
+    bitstring_matrix_to_energy,
+    load_calibration,
+    sample_on_hw,
+)
 
 __version__ = "0.1.0"
 
@@ -95,4 +115,20 @@ __all__ = [
     # lucj
     "get_ccsd_amplitudes",
     "build_lucj_circuit",
+    # noise (密度矩阵 Kraus 噪声模拟, cupy GPU 可选 — qiskit-Aer 风格 + tc GPU)
+    "has_gpu",
+    "statevector_to_density",
+    "apply_dephasing",
+    "apply_amp_damping",
+    "apply_depolarizing",
+    "density_to_bitstring_matrix",
+    # predict (噪声容限预测器, 独有)
+    "gamma_T1",
+    "predict_sqd_error",
+    "max_depth_for_accuracy",
+    # hardware (腾讯真机一站式: 校准/选比特/真机采样/SQD 后处理)
+    "select_qubits",
+    "bitstring_matrix_to_energy",
+    "load_calibration",
+    "sample_on_hw",
 ]

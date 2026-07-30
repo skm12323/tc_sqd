@@ -90,6 +90,50 @@ pyscf 2.14.0 / tensorcircuit 0.12.0。
 当前为简化实现（t2 范数驱动 Givens），未做 ffsim `UCJOpSpinBalanced.from_t_amplitudes`
 的精确 SVD 分解与对角 Coulomb Jastrow；闭壳层专用。
 
+## 新增模块（noise / predict / hardware）+ fermion 激发态
+
+### fermion 激发态（n_roots）
+
+`solve_sci(..., n_roots=k)` 扩展：`n_roots>1` 返回 `list[SCIResult]`（基态 + 低激发态，
+升序能量），`n_roots=None/1` 返回单 `SCIResult`（向后兼容）。
+
+动态验证（H4/STO-3G）：前 3 本征值 `[−5.203, −4.800, −4.509]` 与
+`pyscf selected_ci.kernel_fixed_space(nroots=3)` 完全一致。
+
+### noise 模块（密度矩阵 Kraus 噪声模拟，qiskit-Aer 风格 + cupy GPU）
+
+密度矩阵构造 + 退相干/振幅阻尼/去极化 Kraus 通道 + `diag→bsm` 采样。`gpu=True` 走 cupy。
+
+机制（D:\explore 方向1/2 验证）：**退相干 diag 不变（SQD 免疫）**，振幅阻尼改 diag（T₁ 主导误差），
+去极化保迹。`has_gpu()` 探测 cupy 可用性。
+
+6 个测试全 PASS（`tests/test_noise.py`）：密度矩阵构造、退相干 diag 不变、振幅阻尼改 diag、
+γ=0 恒等、去极化保迹、diag→bsm 采样。
+
+### predict 模块（噪声容限预测器，独有）
+
+解析模型 `ε = KS/√shots + KT1×γ_T1`（基态）；`×3`（激发态）。T₂/读出贡献 0。
+`KS=0.0175, KT1=4.7e-3`（H4 校准），`γ_T1=1−exp(−depth·t_gate/T1)`。
+
+验证（H4 预测 vs 实测）：基态 γ=0.4 预测 2.16e-3 vs 实测 2.07e-3；**激发态 γ=0.2 预测 3.10e-3
+vs 实测 3.04e-3**（几乎完美）。
+
+注意（calibrate_kt1 发现）：KT1 是 shots 依赖的（高 shots KT1→0，recover 吸收 T₁），
+模型适用于中低 shots 区间。`max_depth_for_accuracy` 反向推 depth 上限（激发态 < 基态）。
+
+5 个测试全 PASS（`tests/test_predict.py`）：γ_T1 边界/单调、预测结构、激发态 ~3×、
+shots 增采样误差降、max_depth 激发态更严。
+
+### hardware 模块（腾讯 qcloud 真机一站式，整合 D:\qubit_toolkit + D:\exp）
+
+- `load_calibration`：从 tc qcloud 设备读校准快照（T₁/T₂/读出/CZ/拓扑）。
+- `select_qubits`：多起点贪心选最优 nq 物理 qubit 子图（min T₂ 最大化 + 连通 + BFS 序映射）。
+- `bitstring_matrix_to_energy`：采样 bsm → recover → 子空间对角化 → 能量（复用 compute_ground_state_energy）。
+- `sample_on_hw`：真机采样（编译 + submit_task + REM + 字节序自校准）。
+
+验证：`select_qubits`（模拟 6-qubit 链校准 → 选 T₂ 最大的连通 4 `[0,1,2,3]`）+
+`bitstring_matrix_to_energy`（H₂ HF bsm → −1.116759 = E_HF 正确）。
+
 ## 已知扩展：与 Vayesta 共存（numpy 2.x 路径）
 
 tc_sqd 默认走 numpy 1.x 路径（tensorcircuit 0.12 原生兼容）。但若要与 **Vayesta**

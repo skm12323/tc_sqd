@@ -15,6 +15,10 @@ numpy≥2 / jax 的硬性要求**。
 - CI 矩阵构造（Slater–Condon）、子空间对角化、迭代 SQD、轨道优化
 - CCSD 振幅驱动的 LUCJ ansatz 电路构造（量子态制备侧）
 - Pauli 哈密顿量在比特串子空间的投影与对角化（非费米子问题，如 QAOA-MaxCut）
+- **激发态**：`solve_sci(..., n_roots=k)` 取前 k 个本征值（基态 + 低激发态）
+- **密度矩阵噪声模拟**（`noise`）：退相干/振幅阻尼/去极化 Kraus 通道，cupy GPU 可选
+- **噪声容限预测器**（`predict`）：输入 T₁/电路/shots → 预测 SQD 基态/激发态精度
+- **真机一站式**（`hardware`）：腾讯 qcloud 校准加载 / 选最优 qubit 子图 / 真机采样 / SQD 后处理
 
 ## 安装
 
@@ -161,6 +165,17 @@ e = tc_sqd.compute_ground_state_energy(
 | qubit | `solve_qubit(bsm, hamiltonian)` | Pauli 哈密顿量子空间求解 |
 | lucj | `get_ccsd_amplitudes(mf)` | 跑 RHF-CCSD，返回 (t1, t2, mycc) |
 | lucj | `build_lucj_circuit(mf, norb, nelec, *, ccsd_scale)` | 从 CCSD t2 构造简化 LUCJ 电路（HF + 占据-空 Givens） |
+| fermion | `solve_sci(..., n_roots=k)` | 激发态：n_roots>1 返回前 k 个本征态 list[SCIResult] |
+| noise | `statevector_to_density(psi)` | 纯态 → 密度矩阵 ρ=\|ψ⟩⟨ψ\| |
+| noise | `apply_dephasing(rho, p, nq)` / `apply_amp_damping(rho, γ, nq)` / `apply_depolarizing(rho, p, nq)` | 退相干(T₂)/振幅阻尼(T₁)/去极化 Kraus 通道（gpu=True 走 cupy）|
+| noise | `density_to_bitstring_matrix(diag, norb, n_samples)` | 密度矩阵 diag → 采样 bsm（接 recover_configurations）|
+| predict | `gamma_T1(depth, t_gate_ns, T1_us)` | 真机振幅阻尼率 γ = 1−exp(−depth·t_gate/T₁) |
+| predict | `predict_sqd_error(T1, depth, t_gate, shots, n_excited)` | 预测 SQD 基态/激发态误差（退相干免疫，T₁ 主导）|
+| predict | `max_depth_for_accuracy(T1, t_gate, shots, target, excited)` | 反向预测达目标精度的 depth 上限 |
+| hardware | `load_calibration(device_name)` | 从 tc qcloud 读校准快照（T₁/T₂/读出/CZ/拓扑）|
+| hardware | `select_qubits(calibration, nq)` | 多起点贪心选最优 nq 物理 qubit 子图（min T₂ 最大化）|
+| hardware | `bitstring_matrix_to_energy(bsm, h1e, eri, norb, nelec, ecore)` | 采样 bsm → recover → 子空间对角化 → 能量 |
+| hardware | `sample_on_hw(device, circuit, physical_qubits, ...)` | 真机采样（编译+submit_task+REM+字节序自校准）|
 
 ## 比特串约定
 
@@ -186,6 +201,8 @@ e = tc_sqd.compute_ground_state_energy(
 
 ```bash
 PYTHONPATH=src python -m tests.test_h2_sqd      # 9 个测试函数，约 50 项断言
+PYTHONPATH=src python -m tests.test_noise        # noise 模块 6 个测试
+PYTHONPATH=src python -m tests.test_predict      # predict 模块 5 个测试
 PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 ```
 
@@ -205,8 +222,8 @@ tc_sqd/
 ├── README.md                 # 本文件
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
-├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj
-├── tests/test_h2_sqd.py      # 9 个测试函数
+├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, noise, predict, hardware, _compat
+├── tests/                    # test_h2_sqd, test_noise, test_predict
 └── examples/h2_sqd_demo.py   # H2 完整演示
 ```
 

@@ -383,8 +383,9 @@ def solve_sci(
     nelec: Tuple[int, int],
     *,
     spin_sq: Optional[float] = None,
+    n_roots: Optional[int] = None,
     **kwargs,
-) -> SCIResult:
+):
     """Diagonalise the Hamiltonian in the subspace defined by ``ci_strings``.
 
     Parameters
@@ -396,12 +397,17 @@ def solve_sci(
     nelec : tuple(int, int)
     spin_sq : float | None
         Target S².  ``None`` = no constraint.
+    n_roots : int | None
+        Number of eigenstates to return. ``None``/1 = ground state only
+        (returns :class:`SCIResult`); ``>1`` = low-lying excited states
+        (returns ``list[SCIResult]`` in ascending energy). 激发态 SQD.
     **kwargs
         Forwarded to ``pyscf.fci.selected_ci.kernel_fixed_space``.
 
     Returns
     -------
-    SCIResult
+    SCIResult | list[SCIResult]
+        Single result (n_roots=None/1) or list (n_roots>1, 含激发态).
     """
     ci_strs_a, ci_strs_b = ci_strings
     myci = selected_ci.SCI()
@@ -454,6 +460,28 @@ def solve_sci(
         e_tot = float(e_roots[best_idx])
         civec = c_roots[best_idx]
         s2 = float(selected_ci.spin_square(civec, norb, nelec)[0])
+    elif n_roots is not None and n_roots > 1:
+        # 多根: 前 n_roots 个本征态 (基态 + 低激发态)
+        nroots_eff = min(int(n_roots), len(ci_strs_a) * len(ci_strs_b))
+        e_roots, c_roots = selected_ci.kernel_fixed_space(
+            myci, h1e, two_body_tensor, norb, nelec,
+            (np.asarray(ci_strs_a), np.asarray(ci_strs_b)),
+            nroots=nroots_eff,
+            **kwargs,
+        )
+        e_roots = np.atleast_1d(e_roots)
+        results = []
+        for e_i, c_i in zip(e_roots, c_roots):
+            st = SCIState(amplitudes=c_i, ci_strs_a=np.asarray(ci_strs_a),
+                          ci_strs_b=np.asarray(ci_strs_b), norb=norb, nelec=nelec)
+            oa, ob = st.orbital_occupancies()
+            try:
+                s2_i = float(selected_ci.spin_square(c_i, norb, nelec)[0])
+            except Exception:
+                s2_i = 0.0
+            results.append(SCIResult(energy=float(e_i), sci_state=st,
+                                     avg_orb_occupancies=(oa, ob), spin_square=s2_i))
+        return results
     else:
         e_tot, civec = selected_ci.kernel_fixed_space(
             myci, h1e, two_body_tensor, norb, nelec,
