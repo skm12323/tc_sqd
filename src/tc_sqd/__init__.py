@@ -64,6 +64,9 @@ from .lucj import (
     optimize_ansatz_parameters,
     circuit_stats,
     lucj_report,
+    ucj_decomposition,
+    ucj_matrix_energy,
+    ucj_subspace_energy,
 )
 from . import noise
 from .noise import (
@@ -150,6 +153,9 @@ __all__ = [
     "optimize_ansatz_parameters",
     "circuit_stats",
     "lucj_report",
+    "ucj_decomposition",
+    "ucj_matrix_energy",
+    "ucj_subspace_energy",
     # noise (密度矩阵 Kraus 噪声模拟, cupy GPU 可选 — qiskit-Aer 风格 + tc GPU)
     "has_gpu",
     "statevector_to_density",

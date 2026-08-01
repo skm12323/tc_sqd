@@ -41,6 +41,9 @@ __all__ = [
     "optimize_ansatz_parameters",
     "circuit_stats",
     "lucj_report",
+    "ucj_decomposition",
+    "ucj_matrix_energy",
+    "ucj_subspace_energy",
 ]
 
 # 门集合 (TC gate_summary 的键; 按作用 qubit 数分类)。
@@ -438,3 +441,203 @@ def lucj_report(mf, norb: int, nelec: Tuple[int, int], *,
         "within_budget": within,
         "max_entries_by_2q_budget": max_entries,
     }
+
+
+# --------------------------------------------------------------------------- #
+#  P2-2a: UCJ 精确分解 (对标 ffsim UCJOpSpinBalanced.from_t_amplitudes)
+#  |Ψ_UCJ> = Π_ℓ (Û_ℓ e^{iĴ_ℓ} Û_ℓ†) |HF>,  Û=e^κ,  Ĵ=Σ J_pq n_p n_q
+# --------------------------------------------------------------------------- #
+def ucj_decomposition(t2, norb: int, nocc: int, nlayers: int = 1,
+                      scale: float = 1.0):
+    """t2 (nocc,nocc,nvir,nvir) -> 多层 (kappa, J) UCJ 参数 (闭壳层)。
+
+    对标 ffsim ``UCJOpSpinBalanced.from_t_amplitudes``: 每层对 t2 的
+    occ-vir 对矩阵 (``mat[(i,a),(j,b)] = t2[i,j,a,b]``) 做 SVD, 取 top-k
+    (k = min(nocc,nvir)) 奇异分量, 构造:
+      - ``kappa`` (norb,norb) 实 anti-Hermitian 轨道旋转生成元 (Û = expm(kappa));
+      - ``J`` (norb,norb) 对角 Coulomb (e^{iĴ} = ∏ exp(i J_pq n_p n_q))。
+    每层剥离已分解的 top-k 分量到残差, 供下一层继续提取 (nlayers 收敛)。
+
+    Parameters
+    ----------
+    t2 : ndarray (nocc,nocc,nvir,nvir)
+        CCSD 双激发振幅 (空间轨道, 如 ``get_ccsd_amplitudes`` 的 t2)。
+    norb : int
+        空间轨道数 (norb = nocc + nvir)。
+    nocc : int
+        占据轨道数 (闭壳层)。
+    nlayers : int
+        UCJ 层数。每层提取一组 (kappa, J)。默认 1。
+    scale : float
+        kappa 整体缩放 (CCSD t2 振幅通常 ~1e-2, 直接作轨道旋转角太小;
+        放大到 O(1) 才产生有效双激发混合, 类似 build_lucj_circuit 的
+        angle_multiplier)。J 不缩放 (对角相位对 |ψ|² 无影响, 但影响干涉)。
+
+    Returns
+    -------
+    list[(kappa, J)]
+        每项 ``(kappa, J)`` 均为 (norb, norb); ``layers`` 顺序从内到外作用
+        (层 0 先作用)。
+    """
+    nvir = norb - nocc
+    t2 = np.asarray(t2, dtype=np.float64)
+    if t2.shape != (nocc, nocc, nvir, nvir):
+        raise ValueError(
+            f"t2 shape {t2.shape} != (nocc,nocc,nvir,nvir)="
+            f"{(nocc, nocc, nvir, nvir)}"
+        )
+    if nlayers < 1:
+        raise ValueError(f"nlayers must be >= 1, got {nlayers}.")
+
+    layers = []
+    residual = t2.copy()
+    for _ in range(nlayers):
+        # occ-vir 对索引: mat[(i,a),(j,b)] = residual[i,j,a,b]
+        mat = residual.transpose(0, 2, 1, 3).reshape(nocc * nvir, nocc * nvir)
+        U, S, Vt = np.linalg.svd(mat)
+        k = min(nocc, nvir)
+        kappa = np.zeros((norb, norb))
+        J = np.zeros((norb, norb))
+        for r in range(k):
+            u = U[:, r].reshape(nocc, nvir)        # 左奇异向量: occ-vir 耦合权重
+            for i in range(nocc):
+                for a in range(nvir):
+                    kappa[i, nocc + a] += u[i, a] * S[r]
+            if r < nvir:
+                J[nocc + r, nocc + r] = S[r]       # 对角 Coulomb 分配到 vir 轨道
+        kappa = kappa - kappa.T                    # 实 anti-Hermitian
+        kappa = kappa * scale                      # 放大 (CCSD t2 振幅太小)
+        layers.append((kappa, J))
+        # 剥离 top-k 分量到残差
+        recon = U[:, :k] @ np.diag(S[:k]) @ Vt[:k, :]
+        residual = (mat - recon).reshape(nocc, nvir, nocc, nvir).transpose(0, 2, 1, 3)
+    return layers
+
+
+def ucj_matrix_energy(layers, h1e, eri, norb: int, nelec):
+    """矩阵层验证: UCJ|HF⟩ 的 ⟨Ψ|H|Ψ⟩ (纯矩阵, 不含 SQD/电路)。
+
+    用 PySCF ``transform_ci_for_orbital_rotation`` 应用 Û = expm(kappa),
+    对角相位 ``e^{iĴ}`` (逐 determinant 按占据数), 返回 UCJ 态期望能量。
+    验证 UCJ 分解对相关空间的覆盖: 层数/参数有效时 ⟨Ψ|H|Ψ⟩ 应显著低于 HF
+    且随 nlayers 趋近 FCI。
+
+    Parameters
+    ----------
+    layers : list[(kappa, J)]
+        :func:`ucj_decomposition` 输出 (从内到外作用)。
+    h1e, eri, norb, nelec
+        分子积分 (闭壳层 nelec=(nocc,nocc))。
+
+    Returns
+    -------
+    float
+        ⟨Ψ|H|Ψ⟩ (含核排斥需调用方加 ecore; 本函数为电子能量)。
+    """
+    from scipy.linalg import expm
+    from pyscf import fci as _fci
+    from pyscf.fci import cistring, addons
+    from .fermion import build_ci_matrix
+
+    na, nb = nelec
+    if na != nb:
+        raise ValueError("ucj_matrix_energy 当前仅闭壳层 (na==nb)。")
+
+    ci_strs_a = cistring.make_strings(range(norb), na)
+    ci_strs_b = cistring.make_strings(range(norb), nb)
+    dim_a, dim_b = len(ci_strs_a), len(ci_strs_b)
+
+    # HF 态在完整 CI 空间
+    hf_a, hf_b = (1 << na) - 1, (1 << nb) - 1
+    ci = np.zeros((dim_a, dim_b), dtype=complex)
+    ia = int(np.where(ci_strs_a == hf_a)[0][0])
+    ib = int(np.where(ci_strs_b == hf_b)[0][0])
+    ci[ia, ib] = 1.0
+
+    # |Ψ> = Π_ℓ Û_ℓ e^{iĴ_ℓ} Û_ℓ† |HF>   (层 0 先作用)
+    for kappa, J in layers:
+        U = expm(kappa)                              # Û
+        # 闭壳层: α/β 相同轨道旋转 (PySCF 签名 (ci, norb, nelec, u))
+        ci = addons.transform_ci_for_orbital_rotation(
+            ci, norb, nelec, (U.T.conj(), U.T.conj()))  # Û†
+        # e^{iĴ}: 对角相位 per determinant
+        for a in range(dim_a):
+            for b in range(dim_b):
+                sa, sb = int(ci_strs_a[a]), int(ci_strs_b[b])
+                occ = [(sa >> p) & 1 + (sb >> p) & 1 for p in range(norb)]
+                phase = 0.0
+                for p in range(norb):
+                    for q in range(norb):
+                        phase += J[p, q] * occ[p] * occ[q]
+                ci[a, b] *= np.exp(1j * phase)
+        ci = addons.transform_ci_for_orbital_rotation(ci, norb, nelec, (U, U))  # Û
+
+    H = build_ci_matrix(ci_strs_a, ci_strs_b, h1e, eri, norb, nelec)
+    cvec = ci.ravel()
+    return float((cvec.conj() @ H @ cvec).real)
+
+
+def ucj_subspace_energy(layers, h1e, eri, norb: int, nelec):
+    """矩阵层验证 (确定性 SQD): UCJ|HF⟩ 支持的 det 子空间对角化能量。
+
+    **UCJ 单态期望 ⟨Ψ|H|Ψ⟩ 对单层对角 J 无法低于 HF** (UCJ|HF⟩ 的 Û 旋转会
+    引入单激发污染)。UCJ 的真正价值在**子空间对角化**: UCJ 态非零 CI 系数的
+    determinant 作子空间, 对角化 H —— 参数有效时覆盖相关 det, 能量接近 FCI
+    (H₂ 全空间 → = FCI)。这是 SQD 的确定性 (无采样) 矩阵层版本。
+
+    Parameters
+    ----------
+    layers : list[(kappa, J)]
+        :func:`ucj_decomposition` 输出。
+    h1e, eri, norb, nelec
+        分子积分 (闭壳层 nelec=(nocc,nocc))。
+
+    Returns
+    -------
+    float
+        子空间对角化基态能量 (电子能量, 不含核排斥)。
+    """
+    from scipy.linalg import expm
+    from pyscf import fci as _fci
+    from pyscf.fci import cistring, addons
+    from .fermion import build_ci_matrix
+
+    na, nb = nelec
+    if na != nb:
+        raise ValueError("ucj_subspace_energy 当前仅闭壳层 (na==nb)。")
+
+    ci_strs_a = cistring.make_strings(range(norb), na)
+    ci_strs_b = cistring.make_strings(range(norb), nb)
+    dim_a, dim_b = len(ci_strs_a), len(ci_strs_b)
+
+    hf_a, hf_b = (1 << na) - 1, (1 << nb) - 1
+    ci = np.zeros((dim_a, dim_b), dtype=complex)
+    ia = int(np.where(ci_strs_a == hf_a)[0][0])
+    ib = int(np.where(ci_strs_b == hf_b)[0][0])
+    ci[ia, ib] = 1.0
+
+    for kappa, J in layers:
+        U = expm(kappa)
+        ci = addons.transform_ci_for_orbital_rotation(
+            ci, norb, nelec, (U.T.conj(), U.T.conj()))
+        for a in range(dim_a):
+            for b in range(dim_b):
+                sa, sb = int(ci_strs_a[a]), int(ci_strs_b[b])
+                occ = [(sa >> p) & 1 + (sb >> p) & 1 for p in range(norb)]
+                phase = 0.0
+                for p in range(norb):
+                    for q in range(norb):
+                        phase += J[p, q] * occ[p] * occ[q]
+                ci[a, b] *= np.exp(1j * phase)
+        ci = addons.transform_ci_for_orbital_rotation(ci, norb, nelec, (U, U))
+
+    # 子空间: CI 系数非零的 det (确定性 SQD)。build_ci_matrix 用 α/β 集合的
+    # 笛卡尔积, 故对 sub_a/sub_b 取唯一 (重复字符串会让 H 维度虚增、eig 出错)。
+    mask = np.abs(ci) > 1e-10
+    idx_a, idx_b = np.nonzero(mask)
+    if len(idx_a) == 0:
+        return float("inf")
+    sub_a = np.unique(ci_strs_a[idx_a])
+    sub_b = np.unique(ci_strs_b[idx_b])
+    H = build_ci_matrix(sub_a, sub_b, h1e, eri, norb, nelec)
+    return float(np.linalg.eigvalsh(H)[0])

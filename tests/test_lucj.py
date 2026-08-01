@@ -66,6 +66,54 @@ def test_lucj_report_sampling_still_correct():
     assert abs(e - (-1.13728383)) < 2e-3
 
 
+def test_ucj_decomposition_properties():
+    """P2-2a: UCJ 分解性质 — kappa 实 anti-Hermitian, J 对称, 分层剥离。"""
+    import numpy as np
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    nocc = data.nelec[0]
+    _t1, t2, _ = tc_sqd.get_ccsd_amplitudes(data.mf)
+    layers = tc_sqd.ucj_decomposition(t2, data.norb, nocc, nlayers=2)
+    assert len(layers) == 2
+    for kappa, J in layers:
+        assert np.allclose(kappa, -kappa.T, atol=1e-12)   # anti-Hermitian (实)
+        assert np.allclose(J, J.T, atol=1e-12)            # 对称
+        assert kappa.shape == J.shape == (data.norb, data.norb)
+    # 参数非零 (CCSD t2 驱动)
+    assert np.linalg.norm(layers[0][0]) > 1e-6
+
+
+def test_ucj_subspace_energy_h2_fci():
+    """P2-2a: UCJ 子空间对角化 (确定性 SQD) H2 = FCI。"""
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    nocc = data.nelec[0]
+    _t1, t2, _ = tc_sqd.get_ccsd_amplitudes(data.mf)
+    e_fci = data.solve(method="fci")
+    layers = tc_sqd.ucj_decomposition(t2, data.norb, nocc, nlayers=1, scale=10)
+    e = tc_sqd.ucj_subspace_energy(layers, data.h1e, data.eri,
+                                   data.norb, data.nelec) + data.ecore
+    assert abs(e - e_fci) < 1e-8
+
+
+def test_ucj_subspace_energy_lih():
+    """P2-2a: LiH UCJ 子空间随 scale 增大趋近 FCI (覆盖更全)。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    nocc = data.nelec[0]
+    _t1, t2, _ = tc_sqd.get_ccsd_amplitudes(data.mf)
+    e_fci = data.solve(method="fci")
+    e_small = tc_sqd.ucj_subspace_energy(
+        tc_sqd.ucj_decomposition(t2, data.norb, nocc, scale=1),
+        data.h1e, data.eri, data.norb, data.nelec) + data.ecore
+    e_large = tc_sqd.ucj_subspace_energy(
+        tc_sqd.ucj_decomposition(t2, data.norb, nocc, scale=50),
+        data.h1e, data.eri, data.norb, data.nelec) + data.ecore
+    assert e_small >= e_fci - 1e-8       # 变分下界
+    assert e_large >= e_fci - 1e-8
+    assert abs(e_large - e_fci) < 1e-4   # 大 scale 覆盖更全, 接近 FCI
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
