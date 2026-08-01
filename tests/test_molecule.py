@@ -101,6 +101,41 @@ def test_from_pyscf_validation():
         pass
 
 
+def test_from_pyscf_open_shell_ch():
+    """P2-1b: CH/STO-3G (4,3) 一键 from_pyscf, fci = PySCF FCI; UHF reject。"""
+    from pyscf import fci as fci_mod
+
+    mol = gto.M(atom="C 0 0 0; H 0 0 1.1", basis="sto-3g", spin=1, verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    assert data.nelec == (4, 3)               # CH 7e, 双自由基 (2S=1)
+    assert type(data.mf).__name__ == "ROHF"   # spin!=0 自动 ROHF
+
+    e = data.solve(method="fci")
+    e_ref = fci_mod.direct_spin1.kernel(
+        data.h1e, data.eri, data.norb, data.nelec)[0] + data.ecore
+    assert abs(e - e_ref) < 1e-8
+
+    # UHF 显式 reject
+    mf_u = scf.UHF(mol).run()
+    try:
+        tc_sqd.from_pyscf(mf_u)
+        assert False, "UHF 应显式 reject"
+    except ValueError:
+        pass
+
+
+def test_from_pyscf_open_shell_frozen():
+    """P2-1b: CH 开壳层冻结 core (n_active), nelec 分减。"""
+    mol = gto.M(atom="C 0 0 0; H 0 0 1.1", basis="sto-3g", spin=1, verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    data_c = tc_sqd.from_pyscf(mol, n_active=data.norb - 1)   # 冻结 1 MO (C 1s)
+    assert data_c.norb == data.norb - 1
+    assert data_c.nelec == (3, 2)             # (4,3) - core 双占
+    assert data_c.n_core == 1
+    # fci 可跑通 (frozen-core 近似)
+    assert abs(data_c.solve(method="fci") - data.solve(method="fci")) < 1e-3
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

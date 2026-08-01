@@ -136,47 +136,58 @@ def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None) -> MolecularData:
 
     Notes
     -----
-    **开壳层 (n_α≠n_β)**: 本函数暂**只支持闭壳层** (奇电子 raise)。开壳层请自备
-    空间积分 (ROHF 式: 单个 ``h1e`` + 共用 ``eri``, 见下), 再交给 SQD 核心
-    (``solve_sci`` 经 PySCF ``direct_spin1`` 原生支持 (na,nb) 不等):
+    **开壳层 (n_α≠n_β)**: 原生支持 (P2-1b)。闭壳层自动 RHF, 开壳层 (``mol.spin!=0``)
+    自动 ROHF (单 ``mo_coeff``, 空间共用轨道, ROHF 式单 ``h1e``); ``nelec`` 由
+    ``mf.nelec`` / ``mol.spin`` 推断 ``(na,nb)``。frozen-core 下 core 双占,
+    活性 ``nelec = (na-n_core, nb-n_core)``。
 
-    .. code-block:: python
-
-        mol = gto.M(atom="C 0 0 0; H 0 0 1.1", basis="sto-3g", spin=1)  # 5e
-        mf = scf.UHF(mol).run()            # 或 ROHF; 用 mo_coeff 做空间基
-        mo = mf.mo_coeff
-        h1e = mo.T @ mf.get_hcore() @ mo
-        eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl",
-                        mol.intor("int2e_sph"), mo, mo, mo, mo)
-        nelec = (3, 2)                     # 由自旋/电子数给定, 非自动
-        e = tc_sqd.compute_ground_state_energy(h1e, eri, norb, nelec,
-                                               ecore=mf.energy_nuc(), method="fci")
-
-    真正的 ``from_pyscf`` 原生开壳层支持需重做 frozen-core/``nelec`` 配对逻辑
-    (当前 ``n_act = nelectron//2 - n_core`` 假设闭壳层成对, 见 ``molecule.py``
-    ``from_pyscf`` 主体), 列为后续工作。
+    **不支持 UHF** (自旋分辨轨道, ``mo_coeff`` 形如 ``(2,norb,norb)``): SQD 后端
+    拒 ``h_alpha != h_beta``, 请用 ROHF。UHF mf 会显式 raise。
     """
     from pyscf import gto, scf
 
     if isinstance(mf_or_mol, gto.Mole):
         mol = mf_or_mol
-        mf = scf.RHF(mol).run()
+        # 开壳层 (mol.spin != 0) 自动 ROHF, 闭壳层 RHF (单 mo_coeff, 空间共用)
+        if int(getattr(mol, "spin", 0)) != 0:
+            mf = scf.ROHF(mol).run()
+        else:
+            mf = scf.RHF(mol).run()
     else:
         mf = mf_or_mol
         mol = getattr(mf, "mol", None)
         if mol is None or not isinstance(mf, scf.hf.SCF):
             raise ValueError(
-                "mf_or_mol 必须是 pyscf gto.Mole 或已构建的 scf.RHF 对象; "
-                f"got {type(mf_or_mol).__name__}."
+                "mf_or_mol 必须是 pyscf gto.Mole 或已构建的 scf 对象 "
+                "(RHF/ROHF); got {type(mf_or_mol).__name__}."
+            )
+        # UHF 显式拒绝: 自旋分辨轨道 (α/β 不同 h1e), SQD 后端不支持
+        if isinstance(mf, scf.uhf.UHF):
+            raise ValueError(
+                "from_pyscf 不接受 UHF (自旋分辨轨道, mo_coeff 形如 (2,norb,norb)): "
+                "SQD 后端 (fermion.solve_sci) 拒 h_alpha != h_beta, 请用 ROHF "
+                "(单 mo_coeff, 空间共用轨道)。"
             )
 
     mo = np.asarray(mf.mo_coeff, dtype=np.float64)
+    if mo.ndim != 2:
+        raise ValueError(
+            "mo_coeff 必须是单空间基 (RHF/ROHF), got ndim={mo.ndim} "
+            "(UHF 自旋分辨轨道不支持, 请用 ROHF)。"
+        )
     norb_full = mo.shape[1]
 
-    if mol.nelectron % 2 != 0:
+    # nelec 推断: 优先 mf.nelec (ROHF/RHF 直接给 (na,nb)), 回退 mol.spin
+    mf_nelec = getattr(mf, "nelec", None)
+    if mf_nelec is not None:
+        na, nb = int(mf_nelec[0]), int(mf_nelec[1])
+    else:
+        spin = int(getattr(mol, "spin", 0))
+        na = (mol.nelectron + spin) // 2
+        nb = (mol.nelectron - spin) // 2
+    if na < 0 or nb < 0 or na + nb != mol.nelectron:
         raise ValueError(
-            "from_pyscf 当前仅支持闭壳层 (偶电子数), "
-            f"got nelectron={mol.nelectron}."
+            f"nelec 推断不一致: na={na}, nb={nb}, nelectron={mol.nelectron}."
         )
 
     # 全 MO 基积分 (含 core 块, 供冻结修正 / 切片)
@@ -204,8 +215,14 @@ def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None) -> MolecularData:
     ecore = mf.energy_nuc() + _frozen_core_energy(h1e_full, eri_full, n_core)
     if n_core > 0:
         h1e = h1e + _frozen_core_potential(eri_full, n_core)
-    n_act = mol.nelectron // 2 - n_core
-    nelec = (n_act, n_act)
+    # frozen-core: core 双占 (ROHF 式, core 能量/平均场公式不变), 仅 nelec 减 core
+    n_act_a = na - n_core
+    n_act_b = nb - n_core
+    if n_act_a < 0 or n_act_b < 0:
+        raise ValueError(
+            f"n_core={n_core} 超过电子数: na={na}, nb={nb}."
+        )
+    nelec = (n_act_a, n_act_b)
 
     return MolecularData(
         h1e=np.asarray(h1e, dtype=np.float64),

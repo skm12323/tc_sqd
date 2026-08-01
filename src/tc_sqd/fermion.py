@@ -1291,12 +1291,19 @@ def compute_ground_state_energy(
 
     # ---- FCI: exact diagonalisation via PySCF -----------------------------
     if method == "fci":
-        # Build the full determinant list
         ci_strs_a = cistring.make_strings(range(norb), na_e)
         ci_strs_b = cistring.make_strings(range(norb), nb_e)
         if verbose:
             print(f"[FCI] Full space: {len(ci_strs_a)} x {len(ci_strs_b)} "
                   f"= {len(ci_strs_a) * len(ci_strs_b)} determinants")
+        if spin_sq is None:
+            # 用 PySCF 标准 FCI (direct_spin1), 精确: selected_ci.kernel_fixed_space
+            # 对不等 nelec 的全空间 Davidson 可能陷于局部根 (P2-1b 实测 CH (4,3)
+            # 差 2e-3), direct_spin1 无此问题。
+            from pyscf import fci as _fci
+            e_elec = _fci.direct_spin1.kernel(
+                h1e_arr, eri_arr, norb, nelec, **kwargs)[0]
+            return float(e_elec) + ecore
         result = solve_sci(
             (ci_strs_a, ci_strs_b), h1e_arr, eri_arr, norb, nelec,
             spin_sq=spin_sq, **kwargs,
