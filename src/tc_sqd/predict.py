@@ -247,3 +247,139 @@ def plan_sampling(T1_us: float, t_gate_ns: float, *,
         "best": feasible[0] if feasible else None,
         "target": target,
     }
+
+
+def calibrate(h1e, eri, norb, nelec, *, ecore: float = 0.0, circuit=None,
+              shots_grid=None, gamma_grid=None, n_avg: int = 1,
+              seed: int = 42, max_iterations: int = 3) -> dict:
+    """跨体系校准 SQD 噪声模型的 KS / KT1 (二元线性最小二乘)。
+
+    **模型**: ``ε = KS/√shots + KT1·γ``, 其中 γ 为振幅阻尼率, ε 为 SQD 总能量
+    对 FCI 的误差。默认的 ``KS=0.0175 / KT1=4.7e-3`` 只来自 H₄/STO-3G, 跨体系
+    仅数量级; 用本函数在**模拟器上跑你自己的 (shots, γ) 网格**重新拟合。
+
+    T1 注入走现成 noise 链: 态 → ``statevector_to_density`` →
+    ``apply_amp_damping`` → ``density_to_bitstring_matrix`` → SQD (模拟器),
+    不新造噪声路径。本函数**纯解析 → 需要模拟**, 故对 noise/fermion/pyscf 用
+    **函数内 lazy import**, 保持 ``predict`` 模块顶层零重依赖、防循环导入。
+
+    Parameters
+    ----------
+    h1e, eri, norb, nelec, ecore
+        分子积分 (SQD 输入; 与本库其余模块一致)。
+    circuit : tensorcircuit.Circuit | None
+        **采样电路 (双模式)**:
+        - 给定时 —— **实际电路采样** (``sample_from_circuit``) + **位串级 T1**
+          (``noise.apply_t1_bitstrings``), 反映真机/带噪 LUCJ 的真实采样 regime,
+          与 :func:`predict_sqd_error` 预报的 regime 一致; 测得的 KS/KT1 可直接
+          喂回 predict。H₄ LUCJ ≥2000 shots 下测得非零 KS (~1e-2~1e-1 量级)。
+        - ``None`` (默认) —— 用 FCI 态密度采样 (**coverage/saturation benchmark**,
+          非真机预报用; 高 shots 下子空间饱和, KS→0)。docstring 已标注, 勿把
+          此模式的 KS/KT1 直接喂 predict (会系统性低估真机 LUCJ 采样的 KS)。
+    shots_grid : list[int] | None
+        候选 shots (默认 ``[2000, 4000, 8000]``)。
+    gamma_grid : list[float] | None
+        候选振幅阻尼率 (默认 ``[0.05, 0.2, 0.4]``)。
+    n_avg : int
+        每 (shots, γ) 点重复采样次数取平均 (降统计噪声)。
+    seed : int
+        随机种子 (采样 + recover 确定性)。
+    max_iterations : int
+        SQD 迭代轮数。
+
+    Returns
+    -------
+    dict
+        ``{"KS", "KT1", "grid_points": [(shots, γ), ...], "errors": ndarray,
+        "rmse", "mode": "circuit" | "fci_density"}``。
+
+    Notes
+    -----
+    - 体系相关: 对给定分子 (h1e/eri/norb/nelec) 校准出的 KS/KT1 是**该体系专属**
+      的, 换体系应得到不同值 (即本函数非空操作)。
+    - 代价: 内部做 density 矩阵模拟 (2^nq) + 逐点 SQD, 只适合小体系 (nq ≲ 12)。
+    """
+    import numpy as _np
+    from pyscf import fci as _fci
+    from pyscf.fci import cistring as _cistr
+    from . import noise as _noise
+    from .fermion import compute_ground_state_energy as _cgse
+
+    if shots_grid is None:
+        shots_grid = [2000, 4000, 8000]
+    if gamma_grid is None:
+        gamma_grid = [0.05, 0.2, 0.4]
+    if n_avg < 1:
+        raise ValueError(f"n_avg must be >= 1, got {n_avg}.")
+
+    # FCI 参考 (两种模式共用)
+    e_fci, civec = _fci.direct_spin1.kernel(h1e, eri, norb, nelec)
+    nq = 2 * norb
+    X, y, grid = [], [], []
+
+    if circuit is not None:
+        # ---- 电路模式: 实际电路采样 + 位串级 T1 (真机/带噪 LUCJ regime) ----
+        from .counts import sample_from_circuit as _samp
+        mode = "circuit"
+        for gamma in gamma_grid:
+            for shots in shots_grid:
+                es = []
+                for k in range(n_avg):
+                    sk = int(seed) + k
+                    bsm, probs = _samp(
+                        circuit, n_samples=int(shots),
+                        random_generator=_np.random.default_rng(sk))
+                    bsm_t = _noise.apply_t1_bitstrings(bsm, float(gamma), seed=sk)
+                    es.append(_cgse(
+                        h1e, eri, norb, nelec, ecore=ecore, method="sqd",
+                        bitstring_matrix=bsm_t, probabilities=probs,
+                        max_iterations=max_iterations, seed=sk))
+                eps = float(_np.mean(es)) - (e_fci + ecore)
+                X.append([1.0 / _np.sqrt(int(shots)), float(gamma)])
+                y.append(eps)
+                grid.append((int(shots), float(gamma)))
+    else:
+        # ---- FCI 密度模式: FCI 态 -> density 计算基 (bit p = α_p, bit norb+p = β_p) ----
+        ci_a = _cistr.make_strings(range(norb), nelec[0])
+        ci_b = _cistr.make_strings(range(norb), nelec[1])
+        psi = _np.zeros(2 ** nq, dtype=complex)
+        civec = _np.asarray(civec).reshape(len(ci_a), len(ci_b))
+        for ia, sa in enumerate(ci_a):
+            for ib, sb in enumerate(ci_b):
+                amp = civec[ia, ib]
+                if abs(amp) < 1e-15:
+                    continue
+                idx = 0
+                for p in range(norb):
+                    if (int(sa) >> p) & 1:
+                        idx |= (1 << p)
+                for p in range(norb):
+                    if (int(sb) >> p) & 1:
+                        idx |= (1 << (norb + p))
+                psi[idx] += amp
+        rho = _noise.statevector_to_density(psi)
+        mode = "fci_density"
+        for gamma in gamma_grid:
+            rho_g = _noise.apply_amp_damping(rho, float(gamma), nq)
+            diag = _np.diag(rho_g).real
+            for shots in shots_grid:
+                es = []
+                for k in range(n_avg):
+                    bsm = _noise.density_to_bitstring_matrix(
+                        diag, norb, int(shots), seed=int(seed) + k)
+                    e = _cgse(h1e, eri, norb, nelec, ecore=ecore, method="sqd",
+                              bitstring_matrix=bsm,
+                              max_iterations=max_iterations, seed=int(seed) + k)
+                    es.append(e)
+                eps = float(_np.mean(es)) - (e_fci + ecore)
+                X.append([1.0 / _np.sqrt(int(shots)), float(gamma)])
+                y.append(eps)
+                grid.append((int(shots), float(gamma)))
+
+    X = _np.asarray(X)
+    y = _np.asarray(y)
+    coef, *_ = _np.linalg.lstsq(X, y, rcond=None)
+    KS, KT1 = float(coef[0]), float(coef[1])
+    rmse = float(_np.sqrt(_np.mean((X @ coef - y) ** 2)))
+    return {"KS": KS, "KT1": KT1, "grid_points": grid,
+            "errors": y, "rmse": rmse, "mode": mode}

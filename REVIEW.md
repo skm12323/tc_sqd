@@ -156,11 +156,17 @@ shots 增采样误差降、max_depth 激发态更严。
 | 固定 CCSD-LUCJ 纯采样 | +3.9e-3（5-seed std 1.6e-3）| 采样统计主导 |
 | SQD+VQE 优化（单 seed）| 训练 -6e-4，**换 seed 验证反弹到 +5.5e-3** | **固定 seed 严重过拟合** → 加 `n_seeds` 多 seed 平均目标消除 |
 | SQD+VQE（n_seeds=3）| +1.1e-3（跨 seed 验证）| 过拟合缓解，统计极限 ~1e-3 |
-| **+ include 单双激发** | **+8.9e-16（= FCI），std 0** | 93 个单双激发配置确定性覆盖全部相关空间，采样退化为只供权重，1000 shots 即精确 |
+| **+ include 单双激发** | **+8.9e-16（= FCI），std 0** | 93 个配置确定性覆盖相关空间，采样只供权重；**为何 = FCI**：LiH/STO-3G 每自旋仅 2 电子，单+双激发已穷尽该自旋全部 15 个行列式 → α/β 笛卡尔积 225 = **全 FCI 空间** |
 
 **结论**：SQD 误差根源是采样子空间覆盖不足，而非 ansatz/优化本身。`excited_configurations`
 经典生成单双激发（`include_configurations`）确定性消除该根源。测试
 `test_include_excitations_reaches_fci` 锁住该发现（`np.allclose(es, FCI, 1e-8)` + std<1e-9）。
+
+> ⚠ **前提（防误读）**：include(S+D) = FCI **仅对 ≤2 占据/自旋的体系成立**（如 LiH），
+> 本质是"单+双激发穷尽了该自旋全部行列式"，**不是 "CISD 精确"**（PySCF 真 CISD 误差 +1.34e-5）。
+> 对 >2 占据/自旋（如 N₂ 7e/spin），单双激发不穷尽，include(S+D) 误差 ~2e-2（见下）。
+> 回归对照：`test_include_excitations_reaches_fci`（≤2 occ，=FCI）vs
+> `test_include_excitations_not_fci_strong_correlation`（>2 occ，≠FCI）。
 
 ### 真机可行性边界 + 截断（第 6 轮收尾）
 

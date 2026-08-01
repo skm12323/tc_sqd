@@ -10,7 +10,8 @@ Modules
 - ``tc_sqd.subsampling``            -- batch subsampling & Hamming-weight postselection
 - ``tc_sqd.fermion``                -- CI matrix, SQD diagonalisation, orbital optimisation
 - ``tc_sqd.qubit``                  -- qubit-subspace projection & diagonalisation
-- ``tc_sqd.integrated``              -- one-call ``solve_sqd`` entry point
+- ``tc_sqd.integrated``              -- one-call ``solve_sqd`` entry point (端到端: 含采样/迭代, 返回 SCIResult)
+- ``tc_sqd.fermion`` ``compute_ground_state_energy`` -- 积分→能量快速单入口 (采样外部提供, 返回 float; 与 solve_sqd 分工见各 docstring / docs/solve_sqd_api.md §9)
 """
 
 # numpy 2.x ↔ tensorcircuit 0.12 兼容补丁: 导入 tc_sqd 即自动 apply。
@@ -72,6 +73,7 @@ from .noise import (
     apply_amp_damping,
     apply_depolarizing,
     density_to_bitstring_matrix,
+    apply_t1_bitstrings,
 )
 from .predict import (
     gamma_T1,
@@ -81,6 +83,7 @@ from .predict import (
     max_depth_for_accuracy,
     plan_sampling,
     SamplingPlan,
+    calibrate,
 )
 from .hardware import (
     select_qubits,
@@ -154,6 +157,7 @@ __all__ = [
     "apply_amp_damping",
     "apply_depolarizing",
     "density_to_bitstring_matrix",
+    "apply_t1_bitstrings",
     # predict (噪声容限预测器, 独有)
     "gamma_T1",
     "predict_sqd_error",
@@ -162,6 +166,7 @@ __all__ = [
     "max_depth_for_accuracy",
     "plan_sampling",
     "SamplingPlan",
+    "calibrate",
     # hardware (腾讯真机一站式: 校准/选比特/真机采样/SQD 后处理)
     "select_qubits",
     "bitstring_matrix_to_energy",

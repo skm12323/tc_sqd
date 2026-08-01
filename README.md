@@ -8,7 +8,8 @@ numpy≥2 / jax 的硬性要求**。
 
 ## 特性
 
-- 统一入口 `compute_ground_state_energy`，支持 `fci` / `sqd` / `direct` 三种方法
+- 统一入口 `compute_ground_state_energy`（积分→能量，`fci`/`sqd`/`direct`，返回 float）+
+  `solve_sqd`（端到端，含采样/迭代，返回 SCIResult；分工见 `docs/solve_sqd_api.md` §9）
 - 比特串矩阵 ↔ 整数互转，TensorCircuit 采样适配
 - 基于平均占据数的配置恢复（纠正噪声导致的粒子数违例）+
   **T1 感知恢复**（`estimate_true_occupancies`：从观测位串反卷积真实平均占据，
@@ -22,7 +23,10 @@ numpy≥2 / jax 的硬性要求**。
   LiH 验证：误差 +5.9e-3 → +1.1e-3（改善 ~4.8 mHa）
 - **误差优化关键发现**：SQD 误差根源是**采样子空间覆盖不足**。用 `excited_configurations`
   强制纳入单双激发配置（经典生成确定性覆盖相关空间），采样仅提供权重——LiH 上
-  **误差 +4e-3 → 1e-16（= FCI 精确），1000 shots 即达，零统计波动**（见 `ansatz_opt_demo`）
+  **误差 +4e-3 → 1e-16（= FCI 精确），1000 shots 即达，零统计波动**（见 `ansatz_opt_demo`）。
+  ⚠ 注：LiH/STO-3G **每自旋仅 2 电子**，单+双激发已穷尽该自旋全部行列式，故 include(S+D)
+  等价于全 FCI 空间。对 **>2 占据/自旋**的体系（如 N₂ 7e/spin）单双激发覆盖不足，
+  include(S+D) 误差 ~2e-2（≠FCI，见 REVIEW N₂ 反例）。
 - Pauli 哈密顿量在比特串子空间的投影与对角化（非费米子问题，如 QAOA-MaxCut）
 - **激发态**：`solve_sci(..., n_roots=k)` 取前 k 个本征值（基态 + 低激发态）+
   **激发态采样策略**（`excited_configurations` 生成 HF+单/双激发配置强制纳入子空间，保障 n_roots 变分下界；

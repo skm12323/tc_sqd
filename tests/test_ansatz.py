@@ -138,6 +138,30 @@ def test_include_excitations_reaches_fci():
     assert es.std() < 1e-9, "应零统计波动"
 
 
+def test_include_excitations_not_fci_strong_correlation():
+    """强相关/高占据 (N2, 7e/spin): include(S+D) ≠ FCI (误差 > 1e-3)。
+
+    与 test_include_excitations_reaches_fci (弱相关, ≤2 occ/spin) 成**对照对**:
+    证明 include 单双激发 = FCI 的前提是每自旋 ≤2 电子 (单双激发穷尽该自旋
+    行列式), **不是 "CISD 精确"**。锁住这条认知, 防未来误改。
+    """
+    mol = gto.M(atom="N 0 0 0; N 0 0 2.1", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    norb, nelec = data.norb, data.nelec
+    assert nelec[0] > 2, "反例需每自旋 >2 电子"
+
+    e_fci = data.solve(method="fci")
+    exc = tc_sqd.excited_configurations(norb, nelec, max_excitations=2)
+    c = tc_sqd.build_lucj_circuit(data.mf, norb, nelec, ccsd_scale=0.5,
+                                  max_excitations=8)
+    bsm, probs = tc_sqd.sample(c, 2000, backend="tc")
+    e_inc = data.solve(method="sqd", bitstring_matrix=bsm, probabilities=probs,
+                       max_iterations=3, include_configurations=exc)
+
+    assert abs(e_inc - e_fci) > 1e-3, (
+        f"include(S+D) 不应达 FCI: inc={e_inc:.6f}, FCI={e_fci:.6f}")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

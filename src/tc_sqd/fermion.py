@@ -1125,11 +1125,11 @@ def optimize_orbitals(
         Number of independent Nelder-Mead restarts (each continues from the
         previous best ``k_flat``).  Must be >= 0.
     num_steps_grad : int
-        Nelder-Mead ``maxiter`` per restart.  Must be >= 1.
+        **Deprecated name** — 实为 Nelder-Mead 每次重启的 ``maxiter`` (见参数
+        说明); 保留旧名仅为向后兼容 (Q2 决策: 不破坏签名)。
     learning_rate : float
-        Retained for backward compatibility only — derivative-free optimisation
-        does not use a learning rate.  A non-positive value is still rejected to
-        keep the previous API contract.
+        **Deprecated** — 保留仅为向后兼容: Nelder-Mead 无导数优化不使用学习率。
+        非正值仍会被拒绝以维持原 API 契约。未来版本可能移除。
 
     Returns
     -------
@@ -1277,6 +1277,13 @@ def compute_ground_state_energy(
     >>> # Direct matrix diagonalisation (small systems only)
     >>> e = compute_ground_state_energy(h1e, eri, norb, nelec, ecore=ecore,
     ...                                  method="direct")
+
+    See Also
+    --------
+    tc_sqd.integrated.solve_sqd :
+        端到端入口 (接受 circuit 或 bitstring、single/iterative、返回 SCIResult
+        含状态/占据/RDM)。**分工**: 本函数 = 积分→能量 (采样外部提供, 返回 float),
+        适合快速拿能量/对比方法; 要状态/迭代/从电路出发用 ``solve_sqd``。
     """
     h1e_arr = np.asarray(h1e, dtype=np.float64)
     eri_arr = np.asarray(eri, dtype=np.float64)

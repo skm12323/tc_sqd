@@ -112,6 +112,13 @@ def solve_sqd(
     ValueError
         ``mode`` 非法、比特串宽度与 ``norb`` 不符、``max_iterations <= 0``、
         ``carryover_threshold`` 越界等。
+
+    See Also
+    --------
+    tc_sqd.fermion.compute_ground_state_energy :
+        积分→能量 的快速单入口 (采样外部提供, 返回 float)。
+        **分工**: 本函数 = 端到端 (含电路采样、single/iterative、返回 SCIResult);
+        只拿能量数字用 ``compute_ground_state_energy``。
     """
     if mode not in ("single", "iterative"):
         raise ValueError(

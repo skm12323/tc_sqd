@@ -40,3 +40,7 @@ htmlcov/
 *.swo
 
 vlog.txt
+# Claude Code 配置 / 记忆 / 会话状态 (不入库)
+.claude/
+# 双 agent 协作内部通道 (不入库)
+DISCUSSION.md

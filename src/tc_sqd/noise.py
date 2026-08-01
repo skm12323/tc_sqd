@@ -163,3 +163,32 @@ def density_to_bitstring_matrix(diag, norb: int, n_samples: int,
         # density bit orb        = α 轨道 orb  ->  α 块内降序列 2*norb-1-orb
         bsm[:, 2 * norb - 1 - orb] = (bs_ints >> orb) & 1
     return bsm
+
+
+def apply_t1_bitstrings(bitstring_matrix, gamma: float, *, seed=None):
+    """位串级振幅阻尼 (T1): 每个 |1⟩ 以概率 ``gamma`` 独立翻 0。
+
+    对纯态/计算基, 与密度矩阵 ``apply_amp_damping`` 在 diag 上等价, 但**无需
+    构造 2^nq 密度矩阵**, 支持大体系 (nq 不限)。用于 :func:`predict.calibrate`
+    的电路采样模式 (对实际电路采样的位串施加 T1)。
+
+    Parameters
+    ----------
+    bitstring_matrix : ndarray (S, N), bool
+        无噪声位串 (如 ``sample_from_circuit`` 输出)。
+    gamma : float in [0, 1]
+        振幅阻尼率 (1→0 翻转概率)。
+    seed : int | None
+
+    Returns
+    -------
+    ndarray (S, N), bool
+        T1 后的位串 (含粒子数违例, 交由配置恢复修正)。
+    """
+    if not 0.0 <= gamma <= 1.0:
+        raise ValueError(f"gamma must be in [0, 1], got {gamma}.")
+    bsm = np.asarray(bitstring_matrix, dtype=bool).copy()
+    rng = np.random.default_rng(seed)
+    flip = rng.random(bsm.shape) < gamma
+    bsm &= ~flip
+    return bsm

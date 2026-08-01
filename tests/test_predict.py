@@ -1,5 +1,48 @@
 """tc_sqd.predict 模块测试 —— 噪声容限预测器。"""
 import tc_sqd
+from pyscf import gto
+
+
+def test_calibrate_dual_mode():
+    """calibrate 双模式: circuit 非零 KS/KT1; fci_density 高 shots KS≈0 (benchmark)。"""
+    mol = gto.M(atom="H 0 0 0; H 0 0 1.2; H 0 0 2.4; H 0 0 3.6",
+                basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    circ = tc_sqd.build_lucj_circuit(data.mf, data.norb, data.nelec,
+                                     ccsd_scale=1.0)
+
+    # circuit 模式: 实际电路采样 + 位串级 T1 -> 非零 KS/KT1
+    r_c = tc_sqd.calibrate(data.h1e, data.eri, data.norb, data.nelec,
+                           ecore=data.ecore, circuit=circ,
+                           shots_grid=[2000, 4000], gamma_grid=[0.1, 0.3])
+    assert r_c["mode"] == "circuit"
+    assert abs(r_c["KS"]) > 1e-3, f"circuit 模式 KS 应非零, got {r_c['KS']:.2e}"
+    assert abs(r_c["KT1"]) > 1e-4, f"circuit 模式 KT1 应非零, got {r_c['KT1']:.2e}"
+
+    # fci_density 模式: 高 shots 覆盖饱和 -> KS≈0 (benchmark)
+    r_f = tc_sqd.calibrate(data.h1e, data.eri, data.norb, data.nelec,
+                           ecore=data.ecore,
+                           shots_grid=[4000, 8000], gamma_grid=[0.1, 0.3])
+    assert r_f["mode"] == "fci_density"
+    assert abs(r_f["KS"]) < 1e-3, f"fci_density 高 shots KS 应≈0, got {r_f['KS']:.2e}"
+
+
+def test_apply_t1_bitstrings():
+    """位串级 T1: gamma=0 不变, gamma 翻 1->0, 校验 γ 范围。"""
+    import numpy as np
+    bsm = np.array([[True, True], [True, False], [False, False]], dtype=bool)
+    # gamma=0: 不变
+    out0 = tc_sqd.apply_t1_bitstrings(bsm, 0.0, seed=0)
+    assert np.array_equal(out0, bsm)
+    # gamma=1: 全 1 -> 0
+    out1 = tc_sqd.apply_t1_bitstrings(bsm, 1.0, seed=0)
+    assert not np.any(out1)
+    # 越界
+    try:
+        tc_sqd.apply_t1_bitstrings(bsm, 1.5)
+        assert False, "gamma>1 应报错"
+    except ValueError:
+        pass
 
 
 def test_gamma_T1():
