@@ -297,7 +297,11 @@ def calibrate(h1e, eri, norb, nelec, *, ecore: float = 0.0, circuit=None,
     -----
     - 体系相关: 对给定分子 (h1e/eri/norb/nelec) 校准出的 KS/KT1 是**该体系专属**
       的, 换体系应得到不同值 (即本函数非空操作)。
-    - 代价: 内部做 density 矩阵模拟 (2^nq) + 逐点 SQD, 只适合小体系 (nq ≲ 12)。
+    - **KS 依赖电路覆盖质量**: LUCJ/真机电路 vs 覆盖充分态, 拟合出的 KS 量级不同,
+      **勿锚定历史值 0.0175** (那是方向 1 特定电路的拟合值); 同电路跨体系才有
+      可比性。
+    - 代价: circuit 模式无需密度矩阵 (位串级), 可跑大体系; fci_density 模式做
+      density 矩阵模拟 (2^nq), 只适合小体系 (nq ≲ 12)。
     """
     import numpy as _np
     from pyscf import fci as _fci
