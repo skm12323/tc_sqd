@@ -35,6 +35,7 @@ __all__ = [
     "rotate_integrals",
     "compute_ground_state_energy",
     "excited_configurations",
+    "truncate_excited_configurations",
 ]
 
 # Spin-convention constants
@@ -236,6 +237,49 @@ def _det_to_bitstring(a_str, b_str, norb):
     return row
 
 
+def _excited_det_strs(norb: int, nelec: Tuple[int, int],
+                      max_excitations: int) -> Tuple[list, list]:
+    """枚举 HF 出发 ≤ max_excitations 次激发的 (α_str, β_str) 列表。
+
+    供 :func:`excited_configurations` (转位串) 与
+    :func:`truncate_excited_configurations` (按能量截断) 复用。
+    """
+    na, nb = nelec
+    hf_a = (1 << na) - 1                     # 最低 na 个轨道占据
+    hf_b = (1 << nb) - 1
+    occ_a, vir_a = list(range(na)), list(range(na, norb))
+    occ_b, vir_b = list(range(nb)), list(range(nb, norb))
+
+    def _excite_level(hf, occ, vir, k):
+        """恰好 k 次激发的字符串集合 (0 <= k <= max_excitations)。"""
+        if k == 0:
+            return {int(hf)}
+        prev = _excite_level(hf, occ, vir, k - 1)
+        out = set()
+        for s in prev:
+            for i in occ:
+                if not (s >> i) & 1:
+                    continue
+                for a in vir:
+                    if (s >> a) & 1:
+                        continue
+                    out.add(s ^ (1 << i) ^ (1 << a))
+        return out
+
+    levels_a = [_excite_level(hf_a, occ_a, vir_a, k)
+                for k in range(max_excitations + 1)]
+    levels_b = [_excite_level(hf_b, occ_b, vir_b, k)
+                for k in range(max_excitations + 1)]
+
+    dets = []
+    for ka in range(max_excitations + 1):
+        for kb in range(max_excitations + 1 - ka):   # ka + kb <= max_excitations
+            for a in levels_a[ka]:
+                for b in levels_b[kb]:
+                    dets.append((a, b))
+    return dets
+
+
 def excited_configurations(norb: int, nelec: Tuple[int, int], *,
                            max_excitations: int = 2) -> np.ndarray:
     """从 HF determinant 生成含 ≤ ``max_excitations`` 次激发的位串集合。
@@ -263,8 +307,8 @@ def excited_configurations(norb: int, nelec: Tuple[int, int], *,
 
     Notes
     -----
-    激发组合数随 ``norb`` 指数增长 (双激发 ~ C(na,2)·C(nvir,2)), 仅适合
-    小-中轨道 (norb ≲ 10)。
+    激发组合数随 ``norb`` 指数增长 (双激发 ~ C(na,2)·C(nvir,2)); 大体系请用
+    :func:`truncate_excited_configurations` 按能量截断。
     """
     if max_excitations < 0:
         raise ValueError(
@@ -273,39 +317,106 @@ def excited_configurations(norb: int, nelec: Tuple[int, int], *,
     na, nb = nelec
     if na > norb or nb > norb:
         raise ValueError(f"nelec={nelec} inconsistent with norb={norb}.")
-    hf_a = (1 << na) - 1                     # 最低 na 个轨道占据
-    hf_b = (1 << nb) - 1
-    occ_a, vir_a = list(range(na)), list(range(na, norb))
-    occ_b, vir_b = list(range(nb)), list(range(nb, norb))
 
-    def _excite_level(hf, occ, vir, k):
-        """恰好 k 次激发的字符串集合 (0 <= k <= max_excitations)。"""
-        if k == 0:
-            return {int(hf)}
-        prev = _excite_level(hf, occ, vir, k - 1)
-        out = set()
-        for s in prev:
-            for i in occ:
-                if not (s >> i) & 1:
-                    continue
-                for a in vir:
-                    if (s >> a) & 1:
-                        continue
-                    out.add(s ^ (1 << i) ^ (1 << a))
-        return out
+    dets = _excited_det_strs(norb, nelec, max_excitations)
+    return np.asarray(
+        [_det_to_bitstring(a, b, norb) for a, b in dets], dtype=bool)
 
-    levels_a = [_excite_level(hf_a, occ_a, vir_a, k)
-                for k in range(max_excitations + 1)]
-    levels_b = [_excite_level(hf_b, occ_b, vir_b, k)
-                for k in range(max_excitations + 1)]
 
-    rows = []
-    for ka in range(max_excitations + 1):
-        for kb in range(max_excitations + 1 - ka):   # ka + kb <= max_excitations
-            for a in levels_a[ka]:
-                for b in levels_b[kb]:
-                    rows.append(_det_to_bitstring(a, b, norb))
-    return np.asarray(rows, dtype=bool)
+def _det_diag(a: int, b: int, h1e: np.ndarray, eri: np.ndarray,
+              norb: int) -> float:
+    """determinant (α_str, β_str) 的 Slater-Condon 对角能量 (MO 基, chemist eri)。
+
+    E = Σ_{i∈α} h_ii + Σ_{i∈β} h_ii
+      + Σ_{i<j∈α}(J-K) + Σ_{i<j∈β}(J-K) + Σ_{i∈α,j∈β} J
+    J_ij = (ii|jj), K_ij = (ij|ji)  (chemist's notation)。
+    """
+    occ_a = [i for i in range(norb) if (a >> i) & 1]
+    occ_b = [i for i in range(norb) if (b >> i) & 1]
+    e = 0.0
+    for i in occ_a:
+        e += h1e[i, i]
+    for i in occ_b:
+        e += h1e[i, i]
+    for x, occ in enumerate((occ_a, occ_b)):           # 同自旋: J - K
+        for p in range(len(occ)):
+            for q in range(p + 1, len(occ)):
+                i, j = occ[p], occ[q]
+                e += eri[i, j, i, j] - eri[i, j, j, i]
+    for i in occ_a:                                    # 反自旋: 仅库仑
+        for j in occ_b:
+            e += eri[i, j, i, j]
+    return float(e)
+
+
+def truncate_excited_configurations(
+    norb: int,
+    nelec: Tuple[int, int],
+    h1e: np.ndarray,
+    eri: np.ndarray,
+    *,
+    max_configs: Optional[int] = None,
+    energy_threshold: Optional[float] = None,
+    max_excitations: int = 2,
+) -> np.ndarray:
+    """按 Slater-Condon 对角能量截断单/双激发配置 (控制子空间维度, 大体系用)。
+
+    全量单双激发在 ``norb ≳ 10`` 时维度爆炸 (N₂ 20-qubit ~ 16k)。此函数保留
+    对角能量最低的配置 (对基态/低激发态相关最重要的), 供
+    ``include_configurations`` 使用, 使经典覆盖在截断后依然高效。
+
+    Parameters
+    ----------
+    norb, nelec
+        空间轨道数与电子数。
+    h1e, eri
+        MO 基积分 (与 ``compute_ground_state_energy`` 一致; chemist eri)。
+    max_configs : int | None
+        保留对角能量最低的前 N 个配置 (含 HF)。None = 不按个数截断。
+    energy_threshold : float | None
+        保留对角能量 ≤ ``E_HF + threshold`` 的配置 (Ha)。None = 不按能量截断。
+        ``max_configs`` 与 ``energy_threshold`` 至少给一个。
+    max_excitations : int
+        生成时的激发上限 (默认 2)。
+
+    Returns
+    -------
+    ndarray (M, 2*norb), dtype bool
+        截断后的位串矩阵, **强制包含 HF determinant** (保证非空且含参考)。
+
+    Notes
+    -----
+    HF determinant 的对角能量**不保证**是单双激发中最低的 (强关联体系双激发
+    对角能量可能更低), 因此返回集总是显式补入 HF。
+    """
+    if max_configs is None and energy_threshold is None:
+        raise ValueError(
+            "至少给 max_configs 或 energy_threshold 之一 (None 时请直接用 "
+            "excited_configurations 拿全量)。"
+        )
+    if max_configs is not None and max_configs < 1:
+        raise ValueError(f"max_configs must be >= 1, got {max_configs}.")
+
+    hf_a = (1 << nelec[0]) - 1
+    hf_b = (1 << nelec[1]) - 1
+    hf_e = _det_diag(hf_a, hf_b, h1e, eri, norb)
+
+    dets = _excited_det_strs(norb, nelec, max_excitations)
+    entries = sorted(
+        ((a, b, _det_diag(a, b, h1e, eri, norb)) for a, b in dets),
+        key=lambda x: x[2],
+    )
+    if energy_threshold is not None:
+        keep = [(a, b) for a, b, e in entries if e <= hf_e + energy_threshold]
+    else:
+        keep = [(a, b) for a, b, _ in entries[:max_configs]]
+
+    # 强制含 HF determinant
+    if (hf_a, hf_b) not in keep:
+        keep = [(hf_a, hf_b)] + keep
+
+    return np.asarray(
+        [_det_to_bitstring(a, b, norb) for a, b in keep], dtype=bool)
 
 
 def enlarge_batch_from_transitions(

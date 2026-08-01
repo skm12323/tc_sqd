@@ -106,6 +106,62 @@ def test_excited_sqd_lif_with_include_configurations():
         f"include 激发配置未改善: with={err_with:.5f}, without={err_without:.5f}")
 
 
+def test_truncate_excited_configurations_basic():
+    """截断: 数量限制 + 强制含 HF + 校验。"""
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    mf = scf.RHF(mol).run()
+    data = tc_sqd.from_pyscf(mf)
+
+    exc_t = tc_sqd.truncate_excited_configurations(
+        2, (1, 1), data.h1e, data.eri, max_configs=3)
+    hf = np.array([0, 1, 0, 1], dtype=bool)
+    assert np.any(np.all(exc_t == hf, axis=1)), "应强制含 HF"
+    assert exc_t.shape[0] <= 3
+
+    # 都不给 -> 报错
+    try:
+        tc_sqd.truncate_excited_configurations(2, (1, 1), data.h1e, data.eri)
+        assert False, "max_configs 与 energy_threshold 都不给应报错"
+    except ValueError:
+        pass
+
+    # 非法 max_configs
+    try:
+        tc_sqd.truncate_excited_configurations(
+            2, (1, 1), data.h1e, data.eri, max_configs=0)
+        assert False, "max_configs=0 应报错"
+    except ValueError:
+        pass
+
+
+def test_truncate_lih_preserves_accuracy():
+    """LiH: 截断后 SQD 能量仍接近全量 (对角能量排序保留相关配置)。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    mf = scf.RHF(mol).run()
+    data = tc_sqd.from_pyscf(mf)
+    norb, nelec = data.norb, data.nelec
+
+    exc_full = tc_sqd.excited_configurations(norb, nelec, max_excitations=2)
+    exc_t = tc_sqd.truncate_excited_configurations(
+        norb, nelec, data.h1e, data.eri, max_configs=40)
+    assert exc_t.shape[0] <= 40
+    assert exc_t.shape[0] < exc_full.shape[0]
+
+    c = tc_sqd.build_lucj_circuit(data.mf, norb, nelec, ccsd_scale=0.5)
+    bsm, probs = tc_sqd.sample(c, 1000, backend="tc")
+
+    e_full = data.solve(method="sqd", bitstring_matrix=bsm, probabilities=probs,
+                        max_iterations=3, include_configurations=exc_full)
+    e_t = data.solve(method="sqd", bitstring_matrix=bsm, probabilities=probs,
+                     max_iterations=3, include_configurations=exc_t)
+    assert abs(e_t - e_full) < 5e-4, (
+        f"截断引入过大误差: full={e_full:.6f}, trunc={e_t:.6f}")
+    # 截断后仍远优于纯采样
+    e_plain = data.solve(method="sqd", bitstring_matrix=bsm,
+                         probabilities=probs, max_iterations=3)
+    assert abs(e_t - data.solve(method="fci")) < abs(e_plain - data.solve(method="fci"))
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

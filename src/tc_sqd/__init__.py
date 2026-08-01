@@ -48,6 +48,7 @@ from .fermion import (
     rotate_integrals,
     compute_ground_state_energy,
     excited_configurations,
+    truncate_excited_configurations,
 )
 from .qubit import (
     sort_and_remove_duplicates,
@@ -132,6 +133,7 @@ __all__ = [
     "rotate_integrals",
     "compute_ground_state_energy",
     "excited_configurations",
+    "truncate_excited_configurations",
     # qubit
     "sort_and_remove_duplicates",
     "matrix_elements_from_pauli",

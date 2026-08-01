@@ -25,7 +25,8 @@ numpy≥2 / jax 的硬性要求**。
   **误差 +4e-3 → 1e-16（= FCI 精确），1000 shots 即达，零统计波动**（见 `ansatz_opt_demo`）
 - Pauli 哈密顿量在比特串子空间的投影与对角化（非费米子问题，如 QAOA-MaxCut）
 - **激发态**：`solve_sci(..., n_roots=k)` 取前 k 个本征值（基态 + 低激发态）+
-  **激发态采样策略**（`excited_configurations` 生成 HF+单/双激发配置强制纳入子空间，保障 n_roots 变分下界）
+  **激发态采样策略**（`excited_configurations` 生成 HF+单/双激发配置强制纳入子空间，保障 n_roots 变分下界；
+  `truncate_excited_configurations` 按 Slater-Condon 对角能量截断，控制大体系子空间维度）
 - **密度矩阵噪声模拟**（`noise`）：退相干/振幅阻尼/去极化 Kraus 通道，cupy GPU 可选
 - **噪声容限预测器**（`predict`）：输入 T₁/电路/shots → 预测 SQD 基态/激发态精度；
   `depth_budget` 结构化深度预算；`plan_sampling` 自动找最优 (shots, depth) 采样方案
@@ -188,6 +189,7 @@ e = tc_sqd.compute_ground_state_energy(
 | lucj | `lucj_report(mf, norb, nelec, *, max_excitations, max_depth)` | 真机深度预算：2Q 门数代理 / within_budget / max_entries |
 | fermion | `solve_sci(..., n_roots=k)` | 激发态：n_roots>1 返回前 k 个本征态 list[SCIResult] |
 | fermion | `excited_configurations(norb, nelec, *, max_excitations)` | 从 HF 生成单/双激发位串（喂 include_configurations，激发态采样策略）|
+| fermion | `truncate_excited_configurations(norb, nelec, h1e, eri, ...)` | 按 Slater-Condon 对角能量截断单/双激发（max_configs / energy_threshold，强制含 HF，大体系用）|
 | noise | `statevector_to_density(psi)` | 纯态 → 密度矩阵 ρ=\|ψ⟩⟨ψ\| |
 | noise | `apply_dephasing(rho, p, nq)` / `apply_amp_damping(rho, γ, nq)` / `apply_depolarizing(rho, p, nq)` | 退相干(T₂)/振幅阻尼(T₁)/去极化 Kraus 通道（gpu=True 走 cupy）|
 | noise | `density_to_bitstring_matrix(diag, norb, n_samples)` | 密度矩阵 diag → 采样 bsm（接 recover_configurations）|
