@@ -31,6 +31,7 @@ from .configuration_recovery import (
 from .subsampling import (
     subsample,
     postselect_by_hamming_right_and_left,
+    limit_subspace,
 )
 from .fermion import (
     SCIState,
@@ -56,6 +57,8 @@ from .integrated import solve_sqd
 from .lucj import (
     get_ccsd_amplitudes,
     build_lucj_circuit,
+    circuit_stats,
+    lucj_report,
 )
 from . import noise
 from .noise import (
@@ -106,6 +109,7 @@ __all__ = [
     # subsampling
     "subsample",
     "postselect_by_hamming_right_and_left",
+    "limit_subspace",
     # fermion
     "SCIState",
     "SCIResult",
@@ -129,6 +133,8 @@ __all__ = [
     # lucj
     "get_ccsd_amplitudes",
     "build_lucj_circuit",
+    "circuit_stats",
+    "lucj_report",
     # noise (密度矩阵 Kraus 噪声模拟, cupy GPU 可选 — qiskit-Aer 风格 + tc GPU)
     "has_gpu",
     "statevector_to_density",

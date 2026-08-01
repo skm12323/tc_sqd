@@ -35,7 +35,25 @@ from typing import Optional, Tuple
 import numpy as np
 import tensorcircuit as tc
 
-__all__ = ["get_ccsd_amplitudes", "build_lucj_circuit"]
+__all__ = [
+    "get_ccsd_amplitudes",
+    "build_lucj_circuit",
+    "circuit_stats",
+    "lucj_report",
+]
+
+# 门集合 (TC gate_summary 的键; 按作用 qubit 数分类)。
+# 真机深度预算以 2Q 门数为主 (2Q 层主导 depth, 腾讯 qcloud 有 depth 上限)。
+_1Q_GATES = {
+    "x", "y", "z", "h", "s", "sdg", "t", "tdg", "rx", "ry", "rz",
+    "u", "u1", "u2", "u3", "p", "r", "sx", "sxdg", "id", "i",
+}
+_2Q_GATES = {
+    "cx", "cnot", "cz", "swap", "iswap", "ch", "csx", "crx", "cry",
+    "crz", "cu", "cu1", "cu3", "cp", "ecr", "rxx", "ryy", "rzz",
+    "xx_plus_yy",
+}
+_MULTI_GATES = {"ccx", "toffoli", "cswap", "ccz", "fredkin"}
 
 
 def get_ccsd_amplitudes(mf):
@@ -159,3 +177,74 @@ def build_lucj_circuit(
         c.ry(q_occ, theta=-theta)
 
     return c
+
+
+# --------------------------------------------------------------------------- #
+#  真机深度预算 (腾讯 qcloud 有 depth 上限, 如 1500; 2Q 层主导 depth)
+# --------------------------------------------------------------------------- #
+def circuit_stats(circuit) -> dict:
+    """TC 电路门统计: 1Q / 2Q / 多体门数与总量。
+
+    返回 ``{"n_qubits", "n_1q", "n_2q", "n_multi", "n_gates", "gate_summary"}``。
+    真机深度预算以 ``n_2q`` 为主: 编译映射后 depth 主要由 2Q 层决定, 故
+    ``n_2q`` 是保守深度代理 (串行下界; 实际可并行时会更小)。
+    """
+    gs = dict(circuit.gate_summary())
+    n_1q = n_2q = n_multi = 0
+    for name, cnt in gs.items():
+        base = name.lower()
+        if base in _1Q_GATES:
+            n_1q += cnt
+        elif base in _2Q_GATES:
+            n_2q += cnt
+        else:
+            n_multi += cnt  # 未知门按多体兜底 (保守)
+    return {
+        "n_qubits": int(circuit._nqubits),
+        "n_1q": int(n_1q),
+        "n_2q": int(n_2q),
+        "n_multi": int(n_multi),
+        "n_gates": int(circuit.gate_count()),
+        "gate_summary": gs,
+    }
+
+
+def lucj_report(mf, norb: int, nelec: Tuple[int, int], *,
+                ccsd_scale: float = 1.0,
+                max_excitations: Optional[int] = None,
+                max_depth: Optional[int] = None) -> dict:
+    """构建 LUCJ 电路并返回真机深度预算报告 (对接 qcloud 深度上限)。
+
+    Parameters
+    ----------
+    mf, norb, nelec, ccsd_scale, max_excitations
+        与 :func:`build_lucj_circuit` 相同。
+    max_depth : int | None
+        真机深度预算 (如 1500)。None = 不检查。
+
+    Returns
+    -------
+    dict
+        ``circuit_stats`` 门统计 (含 ``n_2q`` 保守深度代理);
+        ``depth_proxy``  = ``n_2q`` (保守 2Q 深度);
+        ``within_budget``: bool | None —— ``max_depth`` 给定时 ``n_2q``
+        是否在预算内 (None = 未给预算);
+        ``max_entries_by_2q_budget``: int | None —— 2Q 门数预算下最多能放
+        几个 occ-vir entry (每个 entry 贡献 1 个 cnot; None = 未给预算)。
+    """
+    c = build_lucj_circuit(mf, norb, nelec, ccsd_scale=ccsd_scale,
+                           max_excitations=max_excitations)
+    stats = circuit_stats(c)
+    depth_proxy = int(stats["n_2q"])
+    if max_depth is None:
+        within = None
+        max_entries = None
+    else:
+        within = bool(depth_proxy <= max_depth)
+        max_entries = max(0, int(max_depth))   # 每 entry 1 cnot (2Q), 预算即上限
+    return {
+        "circuit_stats": stats,
+        "depth_proxy": depth_proxy,
+        "within_budget": within,
+        "max_entries_by_2q_budget": max_entries,
+    }

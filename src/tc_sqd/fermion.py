@@ -19,7 +19,7 @@ from pyscf.fci import cistring, selected_ci
 from pyscf.fci import spin_op
 
 from .configuration_recovery import recover_configurations
-from .subsampling import subsample
+from .subsampling import subsample, limit_subspace
 
 __all__ = [
     "SCIState",
@@ -658,10 +658,21 @@ def diagonalize_fermionic_hamiltonian(
     SCIResult
     """
     if max_dim is not None:
-        raise NotImplementedError(
-            "max_dim subspace-dimension limits are not implemented; "
-            "control the subspace via samples_per_batch / num_batches."
-        )
+        if isinstance(max_dim, (tuple, list)):
+            if len(max_dim) != 2 or min(max_dim) < 1:
+                raise ValueError(
+                    f"max_dim tuple must be (na_max, nb_max) with both >= 1, "
+                    f"got {max_dim}."
+                )
+        elif isinstance(max_dim, (int, np.integer)):
+            if max_dim < 1:
+                raise ValueError(
+                    f"max_dim int must be >= 1, got {max_dim}."
+                )
+        else:
+            raise ValueError(
+                f"max_dim must be int or (int, int), got {type(max_dim).__name__}."
+            )
     if max_iterations < 1:
         raise ValueError(
             f"max_iterations must be >= 1, got {max_iterations}."
@@ -744,11 +755,16 @@ def diagonalize_fermionic_hamiltonian(
             recovered_probs = np.concatenate([recovered_probs, carry_probs])
             recovered_probs /= recovered_probs.sum()
 
-        # 2. Subsample into batches
+        # 2. Subsample into batches (max_dim 时裁剪子空间维度)
         batches = subsample(
             recovered_bsm, recovered_probs,
             samples_per_batch, num_batches, rand_seed=rng,
         )
+        if max_dim is not None:
+            batches = [
+                limit_subspace(b, max_dim, norb)
+                for b in batches
+            ]
 
         # 3. Convert to CI strings and solve.  ``include_configurations`` and
         #    carryover determinants are *force-appended* to every batch's CI

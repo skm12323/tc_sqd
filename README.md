@@ -11,9 +11,10 @@ numpy≥2 / jax 的硬性要求**。
 - 统一入口 `compute_ground_state_energy`，支持 `fci` / `sqd` / `direct` 三种方法
 - 比特串矩阵 ↔ 整数互转，TensorCircuit 采样适配
 - 基于平均占据数的配置恢复（纠正噪声导致的粒子数违例）
-- 批量子采样、汉明权重后选择
+- 批量子采样、汉明权重后选择、**`max_dim` 子空间维度限制**（int / (na, nb)）
 - CI 矩阵构造（Slater–Condon）、子空间对角化、迭代 SQD、轨道优化
-- CCSD 振幅驱动的 LUCJ ansatz 电路构造（量子态制备侧）
+- CCSD 振幅驱动的 LUCJ ansatz 电路构造（量子态制备侧）+
+  **真机深度预算报告**（`circuit_stats` / `lucj_report`：1Q/2Q 门统计，2Q 门数作保守深度代理）
 - Pauli 哈密顿量在比特串子空间的投影与对角化（非费米子问题，如 QAOA-MaxCut）
 - **激发态**：`solve_sci(..., n_roots=k)` 取前 k 个本征值（基态 + 低激发态）
 - **密度矩阵噪声模拟**（`noise`）：退相干/振幅阻尼/去极化 Kraus 通道，cupy GPU 可选
@@ -154,6 +155,7 @@ e = tc_sqd.compute_ground_state_energy(
 | configuration_recovery | `postselect_by_hamming_weight(bsm, *, hamming_right, hamming_left)` | 按汉明权重筛选 |
 | subsampling | `subsample(bsm, probs, samples_per_batch, num_batches)` | 按概率无放回批量子采样 |
 | subsampling | `postselect_by_hamming_right_and_left(bsm, probs, ...)` | 汉明权重后选择 + 重归一化 |
+| subsampling | `limit_subspace(bsm, max_dim, norb, *, probabilities)` | 按概率裁剪子空间（int=总行列式数 / tuple=(na, nb)）|
 | fermion | `bitstring_matrix_to_ci_strs(bsm)` | 比特串 → PySCF CI 字符串 |
 | fermion | `build_ci_matrix(ci_a, ci_b, h1e, eri, norb, nelec, ecore)` | Slater–Condon 构造 CI 矩阵 |
 | fermion | `solve_sci(ci_strs, h1e, eri, norb, nelec, *, spin_sq)` | 子空间对角化（可选目标自旋） |
@@ -169,6 +171,8 @@ e = tc_sqd.compute_ground_state_energy(
 | qubit | `solve_qubit(bsm, hamiltonian)` | Pauli 哈密顿量子空间求解 |
 | lucj | `get_ccsd_amplitudes(mf)` | 跑 RHF-CCSD，返回 (t1, t2, mycc) |
 | lucj | `build_lucj_circuit(mf, norb, nelec, *, ccsd_scale)` | 从 CCSD t2 构造简化 LUCJ 电路（HF + 占据-空 Givens） |
+| lucj | `circuit_stats(circuit)` | 门统计：n_1q / n_2q / n_multi / n_gates |
+| lucj | `lucj_report(mf, norb, nelec, *, max_excitations, max_depth)` | 真机深度预算：2Q 门数代理 / within_budget / max_entries |
 | fermion | `solve_sci(..., n_roots=k)` | 激发态：n_roots>1 返回前 k 个本征态 list[SCIResult] |
 | noise | `statevector_to_density(psi)` | 纯态 → 密度矩阵 ρ=\|ψ⟩⟨ψ\| |
 | noise | `apply_dephasing(rho, p, nq)` / `apply_amp_damping(rho, γ, nq)` / `apply_depolarizing(rho, p, nq)` | 退相干(T₂)/振幅阻尼(T₁)/去极化 Kraus 通道（gpu=True 走 cupy）|
@@ -216,6 +220,8 @@ PYTHONPATH=src python -m tests.test_noise        # noise 模块 8 个测试
 PYTHONPATH=src python -m tests.test_predict      # predict 模块 7 个测试
 PYTHONPATH=src python -m tests.test_molecule     # molecule 模块 5 个测试
 PYTHONPATH=src python -m tests.test_diagnostics  # diagnostics 模块 4 个测试
+PYTHONPATH=src python -m tests.test_lucj         # lucj 模块 4 个测试
+PYTHONPATH=src python -m tests.test_subsampling  # subsampling 模块 5 个测试
 PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 ```
 
@@ -223,7 +229,7 @@ PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 
 - **闭壳层**：仅可靠支持 `n_alpha == n_beta`；`open_shell=False` 下电子数不等会显式报错。
 - **一电子积分**：需为单个 `(norb, norb)`（或两块相同的 `(2, norb, norb)`）；`h_alpha ≠ h_beta` 的自旋分辨积分会显式拒绝。
-- **`max_dim`**：未实现（显式 `NotImplementedError`）；子空间维度由 `samples_per_batch` / `num_batches` 控制。
+- **`max_dim`**：已实现（`limit_subspace` 按概率贪心裁剪；int=总行列式数、tuple=(na, nb)）。`include_configurations` / carryover 强制配置不受裁剪。
 - **`spin_sq`**：在 `solve_sci` / `fci` 路径通过多根 S² 匹配实现真正的目标自旋选态（不可达时 raise）；`sqd` / `direct` 路径显式拒绝。
 - **状态持久化**：`SCIState.save/load` 后通过 `_as_scivector` 重建 PySCF `SCIvector` 元数据，`rdm` / `spin_square` 在加载后仍可用。
 - **LUCJ**：`build_lucj_circuit` 为简化实现（t2 范数驱动 Givens，未做 ffsim 的精确 SVD + 对角 Coulomb Jastrow）；仅支持闭壳层。H₂ 精确复现 FCI，LiH 误差 ~7.5e-4。
@@ -239,7 +245,7 @@ tc_sqd/
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
 ├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, noise, predict, hardware, molecule, diagnostics, _compat
-├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics
+├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_subsampling
 └── examples/h2_sqd_demo.py   # H2 完整演示
 ```
 

@@ -11,6 +11,7 @@ from .counts import bitarray_to_int
 __all__ = [
     "subsample",
     "postselect_by_hamming_right_and_left",
+    "limit_subspace",
 ]
 
 
@@ -131,3 +132,69 @@ def subsample(
         idx = rng.choice(S, size=spb, replace=False, p=probs)
         batches.append(bsm[idx])
     return batches
+
+
+def limit_subspace(bitstring_matrix: np.ndarray, max_dim, norb: int, *,
+                   probabilities: Optional[np.ndarray] = None) -> np.ndarray:
+    """按概率降序贪心裁剪 bitstring, 使唯一 α/β 字符串满足 ``max_dim`` 限制。
+
+    子空间维度 = 唯一 α 字符串数 × 唯一 β 字符串数; 高维时对角化成本暴涨,
+    此函数用于把子空间限制在预算内 (真机大 shots / 大轨道场景)。
+
+    Parameters
+    ----------
+    bitstring_matrix : ndarray (S, 2*norb)
+    max_dim : int | tuple(int,int)
+        ``int``      —— 总行列式数 ``na*nb ≤ max_dim``;
+        ``tuple``    —— ``na ≤ max_dim[0]`` 且 ``nb ≤ max_dim[1]``。
+    norb : int
+        空间轨道数。
+    probabilities : ndarray (S,) | None
+        按概率降序优先保留 (None = 输入顺序, 等价均匀)。
+
+    Returns
+    -------
+    ndarray
+        裁剪后的 bitstring matrix (概率高的优先; 一旦新字符串使维度超限即停)。
+    """
+    bsm = np.asarray(bitstring_matrix, dtype=bool)
+    n = bsm.shape[0]
+    if n == 0 or max_dim is None:
+        return bsm
+    if isinstance(max_dim, (int, np.integer)):
+        limit_na = limit_nb = None
+        limit_prod = int(max_dim)
+    else:
+        limit_na, limit_nb = int(max_dim[0]), int(max_dim[1])
+        limit_prod = None
+
+    # α/β 字符串 int (与 bitstring_matrix_to_ci_strs 的列序约定一致)
+    powers = (1 << np.arange(norb, dtype=np.int64))
+    a_ints = (bsm[:, norb:][:, ::-1].astype(np.int64) @ powers).ravel()
+    b_ints = (bsm[:, :norb][:, ::-1].astype(np.int64) @ powers).ravel()
+
+    if probabilities is None:
+        order = range(n)
+    else:
+        order = np.argsort(-np.asarray(probabilities, dtype=np.float64))
+
+    sel_a: set = set()
+    sel_b: set = set()
+    keep = []
+    for idx in order:
+        a, b = a_ints[idx], b_ints[idx]
+        na = len(sel_a) + (0 if a in sel_a else 1)
+        nb = len(sel_b) + (0 if b in sel_b else 1)
+        if limit_prod is not None:
+            if na * nb > limit_prod:
+                break
+        else:
+            if na > limit_na or nb > limit_nb:
+                break
+        sel_a.add(a)
+        sel_b.add(b)
+        keep.append(idx)
+
+    if len(keep) == n:
+        return bsm
+    return bsm[np.array(keep, dtype=int)]
