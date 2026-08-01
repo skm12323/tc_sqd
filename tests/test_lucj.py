@@ -114,6 +114,42 @@ def test_ucj_subspace_energy_lih():
     assert abs(e_large - e_fci) < 1e-4   # 大 scale 覆盖更全, 接近 FCI
 
 
+def test_ucj_circuit_h2_fci():
+    """P2-2b: UCJ 电路采样 -> SQD, H2 = FCI。"""
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    e_fci = data.solve(method="fci")
+    circ = tc_sqd.build_ucj_circuit(data.mf, data.norb, data.nelec, scale=10)
+    bsm, probs = tc_sqd.sample(circ, 2000)
+    e = data.solve(method="sqd", bitstring_matrix=bsm, probabilities=probs,
+                   max_iterations=3)
+    assert abs(e - e_fci) < 1e-6
+
+
+def test_ucj_circuit_lih_better_than_lucj():
+    """P2-2b: LiH UCJ 电路 SQD 误差 < 简化 LUCJ (7.5e-4), 且深度可接受。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    e_fci = data.solve(method="fci")
+
+    circ = tc_sqd.build_ucj_circuit(data.mf, data.norb, data.nelec, scale=5)
+    bsm, probs = tc_sqd.sample(circ, 3000)
+    e_ucj = data.solve(method="sqd", bitstring_matrix=bsm, probabilities=probs,
+                       max_iterations=3)
+    # 简化 LUCJ 基线
+    c_l = tc_sqd.build_lucj_circuit(data.mf, data.norb, data.nelec, ccsd_scale=1.0)
+    bsm_l, probs_l = tc_sqd.sample(c_l, 3000)
+    e_lucj = data.solve(method="sqd", bitstring_matrix=bsm_l,
+                        probabilities=probs_l, max_iterations=3)
+
+    assert abs(e_ucj - e_fci) < abs(e_lucj - e_fci), (
+        f"UCJ 未优于 LUCJ: ucj_err={abs(e_ucj-e_fci):.2e}, "
+        f"lucj_err={abs(e_lucj-e_fci):.2e}")
+    # 深度预算可接受
+    stats = tc_sqd.circuit_stats(circ)
+    assert stats["n_2q"] <= 50   # LiH 6 MO: 2*nocc*nvir = 16
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

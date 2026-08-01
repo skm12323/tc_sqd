@@ -44,6 +44,7 @@ __all__ = [
     "ucj_decomposition",
     "ucj_matrix_energy",
     "ucj_subspace_energy",
+    "build_ucj_circuit",
 ]
 
 # 门集合 (TC gate_summary 的键; 按作用 qubit 数分类)。
@@ -649,3 +650,79 @@ def ucj_subspace_energy(layers, h1e, eri, norb: int, nelec):
     sub_b = np.unique(ci_strs_b[idx_b])
     H = build_ci_matrix(sub_a, sub_b, h1e, eri, norb, nelec)
     return float(np.linalg.eigvalsh(H)[0])
+
+
+def build_ucj_circuit(mf, norb: int, nelec: Tuple[int, int], *,
+                      nlayers: int = 1, scale: float = 1.0,
+                      include_jastrow: bool = False):
+    """UCJ 电路: HF + 逐层 Û (轨道旋转 Givens) [+ 可选 e^{iJ} RZZ]。
+
+    **SQD 关键简化**: SQD 采样 (计算基投影) 只依赖 |振幅|², ``e^{iJ}`` 对角相位
+    不改变采样概率, 对 SQD 子空间无影响 —— 故默认 ``include_jastrow=False``
+    省略 RZZ 门 (降深度), 只保留 Û (Givens, 产生 det 混合)。若要单态期望
+    (VQE 式) 才需要 Jastrow, 置 ``include_jastrow=True``。
+
+    参数来自 :func:`ucj_decomposition` (CCSD t2 SVD)。每层 Û: 对 kappa 的
+    occ-vir 非零分量, 在 α/β 各施加一个 Givens-like 门 (ry + cnot + ry,
+    同 :func:`build_lucj_circuit` 的模式, 但角度来自 SVD 而非 t2 范数)。
+
+    Parameters
+    ----------
+    mf, norb, nelec
+        同 :func:`build_lucj_circuit` (闭壳层)。
+    nlayers, scale
+        传给 :func:`ucj_decomposition` (UCJ 层数与 kappa 放大)。
+    include_jastrow : bool
+        True 时对 J 的非零对角 (p,q) 加 RZZ (e^{iJ} 相位); 默认 False
+        (SQD 采样相位无关, 省略省深度)。
+
+    Returns
+    -------
+    tensorcircuit.Circuit
+        可直接 ``tc_sqd.sample_from_circuit`` 采样喂 SQD。
+    """
+    _t1, t2, _mycc = get_ccsd_amplitudes(mf)
+    nocc = nelec[0]
+    if nelec[0] != nelec[1]:
+        raise ValueError("build_ucj_circuit 当前仅支持闭壳层 (na==nb)。")
+    layers = ucj_decomposition(t2, norb, nocc, nlayers=nlayers, scale=scale)
+
+    nq = 2 * norb
+    c = tc.Circuit(nq)
+    # HF 初态
+    for i in range(nelec[0]):
+        c.x(_qubit("a", i, norb))
+    for i in range(nelec[1]):
+        c.x(_qubit("b", i, norb))
+
+    for kappa, J in layers:
+        # Û: occ-vir Givens-like (α/β 各一)
+        for i in range(nocc):
+            for a in range(nocc, norb):
+                th = kappa[i, a]
+                if abs(th) < 1e-10:
+                    continue
+                for spin in ("a", "b"):
+                    q_occ = _qubit(spin, i, norb)
+                    q_vir = _qubit(spin, a, norb)
+                    c.ry(q_occ, theta=th)
+                    c.cnot(q_occ, q_vir)
+                    c.ry(q_occ, theta=-th)
+        # e^{iJ} (可选): RZZ for non-zero diagonal (p, q)
+        if include_jastrow:
+            for p in range(norb):
+                for q in range(p, norb):
+                    jpq = J[p, q]
+                    if abs(jpq) < 1e-10:
+                        continue
+                    # e^{i jpq n_p n_q} ≈ RZZ(θ) 相位 (SQD 采样不需要, 供 VQE 单态)
+                    # 闭壳: n_p n_q = (n_p^α+n_p^β)(n_q^α+n_q^β), 简化单 RZZ per spin block
+                    for (sa, sb) in (("a", "a"), ("a", "b"), ("b", "b")):
+                        qp = _qubit(sa, p, norb)
+                        qq = _qubit(sb, q, norb)
+                        # e^{-i jpq/4 Z_p Z_q} 相位核 (RZZ)
+                        c.rz(qp, theta=jpq / 2.0)
+                        c.cnot(qp, qq)
+                        c.rz(qq, theta=-jpq / 2.0)
+                        c.cnot(qp, qq)
+    return c
