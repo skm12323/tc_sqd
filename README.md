@@ -17,7 +17,11 @@ numpy≥2 / jax 的硬性要求**。
 - Pauli 哈密顿量在比特串子空间的投影与对角化（非费米子问题，如 QAOA-MaxCut）
 - **激发态**：`solve_sci(..., n_roots=k)` 取前 k 个本征值（基态 + 低激发态）
 - **密度矩阵噪声模拟**（`noise`）：退相干/振幅阻尼/去极化 Kraus 通道，cupy GPU 可选
-- **噪声容限预测器**（`predict`）：输入 T₁/电路/shots → 预测 SQD 基态/激发态精度
+- **噪声容限预测器**（`predict`）：输入 T₁/电路/shots → 预测 SQD 基态/激发态精度；
+  `depth_budget` 结构化深度预算；`plan_sampling` 自动找最优 (shots, depth) 采样方案
+- **一键分子接口**（`molecule`）：`from_pyscf(mol_or_mf)` 自动算 MO 基
+  h1e/eri/ecore/norb/nelec，支持活性空间（冻结 core，含 core 平均场修正）
+- **采样诊断**（`diagnostics`）：采样熵 / 子空间维度 / 配置分布 / 能量随 shots 收敛曲线
 - **真机一站式**（`hardware`）：腾讯 qcloud 校准加载 / 选最优 qubit 子图 / 真机采样 / SQD 后处理
 
 ## 安装
@@ -171,7 +175,14 @@ e = tc_sqd.compute_ground_state_energy(
 | noise | `density_to_bitstring_matrix(diag, norb, n_samples)` | 密度矩阵 diag → 采样 bsm（接 recover_configurations）|
 | predict | `gamma_T1(depth, t_gate_ns, T1_us)` | 真机振幅阻尼率 γ = 1−exp(−depth·t_gate/T₁) |
 | predict | `predict_sqd_error(T1, depth, t_gate, shots, n_excited)` | 预测 SQD 基态/激发态误差（退相干免疫，T₁ 主导）|
-| predict | `max_depth_for_accuracy(T1, t_gate, shots, target, excited)` | 反向预测达目标精度的 depth 上限 |
+| predict | `depth_budget(T1, t_gate, shots, target, excited)` | 结构化深度预算（`DepthBudget`：max_depth/status/reason）|
+| predict | `max_depth_for_accuracy(T1, t_gate, shots, target, excited)` | 反向预测达目标精度的 depth 上限（int 薄封装）|
+| predict | `plan_sampling(T1, t_gate, *, target, excited, ...)` | 采样预算分配：枚举 (shots, depth) 网格，按成本排序可行方案 |
+| molecule | `from_pyscf(mf_or_mol, *, n_active)` | 一键构建 SQD 输入（MO 积分 + 核能 + 电子数，活性空间冻结 core）|
+| molecule | `MolecularData.solve(method, ...)` | 一键求基态能量（fci/sqd/direct）|
+| diagnostics | `sampling_report(h1e, eri, norb, nelec, bsm, ...)` | 采样质量综合报告（熵/维度/配置/收敛曲线）|
+| diagnostics | `energy_convergence(...)` | 能量随 shots 收敛曲线 |
+| diagnostics | `shannon_entropy(probs)` / `subspace_dimension(bsm)` | 采样熵 / 子空间维度 |
 | hardware | `load_calibration(device_name)` | 从 tc qcloud 读校准快照（T₁/T₂/读出/CZ/拓扑）|
 | hardware | `select_qubits(calibration, nq)` | 多起点贪心选最优 nq 物理 qubit 子图（min T₂ 最大化）|
 | hardware | `bitstring_matrix_to_energy(bsm, h1e, eri, norb, nelec, ecore)` | 采样 bsm → recover → 子空间对角化 → 能量 |
@@ -201,8 +212,10 @@ e = tc_sqd.compute_ground_state_energy(
 
 ```bash
 PYTHONPATH=src python -m tests.test_h2_sqd      # 9 个测试函数，约 50 项断言
-PYTHONPATH=src python -m tests.test_noise        # noise 模块 6 个测试
-PYTHONPATH=src python -m tests.test_predict      # predict 模块 5 个测试
+PYTHONPATH=src python -m tests.test_noise        # noise 模块 8 个测试
+PYTHONPATH=src python -m tests.test_predict      # predict 模块 7 个测试
+PYTHONPATH=src python -m tests.test_molecule     # molecule 模块 5 个测试
+PYTHONPATH=src python -m tests.test_diagnostics  # diagnostics 模块 4 个测试
 PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 ```
 
@@ -214,6 +227,9 @@ PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 - **`spin_sq`**：在 `solve_sci` / `fci` 路径通过多根 S² 匹配实现真正的目标自旋选态（不可达时 raise）；`sqd` / `direct` 路径显式拒绝。
 - **状态持久化**：`SCIState.save/load` 后通过 `_as_scivector` 重建 PySCF `SCIvector` 元数据，`rdm` / `spin_square` 在加载后仍可用。
 - **LUCJ**：`build_lucj_circuit` 为简化实现（t2 范数驱动 Givens，未做 ffsim 的精确 SVD + 对角 Coulomb Jastrow）；仅支持闭壳层。H₂ 精确复现 FCI，LiH 误差 ~7.5e-4。
+- **`optimize_orbitals`**：基于 scipy Nelder-Mead 无导数优化（旧版数值梯度每梯度分量一次 SQD 对角化，实际不可用）。`learning_rate` 仅保留兼容，不再使用。
+- **`predict` 校准常数**：KS/KT1 来自 H₄/STO-3G 拟合，跨体系只作数量级参考；`plan_sampling` / `depth_budget` 的误差界在同一近似下成立。
+- **`from_pyscf` 冻结 core**：frozen-core 近似冻结 core-valence 关联（~2e-4 Ha 量级，对 LiH），活性 FCI 与"core 严格双占据受限对角化"精确一致。
 
 ## 目录结构
 
@@ -222,8 +238,8 @@ tc_sqd/
 ├── README.md                 # 本文件
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
-├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, noise, predict, hardware, _compat
-├── tests/                    # test_h2_sqd, test_noise, test_predict
+├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, noise, predict, hardware, molecule, diagnostics, _compat
+├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics
 └── examples/h2_sqd_demo.py   # H2 完整演示
 ```
 

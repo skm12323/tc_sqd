@@ -177,7 +177,12 @@ def sample_on_hw(device_name, circuit, physical_qubits=None, shots: int = 8192,
             mit.cals_from_system(nq)
             counts = mit.apply_correction(counts, qubits=nq, **info)
         except Exception as ex:
-            pass  # REM 失败用原始 counts
+            import warnings
+            warnings.warn(
+                f"REM (读出缓解) 失败, 回退到原始 counts: {type(ex).__name__}: {ex}. "
+                f"返回的能量未做读出误差校正, 解读时请注意。", RuntimeWarning,
+                stacklevel=2,
+            )
 
     # counts -> bsm (tc qcloud 字节序: 试两种, 若给 e_hf_ref 自校准)
     from .counts import counts_dict_to_bitstring_matrix

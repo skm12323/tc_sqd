@@ -12,6 +12,12 @@ GPU: cupy 可选。gpu=True 且装了 cupy 时, 密度矩阵运算走 GPU (大�
   - tc 的 GPU 优势 (cupy 后端)
 
 参考: D:\\explore 的方向1/2 (SQD 噪声鲁棒性) 验证了这些通道对 SQD 的影响。
+
+**内存边界**: 密度矩阵是 2^nq × 2^nq 的复数矩阵 (complex128 约 16·4^nq 字节):
+nq=10 约 16 MiB, nq=12 约 0.25 GiB, nq=14 约 4 GiB, nq=16 约 68 GiB。
+因此本模块**只适合小体系 (nq ≲ 12, 对应 ~6 空间轨道)**; 59-qubit 真机无法做
+密度矩阵模拟。大体系 / 真机规模的噪声评估请用 ``predict`` 预测器 (解析模型,
+无内存开销)。
 """
 
 from __future__ import annotations
@@ -93,7 +99,14 @@ def apply_amp_damping(rho, gamma: float, nq: int, gpu: bool = False):
 
 
 def apply_depolarizing(rho, p: float, nq: int, gpu: bool = False):
-    """逐 qubit 去极化: ρ -> (1-p)ρ + p I/2 (单 qubit)。通用 bit 翻转噪声。"""
+    """逐 qubit 去极化 (标准 4-Kraus 通道, 迹保持):
+
+        ρ -> (1-p) ρ + (p/3)(X ρ X + Y ρ Y + Z ρ Z)
+
+    Kraus 算符 ``{√(1-p)·I, √(p/3)·X, √(p/3)·Y, √(p/3)·Z}``; ``p ∈ [0,1]`` 为
+    非恒等 Kraus 的总概率 (X/Y/Z 三等分)。对 nq 个 qubit 逐个施加该通道。
+    通用 bit 翻转 + 相位噪声, 区别于纯振幅阻尼 (T1) / 纯退相干 (T2)。
+    """
     if not 0 <= p <= 1:
         raise ValueError(f"p must be in [0,1], got {p}")
     xp = _xp(gpu)
@@ -121,7 +134,15 @@ def density_to_bitstring_matrix(diag, norb: int, n_samples: int,
     """密度矩阵 diag (计算基概率) -> 采样 bitstring matrix [β0..|α0..] (col=轨道, 升序)。
 
     返回的 bsm 可直接喂 ``recover_configurations`` / ``build_ci_matrix``。
-    布局: bit 0..norb-1 = α 轨道, bit norb.. = β 轨道 (密度矩阵计算基约定)。
+
+    约定
+    ----
+    密度矩阵计算基 (本模块 ``statevector_to_density`` / Kraus 通道一致): 整数 ``i``
+    的 bit ``orb``        (0..norb-1) = α 轨道 ``orb``
+                   ``norb+orb``       = β 轨道 ``orb``
+    输出 bsm 遵循 tc_sqd 全库降序约定 ``[β_{norb-1}..β0 | α_{norb-1}..α0]`` (列内
+    降序, 与 ``counts.py`` / ``bitstring_matrix_to_ci_strs`` 一致), 故
+    β 轨道 ``orb`` -> 列 ``norb-1-orb`` ;  α 轨道 ``orb`` -> 列 ``2*norb-1-orb``。
     """
     xp = _xp(gpu)
     diag = xp.asarray(diag)
@@ -137,6 +158,8 @@ def density_to_bitstring_matrix(diag, norb: int, n_samples: int,
     bs_ints = rng.choice(2 ** nq, size=n_samples, p=prob)
     bsm = np.zeros((n_samples, nq), dtype=bool)
     for orb in range(norb):
-        bsm[:, orb] = (bs_ints >> (norb + orb)) & 1       # β 轨道 orb (high bit)
-        bsm[:, norb + orb] = (bs_ints >> orb) & 1          # α 轨道 orb (low bit)
+        # density bit (norb+orb) = β 轨道 orb  ->  β 块内降序列 norb-1-orb
+        bsm[:, norb - 1 - orb] = (bs_ints >> (norb + orb)) & 1
+        # density bit orb        = α 轨道 orb  ->  α 块内降序列 2*norb-1-orb
+        bsm[:, 2 * norb - 1 - orb] = (bs_ints >> orb) & 1
     return bsm

@@ -428,14 +428,17 @@ def solve_sci(
     else:
         h1e = np.asarray(one_body_tensor)
 
+    # ``n_spin_roots`` / ``spin_tol`` 只在 spin_sq 分支有意义, 但必须无条件 pop,
+    # 否则 spin_sq=None 时它们会残留在 kwargs 里传给 kernel_fixed_space -> TypeError。
+    n_spin_roots = kwargs.pop("n_spin_roots", 10)
+    spin_tol = kwargs.pop("spin_tol", 1e-2)
+
     if spin_sq is not None:
         # Genuine target-spin selection: diagonalise several roots, evaluate
         # S^2 on each, then keep the lowest-energy root whose S^2 matches the
         # target within tolerance.  This is a real constraint (unlike merely
         # setting solver attributes), but it only works when the subspace
         # contains states of the requested spin.
-        n_spin_roots = kwargs.pop("n_spin_roots", 10)
-        spin_tol = kwargs.pop("spin_tol", 1e-2)
         e_roots, c_roots = selected_ci.kernel_fixed_space(
             myci, h1e, two_body_tensor, norb, nelec,
             (np.asarray(ci_strs_a), np.asarray(ci_strs_b)),
@@ -885,7 +888,10 @@ def optimize_orbitals(
 ) -> Tuple[float, np.ndarray, Tuple[np.ndarray, np.ndarray]]:
     """Optimise orbital rotation parameters to minimise SQD energy.
 
-    Uses simple gradient descent on ``k_flat`` (numerical gradient).
+    Uses **Nelder-Mead** (scipy, derivative-free) on ``k_flat`` — the SQD energy
+    is sampled/noisy, so a derivative-free solver is both more robust and far
+    cheaper than the old numerical-gradient loop (which ran one SQD
+    diagonalisation per gradient component and was effectively unusable).
 
     Parameters
     ----------
@@ -897,11 +903,14 @@ def optimize_orbitals(
     nelec : tuple(int, int)
         Must be provided.
     num_iters : int
-        Outer SQD iterations.  Must be >= 0.
+        Number of independent Nelder-Mead restarts (each continues from the
+        previous best ``k_flat``).  Must be >= 0.
     num_steps_grad : int
-        Gradient steps per outer iteration.  Must be >= 1.
+        Nelder-Mead ``maxiter`` per restart.  Must be >= 1.
     learning_rate : float
-        Gradient-descent step size.  Must be positive and finite.
+        Retained for backward compatibility only — derivative-free optimisation
+        does not use a learning rate.  A non-positive value is still rejected to
+        keep the previous API contract.
 
     Returns
     -------
@@ -914,9 +923,8 @@ def optimize_orbitals(
 
     Notes
     -----
-    The optimiser tracks the best-so-far parameters across *all* gradient
-    steps and returns them, so the returned energy is always consistent with
-    the returned ``k_flat``.
+    Tracks the best-so-far parameters across all restarts, so the returned
+    energy is always consistent with the returned ``k_flat``.
     """
     if nelec is None:
         raise ValueError("nelec must be provided for optimize_orbitals.")
@@ -947,24 +955,22 @@ def optimize_orbitals(
         )
         return e, occ
 
-    # Track the best-so-far parameters so a bad final step cannot be returned.
+    # Best-so-far tracking: a bad final step cannot be returned.
     best_energy, best_occ = _energy(k_flat)
     best_k = k_flat.copy()
 
-    eps = 1e-4
-    total_steps = num_iters * num_steps_grad
-    for _ in range(total_steps):
-        e, occ = _energy(k_flat)
-        grad = np.zeros_like(k_flat)
-        for i in range(len(k_flat)):
-            k_plus = k_flat.copy()
-            k_plus[i] += eps
-            ep, _ = _energy(k_plus)
-            grad[i] = (ep - e) / eps
-        k_flat -= learning_rate * grad
-        e_new, occ_new = _energy(k_flat)
-        if e_new < best_energy:
-            best_energy, best_occ, best_k = e_new, occ_new, k_flat.copy()
+    from scipy.optimize import minimize
+
+    k = k_flat.copy()
+    for _ in range(num_iters):
+        res = minimize(
+            lambda x: _energy(x)[0], k, method="Nelder-Mead",
+            options={"maxiter": num_steps_grad, "xatol": 1e-6, "fatol": 1e-8},
+        )
+        k = np.asarray(res.x, dtype=np.float64)
+        e_k, occ_k = _energy(k)
+        if e_k < best_energy:
+            best_energy, best_occ, best_k = e_k, occ_k, k.copy()
 
     return best_energy, best_k, best_occ
 

@@ -58,6 +58,95 @@ def test_density_to_bitstring_matrix():
         assert all(row == [False, False]) or all(row == [True, True])
 
 
+def test_density_to_bitstring_matrix_layout_norb2():
+    """norb=2 时 density 计算基 -> bsm 必须符合全库降序 [β1β0|α1α0]。
+
+    锁住 density_to_bitstring_matrix 的列顺序 (曾因升序/降序反转导致 noise->SQD
+    链路轨道错乱)。density 约定: bit0=α0,bit1=α1,bit2=β0,bit3=β1。
+    """
+    # HF 行列式 α0β0 -> density index = bit0(α0) + bit2(β0) = 1 + 4 = 5
+    diag_hf = np.zeros(16)
+    diag_hf[5] = 1.0
+    bsm = tc_sqd.density_to_bitstring_matrix(diag_hf, norb=2, n_samples=64, seed=0)
+    assert bsm.shape == (64, 4)
+    # 全库降序 [β1,β0,α1,α0]: HF(α0β0 occ) = [0,1,0,1]
+    expected_hf = np.array([False, True, False, True])
+    assert np.all(bsm == expected_hf), f"HF row wrong: {bsm[0]}"
+
+    # 双激发 α1β1 -> density index = bit1(α1) + bit3(β1) = 2 + 8 = 10
+    diag_de = np.zeros(16)
+    diag_de[10] = 1.0
+    bsm2 = tc_sqd.density_to_bitstring_matrix(diag_de, norb=2, n_samples=64, seed=0)
+    expected_de = np.array([True, False, True, False])  # [β1,β0,α1,α0]=[1,0,1,0]
+    assert np.all(bsm2 == expected_de), f"double-exc row wrong: {bsm2[0]}"
+
+
+def _fermion_civec_to_density_psi(civec, ci_strs_a, ci_strs_b, norb):
+    """PySCF selected-CI 向量 (determinant 基) -> noise 模块计算基向量 |ψ>。
+
+    density 约定 (与 density_to_bitstring_matrix 解码一致):
+        bit orb        (0..norb-1) = α 轨道 orb
+        bit (norb+orb)            = β 轨道 orb
+    行列式字符串 bit p = 轨道 p 占据。
+    """
+    nq = 2 * norb
+    psi = np.zeros(2 ** nq, dtype=complex)
+    civec = np.asarray(civec).reshape(len(ci_strs_a), len(ci_strs_b))
+    for ia, sa in enumerate(ci_strs_a):
+        for ib, sb in enumerate(ci_strs_b):
+            amp = civec[ia, ib]
+            if abs(amp) < 1e-15:
+                continue
+            idx = 0
+            for p in range(norb):
+                if (int(sa) >> p) & 1:            # α 轨道 p 占据
+                    idx |= (1 << p)
+            for p in range(norb):
+                if (int(sb) >> p) & 1:            # β 轨道 p 占据
+                    idx |= (1 << (norb + p))
+            psi[idx] += amp
+    return psi
+
+
+def test_density_sqd_end_to_end_h2():
+    """H2 FCI 态 -> density -> 无噪声 -> SQD 应复现 FCI。
+
+    端到端验证 statevector_to_density -> apply_amp_damping(gamma=0) ->
+    density_to_bitstring_matrix -> compute_ground_state_energy(sqd) 整条链路
+    的轨道布局自洽 (任一环节列序错位都会让能量严重偏离 FCI)。
+    """
+    from pyscf import gto, scf, fci
+    from pyscf.fci import cistring
+
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    mf = scf.RHF(mol).run()
+    mo = mf.mo_coeff
+    h1e = mo.T @ mf.get_hcore() @ mo
+    eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl", mol.intor("int2e_sph"),
+                    mo, mo, mo, mo)
+    ecore = mf.energy_nuc()
+    norb = int(mol.nao_nr())
+    nelec = (1, 1)
+
+    e_fci, civec = fci.direct_spin1.kernel(h1e, eri, norb, nelec)
+    ci_a = cistring.make_strings(range(norb), nelec[0])
+    ci_b = cistring.make_strings(range(norb), nelec[1])
+
+    psi = _fermion_civec_to_density_psi(civec, ci_a, ci_b, norb)
+    rho = tc_sqd.statevector_to_density(psi)
+    rho = tc_sqd.apply_amp_damping(rho, gamma=0.0, nq=2 * norb)   # 无噪声: 纯布局验证
+    diag = np.diag(rho).real
+
+    bsm = tc_sqd.density_to_bitstring_matrix(diag, norb=norb,
+                                             n_samples=4000, seed=42)
+    e_sqd = tc_sqd.compute_ground_state_energy(
+        h1e, eri, norb, nelec, ecore=ecore, method="sqd",
+        bitstring_matrix=bsm, max_iterations=3)
+
+    assert abs(e_sqd - (e_fci + ecore)) < 1e-3, (
+        f"density->SQD 偏离 FCI: SQD={e_sqd:.6f}, FCI={e_fci + ecore:.6f}")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

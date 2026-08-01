@@ -69,13 +69,27 @@ from .noise import (
 from .predict import (
     gamma_T1,
     predict_sqd_error,
+    depth_budget,
+    DepthBudget,
     max_depth_for_accuracy,
+    plan_sampling,
+    SamplingPlan,
 )
 from .hardware import (
     select_qubits,
     bitstring_matrix_to_energy,
     load_calibration,
     sample_on_hw,
+)
+from .molecule import (
+    MolecularData,
+    from_pyscf,
+)
+from .diagnostics import (
+    shannon_entropy,
+    subspace_dimension,
+    energy_convergence,
+    sampling_report,
 )
 
 __version__ = "0.1.0"
@@ -125,10 +139,22 @@ __all__ = [
     # predict (噪声容限预测器, 独有)
     "gamma_T1",
     "predict_sqd_error",
+    "depth_budget",
+    "DepthBudget",
     "max_depth_for_accuracy",
+    "plan_sampling",
+    "SamplingPlan",
     # hardware (腾讯真机一站式: 校准/选比特/真机采样/SQD 后处理)
     "select_qubits",
     "bitstring_matrix_to_energy",
     "load_calibration",
     "sample_on_hw",
+    # molecule (from_pyscf 一键分子接口)
+    "MolecularData",
+    "from_pyscf",
+    # diagnostics (采样质量诊断报告)
+    "shannon_entropy",
+    "subspace_dimension",
+    "energy_convergence",
+    "sampling_report",
 ]

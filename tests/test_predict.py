@@ -49,6 +49,66 @@ def test_max_depth_for_accuracy():
     assert d_e < d_g                  # 激发态更严
 
 
+def test_depth_budget_structured():
+    """结构化预算: ok / sampling_limited / t1_unlimited 三种状态 + 与 int 封装一致。"""
+    # 常规: T1 主导, ok
+    b_ok = tc_sqd.depth_budget(15, 30, 8000)
+    assert b_ok.status == "ok"
+    assert b_ok.max_depth is not None and b_ok.max_depth > 0
+    assert b_ok.reason
+    # 激发态更严
+    assert tc_sqd.depth_budget(15, 30, 8000, excited=True).max_depth < b_ok.max_depth
+
+    # 采样误差已 ≥ target: sampling_limited
+    b_samp = tc_sqd.depth_budget(15, 30, shots=4, target=1e-3)
+    assert b_samp.status == "sampling_limited"
+    assert b_samp.max_depth is None
+
+    # 目标宽松 (10 mHa): T1 任意不超, t1_unlimited
+    b_unl = tc_sqd.depth_budget(15, 30, 8000, target=0.01)
+    assert b_unl.status == "t1_unlimited"
+    assert b_unl.max_depth is None
+
+    # 与向后兼容的 int 封装一致
+    assert tc_sqd.max_depth_for_accuracy(15, 30, 8000) == b_ok.max_depth
+    assert tc_sqd.max_depth_for_accuracy(15, 30, 4, target=1e-3) == -1
+    assert tc_sqd.max_depth_for_accuracy(15, 30, 8000, target=0.01) == -2
+
+
+def test_plan_sampling():
+    """plan_sampling: 可行方案按 cost 升序, 全部 < target, 激发态更难。"""
+    r = tc_sqd.plan_sampling(15, 30, target=1.6e-3)
+    assert {"all", "feasible", "best", "target"} <= set(r)
+    assert r["feasible"], "默认网格应有化学精度内方案"
+    assert r["best"] is not None
+
+    # cost 升序
+    costs = [p.cost for p in r["feasible"]]
+    assert costs == sorted(costs)
+
+    # 每个可行方案误差 < target; 不行的都 >= target
+    for p in r["all"]:
+        if p.chemical:
+            assert p.error < r["target"]
+        else:
+            assert p.error >= r["target"]
+
+    # best 有完整字段
+    b = r["best"]
+    for k in ("shots", "depth", "error", "eps_sample", "eps_T1",
+              "dominant", "chemical", "cost"):
+        assert hasattr(b, k)
+
+    # 激发态 (3×) 更难: 可行方案不会比基态更多
+    re = tc_sqd.plan_sampling(15, 30, target=1.6e-3, excited=True)
+    assert len(re["feasible"]) <= len(r["feasible"])
+
+    # shots 权重主导时, 最优方案优先小 shots (深度换精度)
+    r_w = tc_sqd.plan_sampling(15, 30, target=1.6e-3,
+                               shots_cost=1.0, depth_cost=1e-4)
+    assert r_w["best"].shots > 0 and r_w["best"].depth > 0
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):
