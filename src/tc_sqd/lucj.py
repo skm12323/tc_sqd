@@ -246,6 +246,7 @@ def optimize_ansatz_parameters(
     num_restarts: int = 10,
     maxiter: int = 100,
     seed: int = 42,
+    n_seeds: int = 1,
     max_iterations: int = 3,
     verbose: bool = False,
 ) -> dict:
@@ -273,7 +274,12 @@ def optimize_ansatz_parameters(
     maxiter : int
         每次重启的 Nelder-Mead 最大迭代。
     seed : int
-        固定随机种子 (采样 + recover + 重启扰动)。
+        随机种子 (采样 + recover + 重启扰动)。
+    n_seeds : int
+        **每次目标评估的采样种子数**。=1 (默认) 时目标 = 单 seed 的 SQD 能量
+        (确定但可能**过拟合该 seed 的统计涨落**); >1 时目标 = ``n_seeds`` 个
+        不同 seed 的 SQD 能量平均 (跨 seed 稳健, 消除过拟合, 但每次评估成本
+        ×n_seeds)。推荐 3-5。
     max_iterations : int
         SQD 迭代轮数 (传给 diagonalize)。
 
@@ -281,7 +287,7 @@ def optimize_ansatz_parameters(
     -------
     dict
         ``theta`` 最优角度 (与 build_lucj_circuit(theta_list=...) 兼容);
-        ``energy`` 最优 SQD 总能量 (含 ecore);
+        ``energy`` 最优 SQD 总能量 (含 ecore, n_seeds>1 时为多 seed 均值);
         ``energies`` 每重启的最优能量历史;
         ``n_params`` 参数数; ``method="sqd+vqe"``。
     """
@@ -300,21 +306,28 @@ def optimize_ansatz_parameters(
             f"无可优化参数 (K={K}): 检查 nelec/norb/max_excitations。"
         )
 
+    if n_seeds < 1:
+        raise ValueError(f"n_seeds must be >= 1, got {n_seeds}.")
+
     def _objective(theta: np.ndarray) -> float:
-        c = build_lucj_circuit(
-            mf, norb, nelec, ccsd_scale=1.0,
-            max_excitations=max_excitations, theta_list=list(theta),
-        )
-        bsm, probs = sample_from_circuit(
-            c, n_samples=n_samples,
-            random_generator=np.random.default_rng(seed),
-        )
-        e = compute_ground_state_energy(
-            h1e, eri, norb, nelec, ecore=ecore, method="sqd",
-            bitstring_matrix=bsm, probabilities=probs,
-            max_iterations=max_iterations, seed=seed,
-        )
-        return float(e)
+        # 多 seed 平均: 消除固定 seed 的过拟合 (见 docstring n_seeds)
+        es = []
+        for s in range(n_seeds):
+            seed_s = int(seed) + s
+            c = build_lucj_circuit(
+                mf, norb, nelec, ccsd_scale=1.0,
+                max_excitations=max_excitations, theta_list=list(theta),
+            )
+            bsm, probs = sample_from_circuit(
+                c, n_samples=n_samples,
+                random_generator=np.random.default_rng(seed_s),
+            )
+            es.append(compute_ground_state_energy(
+                h1e, eri, norb, nelec, ecore=ecore, method="sqd",
+                bitstring_matrix=bsm, probabilities=probs,
+                max_iterations=max_iterations, seed=seed_s,
+            ))
+        return float(np.mean(es))
 
     from scipy.optimize import minimize
 

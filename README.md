@@ -18,8 +18,11 @@ numpy≥2 / jax 的硬性要求**。
 - CCSD 振幅驱动的 LUCJ ansatz 电路构造（量子态制备侧）+
   **真机深度预算报告**（`circuit_stats` / `lucj_report`：1Q/2Q 门统计，2Q 门数作保守深度代理）
 - **SQD+VQE 混合优化**（`optimize_ansatz_parameters`）：以**采样后的 SQD 总能量**为损失，
-  Nelder-Mead 变分优化 LUCJ 角度（`theta_list` 变分入口，固定 seed 可复现）。
-  LiH 验证：误差 +5.9e-3 → +7.3e-4（改善 5.2 mHa）
+  Nelder-Mead 变分优化 LUCJ 角度（`theta_list` 变分入口，`n_seeds` 多 seed 平均消除过拟合）。
+  LiH 验证：误差 +5.9e-3 → +1.1e-3（改善 ~4.8 mHa）
+- **误差优化关键发现**：SQD 误差根源是**采样子空间覆盖不足**。用 `excited_configurations`
+  强制纳入单双激发配置（经典生成确定性覆盖相关空间），采样仅提供权重——LiH 上
+  **误差 +4e-3 → 1e-16（= FCI 精确），1000 shots 即达，零统计波动**（见 `ansatz_opt_demo`）
 - Pauli 哈密顿量在比特串子空间的投影与对角化（非费米子问题，如 QAOA-MaxCut）
 - **激发态**：`solve_sci(..., n_roots=k)` 取前 k 个本征值（基态 + 低激发态）+
   **激发态采样策略**（`excited_configurations` 生成 HF+单/双激发配置强制纳入子空间，保障 n_roots 变分下界）
@@ -268,7 +271,7 @@ tc_sqd/
     ├── h2_sqd_demo.py        # H2 完整演示
     ├── excited_sqd_demo.py   # 激发态 SQD 全链路 (LiH: n_roots + 激发配置强制纳入)
     ├── noise_aware_demo.py   # 噪声感知全链路 (T1 反卷积 + 误差预测 + 采样规划 + 诊断)
-    └── ansatz_opt_demo.py    # SQD+VQE 混合优化 (LiH: 误差 5.9e-3 → 7.3e-4)
+    └── ansatz_opt_demo.py    # SQD+VQE 混合优化 (LiH: 固定 3.9e-3 → VQE 1.1e-3 → include 单双激发 = FCI)
 ```
 
 > 审查与验证历史（4 轮）见 [`REVIEW.md`](REVIEW.md)。

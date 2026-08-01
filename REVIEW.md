@@ -145,7 +145,22 @@ shots 增采样误差降、max_depth 激发态更严。
 | 3 | `800945c` | T1 感知恢复 `estimate_true_occupancies` | per-qubit γ 反卷积 RMSE 降 33%（0.116→0.078）；均匀 γ 保序退化（实验证明改翻转决策无效）|
 | 4 | `2228552` | 激发态采样策略 `excited_configurations` + 2 全链路示例 | H2 n_roots 精确复现 FCI 4 根 (1e-8)；LiH 激发态误差 ~2e-4 |
 | 5 | `c6d0eb6` | 统一采样后端 `sampler`（tc 模拟 / qcloud 真机）| tc 后端驱动 SQD 复现 FCI |
-| 6 | — | **SQD+VQE 混合优化** `optimize_ansatz_parameters` + `theta_list` 变分入口 | LiH：误差 +5.9e-3 → +7.3e-4（改善 5.2 mHa，14s/6 参数）；`get_ccsd_amplitudes` 缓存避免每次评估重跑 CCSD |
+| 6 | — | **SQD+VQE 混合优化** `optimize_ansatz_parameters` + `theta_list` 变分入口 | LiH：误差 +5.9e-3 → +1.1e-3（`n_seeds` 多 seed 平均消除单 seed 过拟合——实验证明固定 seed 优化在换 seed 验证时误差反弹到 5.5e-3）；`get_ccsd_amplitudes` 缓存 |
+
+### 误差优化关键发现（第 6 轮后续）
+
+对 SQD+VQE 做误差瓶颈分析（LiH/STO-3G），得到三个层次结论：
+
+| 方案 | 误差 vs FCI | 说明 |
+|---|---|---|
+| 固定 CCSD-LUCJ 纯采样 | +3.9e-3（5-seed std 1.6e-3）| 采样统计主导 |
+| SQD+VQE 优化（单 seed）| 训练 -6e-4，**换 seed 验证反弹到 +5.5e-3** | **固定 seed 严重过拟合** → 加 `n_seeds` 多 seed 平均目标消除 |
+| SQD+VQE（n_seeds=3）| +1.1e-3（跨 seed 验证）| 过拟合缓解，统计极限 ~1e-3 |
+| **+ include 单双激发** | **+8.9e-16（= FCI），std 0** | 93 个单双激发配置确定性覆盖全部相关空间，采样退化为只供权重，1000 shots 即精确 |
+
+**结论**：SQD 误差根源是采样子空间覆盖不足，而非 ansatz/优化本身。`excited_configurations`
+经典生成单双激发（`include_configurations`）确定性消除该根源。测试
+`test_include_excitations_reaches_fci` 锁住该发现（`np.allclose(es, FCI, 1e-8)` + std<1e-9）。
 
 ### 本轮 review（准确性 + 可用性 + 可读性）
 

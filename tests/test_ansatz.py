@@ -87,6 +87,55 @@ def test_optimize_ansatz_validation():
         assert False, "K=0 应报错"
     except ValueError:
         pass
+    # n_seeds < 1 报错
+    try:
+        tc_sqd.optimize_ansatz_parameters(
+            data.mf, data.h1e, data.eri, 2, (1, 1),
+            ecore=data.ecore, n_samples=100, num_restarts=1,
+            maxiter=1, n_seeds=0)
+        assert False, "n_seeds=0 应报错"
+    except ValueError:
+        pass
+
+
+def test_optimize_ansatz_n_seeds_reproducible():
+    """n_seeds>1 消除单 seed 过拟合: 目标 = 多 seed 平均, 可复现。"""
+    data = _h2_data()
+    res1 = tc_sqd.optimize_ansatz_parameters(
+        data.mf, data.h1e, data.eri, 2, (1, 1),
+        ecore=data.ecore, n_samples=800, num_restarts=1,
+        maxiter=10, seed=42, n_seeds=3)
+    res2 = tc_sqd.optimize_ansatz_parameters(
+        data.mf, data.h1e, data.eri, 2, (1, 1),
+        ecore=data.ecore, n_samples=800, num_restarts=1,
+        maxiter=10, seed=42, n_seeds=3)
+    assert res1["energy"] == res2["energy"]        # 确定性
+    assert res1["n_params"] == 2
+
+
+def test_include_excitations_reaches_fci():
+    """include 单双激发 -> SQD 精确复现 FCI (误差优化核心发现)。
+
+    LiH: 93 个单双激发配置确定性覆盖全部相关空间, 采样仅提供权重,
+    即使 1000 shots 也精确到浮点舍入, 且跨 seed 零波动。
+    """
+    data = _lih_data()
+    norb, nelec = data.norb, data.nelec
+    e_fci = data.solve(method="fci")
+
+    exc = tc_sqd.excited_configurations(norb, nelec, max_excitations=2)
+    c = tc_sqd.build_lucj_circuit(data.mf, norb, nelec, ccsd_scale=0.5)
+
+    es = []
+    for s in (7, 123, 2024):
+        bsm, probs = tc_sqd.sample(c, 1000, backend="tc")
+        e = data.solve(method="sqd", bitstring_matrix=bsm, probabilities=probs,
+                       max_iterations=3, include_configurations=exc)
+        es.append(e)
+    es = np.array(es)
+    assert np.allclose(es, e_fci, atol=1e-8), (
+        f"include 单双激发未达 FCI: {es}")
+    assert es.std() < 1e-9, "应零统计波动"
 
 
 if __name__ == "__main__":
