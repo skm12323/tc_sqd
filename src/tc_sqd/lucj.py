@@ -478,6 +478,14 @@ def ucj_decomposition(t2, norb: int, nocc: int, nlayers: int = 1,
     list[(kappa, J)]
         每项 ``(kappa, J)`` 均为 (norb, norb); ``layers`` 顺序从内到外作用
         (层 0 先作用)。
+
+    Notes
+    -----
+    **诚实标注**: 本实现是 **UCJ-inspired 简化 SVD** —— kappa 从 occ-vir 左奇异
+    向量 × 奇异值构造、J 对角为启发式分配, **非 ffsim ``UCJOpSpinBalanced``
+    的精确实现**。子空间路径 (:func:`ucj_subspace_energy`) 已验证有效 (H₂ = FCI、
+    LiH 趋近 FCI); 单态期望 (:func:`ucj_matrix_energy`) 仅参考 (见其 docstring
+    局限)。
     """
     nvir = norb - nocc
     t2 = np.asarray(t2, dtype=np.float64)
@@ -564,7 +572,7 @@ def ucj_matrix_energy(layers, h1e, eri, norb: int, nelec):
         for a in range(dim_a):
             for b in range(dim_b):
                 sa, sb = int(ci_strs_a[a]), int(ci_strs_b[b])
-                occ = [(sa >> p) & 1 + (sb >> p) & 1 for p in range(norb)]
+                occ = [((sa >> p) & 1) + ((sb >> p) & 1) for p in range(norb)]
                 phase = 0.0
                 for p in range(norb):
                     for q in range(norb):
@@ -623,7 +631,7 @@ def ucj_subspace_energy(layers, h1e, eri, norb: int, nelec):
         for a in range(dim_a):
             for b in range(dim_b):
                 sa, sb = int(ci_strs_a[a]), int(ci_strs_b[b])
-                occ = [(sa >> p) & 1 + (sb >> p) & 1 for p in range(norb)]
+                occ = [((sa >> p) & 1) + ((sb >> p) & 1) for p in range(norb)]
                 phase = 0.0
                 for p in range(norb):
                     for q in range(norb):
