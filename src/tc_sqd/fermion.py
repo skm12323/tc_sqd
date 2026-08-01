@@ -34,6 +34,7 @@ __all__ = [
     "optimize_orbitals",
     "rotate_integrals",
     "compute_ground_state_energy",
+    "excited_configurations",
 ]
 
 # Spin-convention constants
@@ -222,6 +223,89 @@ def bitstring_matrix_to_ci_strs(
         a_unique = b_unique = merged
 
     return a_unique, b_unique
+
+
+def _det_to_bitstring(a_str, b_str, norb):
+    """α/β determinant 字符串 -> bsm 行 ([β_{n-1}..β0 | α_{n-1}..α0])。"""
+    row = np.zeros(2 * norb, dtype=bool)
+    for p in range(norb):
+        if (int(a_str) >> p) & 1:
+            row[norb + (norb - 1 - p)] = True       # α 轨道 p
+        if (int(b_str) >> p) & 1:
+            row[norb - 1 - p] = True                # β 轨道 p
+    return row
+
+
+def excited_configurations(norb: int, nelec: Tuple[int, int], *,
+                           max_excitations: int = 2) -> np.ndarray:
+    """从 HF determinant 生成含 ≤ ``max_excitations`` 次激发的位串集合。
+
+    用于**激发态 SQD 的采样策略**: 基态采样得到的位串可能不覆盖低激发态所在
+    配置 (变分原理下激发态能量会被高估)。把 HF + 单/双激发 determinant 喂给
+    ``include_configurations`` 强制纳入子空间, 即保障 ``n_roots`` 激发态有
+    变分下界。建议同时按 ``predict.plan_sampling(excited=True)`` 增加 shots
+    (激发态对 T1 的敏感度约 3× 基态)。
+
+    Parameters
+    ----------
+    norb : int
+        空间轨道数。
+    nelec : tuple(int, int)
+        ``(n_alpha, n_beta)``。
+    max_excitations : int
+        总激发次数上限 (α+β 合计)。默认 2 = HF + 单 + 双激发。
+
+    Returns
+    -------
+    ndarray (M, 2*norb), dtype bool
+        HF + 全部 ≤ ``max_excitations`` 次激发 determinant 的位串矩阵
+        (可直接作 ``include_configurations``)。
+
+    Notes
+    -----
+    激发组合数随 ``norb`` 指数增长 (双激发 ~ C(na,2)·C(nvir,2)), 仅适合
+    小-中轨道 (norb ≲ 10)。
+    """
+    if max_excitations < 0:
+        raise ValueError(
+            f"max_excitations must be >= 0, got {max_excitations}."
+        )
+    na, nb = nelec
+    if na > norb or nb > norb:
+        raise ValueError(f"nelec={nelec} inconsistent with norb={norb}.")
+    hf_a = (1 << na) - 1                     # 最低 na 个轨道占据
+    hf_b = (1 << nb) - 1
+    occ_a, vir_a = list(range(na)), list(range(na, norb))
+    occ_b, vir_b = list(range(nb)), list(range(nb, norb))
+
+    def _excite_level(hf, occ, vir, k):
+        """恰好 k 次激发的字符串集合 (0 <= k <= max_excitations)。"""
+        if k == 0:
+            return {int(hf)}
+        prev = _excite_level(hf, occ, vir, k - 1)
+        out = set()
+        for s in prev:
+            for i in occ:
+                if not (s >> i) & 1:
+                    continue
+                for a in vir:
+                    if (s >> a) & 1:
+                        continue
+                    out.add(s ^ (1 << i) ^ (1 << a))
+        return out
+
+    levels_a = [_excite_level(hf_a, occ_a, vir_a, k)
+                for k in range(max_excitations + 1)]
+    levels_b = [_excite_level(hf_b, occ_b, vir_b, k)
+                for k in range(max_excitations + 1)]
+
+    rows = []
+    for ka in range(max_excitations + 1):
+        for kb in range(max_excitations + 1 - ka):   # ka + kb <= max_excitations
+            for a in levels_a[ka]:
+                for b in levels_b[kb]:
+                    rows.append(_det_to_bitstring(a, b, norb))
+    return np.asarray(rows, dtype=bool)
 
 
 def enlarge_batch_from_transitions(

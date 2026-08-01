@@ -18,7 +18,8 @@ numpy≥2 / jax 的硬性要求**。
 - CCSD 振幅驱动的 LUCJ ansatz 电路构造（量子态制备侧）+
   **真机深度预算报告**（`circuit_stats` / `lucj_report`：1Q/2Q 门统计，2Q 门数作保守深度代理）
 - Pauli 哈密顿量在比特串子空间的投影与对角化（非费米子问题，如 QAOA-MaxCut）
-- **激发态**：`solve_sci(..., n_roots=k)` 取前 k 个本征值（基态 + 低激发态）
+- **激发态**：`solve_sci(..., n_roots=k)` 取前 k 个本征值（基态 + 低激发态）+
+  **激发态采样策略**（`excited_configurations` 生成 HF+单/双激发配置强制纳入子空间，保障 n_roots 变分下界）
 - **密度矩阵噪声模拟**（`noise`）：退相干/振幅阻尼/去极化 Kraus 通道，cupy GPU 可选
 - **噪声容限预测器**（`predict`）：输入 T₁/电路/shots → 预测 SQD 基态/激发态精度；
   `depth_budget` 结构化深度预算；`plan_sampling` 自动找最优 (shots, depth) 采样方案
@@ -177,6 +178,7 @@ e = tc_sqd.compute_ground_state_energy(
 | lucj | `circuit_stats(circuit)` | 门统计：n_1q / n_2q / n_multi / n_gates |
 | lucj | `lucj_report(mf, norb, nelec, *, max_excitations, max_depth)` | 真机深度预算：2Q 门数代理 / within_budget / max_entries |
 | fermion | `solve_sci(..., n_roots=k)` | 激发态：n_roots>1 返回前 k 个本征态 list[SCIResult] |
+| fermion | `excited_configurations(norb, nelec, *, max_excitations)` | 从 HF 生成单/双激发位串（喂 include_configurations，激发态采样策略）|
 | noise | `statevector_to_density(psi)` | 纯态 → 密度矩阵 ρ=\|ψ⟩⟨ψ\| |
 | noise | `apply_dephasing(rho, p, nq)` / `apply_amp_damping(rho, γ, nq)` / `apply_depolarizing(rho, p, nq)` | 退相干(T₂)/振幅阻尼(T₁)/去极化 Kraus 通道（gpu=True 走 cupy）|
 | noise | `density_to_bitstring_matrix(diag, norb, n_samples)` | 密度矩阵 diag → 采样 bsm（接 recover_configurations）|
@@ -226,7 +228,10 @@ PYTHONPATH=src python -m tests.test_diagnostics  # diagnostics 模块 4 个测�
 PYTHONPATH=src python -m tests.test_lucj         # lucj 模块 4 个测试
 PYTHONPATH=src python -m tests.test_subsampling  # subsampling 模块 5 个测试
 PYTHONPATH=src python -m tests.test_t1_recovery  # T1 感知恢复 3 个测试
+PYTHONPATH=src python -m tests.test_excited      # 激发态采样策略 4 个测试
 PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
+PYTHONPATH=src python examples/excited_sqd_demo.py  # 激发态 SQD 全链路 (LiH)
+PYTHONPATH=src python examples/noise_aware_demo.py  # 噪声感知全链路 (T1反卷积+规划+诊断)
 ```
 
 ## 限制与已知边界
@@ -249,8 +254,11 @@ tc_sqd/
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
 ├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, noise, predict, hardware, molecule, diagnostics, _compat
-├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_subsampling, test_t1_recovery
-└── examples/h2_sqd_demo.py   # H2 完整演示
+├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_subsampling, test_t1_recovery, test_excited
+└── examples/
+    ├── h2_sqd_demo.py        # H2 完整演示
+    ├── excited_sqd_demo.py   # 激发态 SQD 全链路 (LiH: n_roots + 激发配置强制纳入)
+    └── noise_aware_demo.py   # 噪声感知全链路 (T1 反卷积 + 误差预测 + 采样规划 + 诊断)
 ```
 
 > 审查与验证历史（4 轮）见 [`REVIEW.md`](REVIEW.md)。
