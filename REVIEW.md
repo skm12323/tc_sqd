@@ -242,9 +242,21 @@ tc_sqd 默认走 numpy 1.x 路径（tensorcircuit 0.12 原生兼容）。但若�
 > 待 Vayesta 上游修了 `[tools.setuptools]` typo，`pip install` 即可直接用，第 2 步
 > 的 `.pth` workaround 可省。
 
+## P2 轮（2026-08-02，双 agent 协作）：开壳层 + UCJ 精确化
+
+| 项 | 内容 | 验证 |
+|---|---|---|
+| P2-1 开壳层 | `solve_sci`/三路径原生支持 (na,nb) 不等（`direct_spin1` 后端）+ `recover`/`estimate` na≠nb；CH/STO-3G `(3,2)` 回归 | 三路径 = FCI（1e-8）|
+| P2-1b `from_pyscf` 开壳层 | ROHF（`mol.spin!=0` 自动）、nelec 推断、UHF 显式拒、frozen-core nelec 分减；顺带修 fci 路径 `direct_spin1`（原 `selected_ci` 全空间+不等 nelec 陷局部根差 2e-3）| CH `(4,3)` 一键 → FCI；闭壳层零回归 |
+| P2-2a UCJ 分解 | `ucj_decomposition` t2→SVD→多层 (κ,J)（简化，非 ffsim 精确，已诚实标注）+ `ucj_subspace_energy`（确定性 SQD）| **H₂ = FCI**；LiH 趋近（scale 增大）|
+| P2-2b UCJ 电路 | `build_ucj_circuit`（Û Givens；`include_jastrow=False` 默认，SQD 相位无关省略 RZZ）| H₂ = FCI；LiH **~2e-4 < 简化 LUCJ 7.5e-4**（2Q 门 16）|
+
+**关键发现**：UCJ 单态期望对单层对角 J 无法低于 HF（Û 旋转引入对称禁戒单激发；A 审出 occ 运算符优先级 bug 已修，重验结论成立）；**UCJ 价值在子空间对角化**（确定性 SQD H₂=FCI）。
+
 ## 后续可选改进（非阻塞）
 
-- 完整开壳层（`n_alpha ≠ n_beta` 的独立 alpha/beta CI 空间）与自旋分辨哈密顿量
+- 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
+- UCJ 精确对标 ffsim（完整 J + 多参数 orbital rotation，非简化 SVD）
 - 配置恢复 tie-breaking 随机性的统计性测试
 - 多版本 numpy（1.x / 2.x）CI 矩阵，固化兼容性
 - UCJ 精确化（t2→SVD→Û/J，对标 ffsim）；GPU CI 对角化（大体系路线）
