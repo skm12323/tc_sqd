@@ -313,7 +313,10 @@ def estimate_true_occupancies(
             raise ValueError("t1_gamma must be in [0, 1].")
 
     obs_col = bsm.mean(axis=0)
-    est_col = np.clip(obs_col / (1.0 - gamma_col), 0.0, 1.0)
+    # γ→1 (完全衰减): 观测>0 的位必为真实 1 (clip 到 1), 观测=0 无法反推 (置 0)。
+    # 用 1e-12 下限避免 0/0 -> NaN。
+    denom = np.maximum(1.0 - gamma_col, 1e-12)
+    est_col = np.clip(obs_col / denom, 0.0, 1.0)
 
     # 列序 -> 轨道序: 左半 β (列 k = β 轨道 n-1-k), 右半 α (列 norb+k = α 轨道 n-1-k)
     avg_a = est_col[norb:][::-1]      # α 轨道序 0..norb-1

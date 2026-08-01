@@ -257,7 +257,7 @@ tc_sqd/
 ├── README.md                 # 本文件
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
-├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, noise, predict, hardware, molecule, diagnostics, sampler, _compat
+├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, integrated, noise, predict, hardware, molecule, diagnostics, sampler, _compat
 ├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_subsampling, test_t1_recovery, test_excited, test_sampler
 └── examples/
     ├── h2_sqd_demo.py        # H2 完整演示

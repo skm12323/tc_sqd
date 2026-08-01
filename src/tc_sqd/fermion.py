@@ -517,6 +517,14 @@ def solve_sci(
     n_spin_roots = kwargs.pop("n_spin_roots", 10)
     spin_tol = kwargs.pop("spin_tol", 1e-2)
 
+    if spin_sq is not None and n_roots is not None and n_roots > 1:
+        import warnings
+        warnings.warn(
+            "同时指定 spin_sq 与 n_roots>1: spin_sq 多根 S² 匹配优先, n_roots 被忽略。"
+            "若需要激发态请只给 n_roots (spin_sq=None)。",
+            RuntimeWarning, stacklevel=2,
+        )
+
     if spin_sq is not None:
         # Genuine target-spin selection: diagonalise several roots, evaluate
         # S^2 on each, then keep the lowest-energy root whose S^2 matches the

@@ -71,6 +71,23 @@ def test_estimate_true_occupancies_uniform_gamma_degenerates():
     assert np.allclose(est_a, np.clip(obs_norm, 0, 1), atol=1e-3)
 
 
+def test_estimate_true_occupancies_gamma_edge():
+    """γ 边界: γ=1 无 NaN, γ=0 退化为归一化观测平均。"""
+    _, obs, _, _ = _simulate_t1_samples(n_samples=200)
+    norb, na, nb = 6, 3, 3
+
+    # γ=1 (完全衰减): 有限, 观测>0 的位估计为 1
+    est1_a, est1_b = tc_sqd.estimate_true_occupancies(obs, na, nb, 1.0, norb=norb)
+    assert np.all(np.isfinite(est1_a)) and np.all(np.isfinite(est1_b))
+    assert np.all(est1_a >= 0) and np.all(est1_a <= 1)
+
+    # γ=0 (无 T1): 反卷积 = 观测平均的粒子数归一
+    est0_a, _ = tc_sqd.estimate_true_occupancies(obs, na, nb, 0.0, norb=norb)
+    obs_a = obs[:, norb:].mean(0)[::-1]
+    expect = np.clip(obs_a * na / obs_a.sum(), 0, 1)
+    assert np.allclose(est0_a, expect, atol=1e-6)
+
+
 def test_estimate_true_occupancies_validation():
     """非法 t1_gamma / 布局显式报错。"""
     _, obs, _, _ = _simulate_t1_samples(n_samples=50)

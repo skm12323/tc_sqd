@@ -15,6 +15,21 @@ def test_excited_configurations_h2_covers_full_space():
     assert np.any(np.all(exc == np.array([False, True, False, True]), axis=1))
 
 
+def test_solve_sci_spin_sq_and_n_roots_warns():
+    """同时给 spin_sq + n_roots 触发警告 (spin_sq 优先, n_roots 被忽略)。"""
+    import warnings
+
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    mf = scf.RHF(mol).run()
+    data = tc_sqd.from_pyscf(mf)
+    ci = cistring.make_strings(range(data.norb), 1)
+    with warnings.catch_warnings(record=True) as w:
+        warnings.simplefilter("always")
+        tc_sqd.solve_sci((ci, ci), data.h1e, data.eri, data.norb, (1, 1),
+                         spin_sq=0.0, n_roots=3)
+    assert any("spin_sq" in str(x.message) for x in w), "应触发 spin_sq/n_roots 警告"
+
+
 def test_excited_configurations_max_excitations_controls():
     """max_excitations=0 只含 HF; =1 加单激发。"""
     exc0 = tc_sqd.excited_configurations(3, (2, 2), max_excitations=0)

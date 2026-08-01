@@ -4,7 +4,7 @@
 **静态审查**（受限于运行环境缺少 numpy，无法动态复现数值结果）；第 4 轮在
 `WSL + conda tc` 环境首次完成**动态验证**；随后新增 LUCJ 模块填补"量子侧"空缺。
 
-## 当前状态（第 4 轮验证结论）
+## 当前状态（第 10 轮 review 后）
 
 **全部测试通过。** 运行环境：Python 3.10.20 / numpy 2.2.6 / scipy 1.15.3 /
 pyscf 2.14.0 / tensorcircuit 0.12.0。
@@ -12,12 +12,12 @@ pyscf 2.14.0 / tensorcircuit 0.12.0。
 | 验证项 | 结果 |
 |---|---|
 | `python -m compileall -q src tests examples` | 通过 |
-| `PYTHONPATH=src python -m tests.test_h2_sqd` | **9 个测试函数、约 50 项断言全 PASS** |
-| `PYTHONPATH=src python examples/h2_sqd_demo.py` | 通过 |
+| 10 个测试文件 (`tests/test_*.py`) | **全 PASS**（见五轮增强章节） |
 | H₂/STO-3G（fci / direct / sqd 三方法） | 均 `E = -1.13728383`（= PySCF FCI） |
-| TFIM 3-qubit | SQD 基态 −2.403212，与独立 Kronecker 参考一致 |
-| 多电子 (norb=3, nelec=(2,1)) | `orbital_occupancies` 不再崩溃，占据数正确 |
 | 目标自旋选态 | `spin_sq=0.75` 选中 S=1/2 根；不可达自旋 raise |
+| `from_pyscf` 活性空间 (LiH) | 活性 FCI 与受限对角化一致 (1e-8) |
+| T1 反卷积 | per-qubit γ 不均匀时 RMSE 降 ~33% |
+| 激发态 n_roots (H₂) | 与 FCI 前 4 根一致 (1e-8) |
 
 ## 演进时间线
 
@@ -134,6 +134,31 @@ shots 增采样误差降、max_depth 激发态更严。
 验证：`select_qubits`（模拟 6-qubit 链校准 → 选 T₂ 最大的连通 4 `[0,1,2,3]`）+
 `bitstring_matrix_to_energy`（H₂ HF bsm → −1.116759 = E_HF 正确）。
 
+## 五轮增强（commit c002d9e → c6d0eb6）
+
+在原有核心基础上连续五轮增强，每轮均带独立测试与验证：
+
+| 轮 | 提交 | 内容 | 关键验证 |
+|---|---|---|---|
+| 1 | `c002d9e` | 3 修复（density 布局反转 / REM 静默吞错 / kwargs 泄漏）+ `from_pyscf` + `plan_sampling` + `diagnostics` + `optimize_orbitals`→Nelder-Mead | `from_pyscf` 活性 FCI 与受限对角化一致 (1e-8)；轨道优化 5.9s 收敛（原 60 万次对角化不可用）|
+| 2 | `f7dc19e` | LUCJ 真机深度预算（`circuit_stats`/`lucj_report`，2Q 门代理）+ `max_dim` 子空间限制 | H2 门数断言；max_dim 裁剪维度 ≤ 限制 |
+| 3 | `800945c` | T1 感知恢复 `estimate_true_occupancies` | per-qubit γ 反卷积 RMSE 降 33%（0.116→0.078）；均匀 γ 保序退化（实验证明改翻转决策无效）|
+| 4 | `2228552` | 激发态采样策略 `excited_configurations` + 2 全链路示例 | H2 n_roots 精确复现 FCI 4 根 (1e-8)；LiH 激发态误差 ~2e-4 |
+| 5 | `c6d0eb6` | 统一采样后端 `sampler`（tc 模拟 / qcloud 真机）| tc 后端驱动 SQD 复现 FCI |
+
+### 本轮 review（准确性 + 可用性 + 可读性）
+
+对五轮新增功能做边界/冒烟审查（`_review_smoke.py`），发现并修复 3 处：
+
+| 问题 | 修复 |
+|---|---|
+| `estimate_true_occupancies` γ=1 时 0/0 → **NaN** | 分母下限 1e-12，观测>0 的位 clip 到 1 |
+| `solve_sci` 同时给 spin_sq + n_roots 时 n_roots 被**静默忽略** | 触发 RuntimeWarning 提示 |
+| README 目录漏 `integrated` 模块 | 补上 |
+
+新增回归测试：`test_estimate_true_occupancies_gamma_edge`（γ=1 有限 / γ=0 退化）、
+`test_solve_sci_spin_sq_and_n_roots_warns`。10 个测试文件全 PASS。
+
 ## 已知扩展：与 Vayesta 共存（numpy 2.x 路径）
 
 tc_sqd 默认走 numpy 1.x 路径（tensorcircuit 0.12 原生兼容）。但若要与 **Vayesta**
@@ -184,6 +209,7 @@ tc_sqd 默认走 numpy 1.x 路径（tensorcircuit 0.12 原生兼容）。但若�
 ## 后续可选改进（非阻塞）
 
 - 完整开壳层（`n_alpha ≠ n_beta` 的独立 alpha/beta CI 空间）与自旋分辨哈密顿量
-- `max_dim` 子空间维度限制
 - 配置恢复 tie-breaking 随机性的统计性测试
 - 多版本 numpy（1.x / 2.x）CI 矩阵，固化兼容性
+- **SQD + VQE 混合优化**（LUCJ 角度变分，SQD 能量作损失）—— 已规划为下一轮
+- UCJ 精确化（t2→SVD→Û/J，对标 ffsim）；GPU CI 对角化（大体系路线）
