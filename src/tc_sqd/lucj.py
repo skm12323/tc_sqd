@@ -38,6 +38,7 @@ import tensorcircuit as tc
 __all__ = [
     "get_ccsd_amplitudes",
     "build_lucj_circuit",
+    "optimize_ansatz_parameters",
     "circuit_stats",
     "lucj_report",
 ]
@@ -73,7 +74,17 @@ def get_ccsd_amplitudes(mf):
     -----
     RuntimeWarning
         若 CCSD 未收敛。
+
+    Notes
+    -----
+    结果缓存在 ``mf._tc_sqd_ccsd``, 供多次调用的变分流程复用 (如
+    :func:`optimize_ansatz_parameters` 每次评估都要建电路, 但 CCSD 只需一次)。
+    **mf 的轨道/积分变化后缓存不会自动失效**, 需要重建 mf。
     """
+    cached = getattr(mf, "_tc_sqd_ccsd", None)
+    if cached is not None:
+        return cached
+
     from pyscf import cc as _cc
 
     mycc = _cc.CCSD(mf)
@@ -84,7 +95,12 @@ def get_ccsd_amplitudes(mf):
             RuntimeWarning,
             stacklevel=2,
         )
-    return mycc.t1, mycc.t2, mycc
+    result = (mycc.t1, mycc.t2, mycc)
+    try:
+        mf._tc_sqd_ccsd = result
+    except (AttributeError, TypeError):
+        pass  # 只读/特殊 mf 不可缓存
+    return result
 
 
 def _qubit(spin: str, orb: int, norb: int) -> int:
@@ -99,6 +115,44 @@ def _qubit(spin: str, orb: int, norb: int) -> int:
     return int(norb - 1 - orb)
 
 
+def _lucj_pairs_from_t2(t2, norb, nelec, *, ccsd_scale, max_excitations,
+                        angle_multiplier, theta_list=None):
+    """构造 (strength, spin, occ_orb, vir_orb, theta) 列表。
+
+    - 每个 occ-vir 对 (i,a) 产生 alpha + beta 两个 entry, 角度由 t2 范数推导
+      (H2 的 t1≈0 / Brillouin, 相关能几乎全来自 t2);
+    - ``max_excitations`` 裁剪: 按强度降序取前 K 个 entry;
+    - ``theta_list`` 变分覆盖: 长度必须等于激活 entry 数, 覆盖推导角度
+      (ccsd_scale/angle_multiplier 此时被忽略)。
+    """
+    nocc = nelec[0]
+    nvir = norb - nocc
+    pairs = []
+    for i in range(nocc):
+        for a in range(nvir):
+            strength = float(np.linalg.norm(t2[i, :, a, :])) if t2 is not None else 0.0
+            theta = ccsd_scale * angle_multiplier * strength
+            pairs.append((strength, "a", i, nocc + a, theta))
+            pairs.append((strength, "b", i, nocc + a, theta))
+
+    if max_excitations is not None:
+        pairs.sort(key=lambda x: -x[0])
+        pairs = pairs[:max_excitations]
+
+    if theta_list is not None:
+        theta_list = list(theta_list)
+        if len(theta_list) != len(pairs):
+            raise ValueError(
+                f"theta_list 长度 {len(theta_list)} != 激活 entry 数 {len(pairs)} "
+                f"(max_excitations={max_excitations}, nocc={nocc}, nvir={nvir})。"
+            )
+        pairs = [
+            (s, sp, o, v, float(theta_list[i]))
+            for i, (s, sp, o, v, _) in enumerate(pairs)
+        ]
+    return pairs
+
+
 def build_lucj_circuit(
     mf,
     norb: int,
@@ -107,6 +161,7 @@ def build_lucj_circuit(
     ccsd_scale: float = 1.0,
     max_excitations: Optional[int] = None,
     angle_multiplier: float = 2.0,
+    theta_list: Optional[list] = None,
 ):
     """构造简化 LUCJ 电路: HF 初态 + t2 指导的占据-空 Givens-like 门。
 
@@ -121,6 +176,11 @@ def build_lucj_circuit(
         只取强度 (t2 范数) 最大的前 K 个 occ-vir 对 (None=全部)。
     angle_multiplier : float
         t2 范数 → 旋转角的额外倍数 (CCSD 振幅通常很小, 需放大才能产生足够覆盖)。
+    theta_list : list[float] | None
+        **变分入口**: 覆盖 t2 推导的角度, 长度必须等于激活 entry 数
+        (= min(max_excitations, 2·nocc·nvir) 或全量)。给出后
+        ``ccsd_scale`` / ``angle_multiplier`` 被忽略。配合
+        :func:`optimize_ansatz_parameters` 做 SQD+VQE 优化。
 
     Returns
     -------
@@ -130,7 +190,8 @@ def build_lucj_circuit(
     Raises
     ------
     ValueError
-        若 nelec 非闭壳层 (当前仅支持 n_alpha == n_beta)。
+        若 nelec 非闭壳层 (当前仅支持 n_alpha == n_beta);
+        或 theta_list 长度与激活 entry 数不符。
     """
     if nelec[0] != nelec[1]:
         raise ValueError(
@@ -148,22 +209,12 @@ def build_lucj_circuit(
     for i in range(nelec[1]):
         c.x(_qubit("b", i, norb))
 
-    # 2) 从 t2 提取每个 occ-vir 对 (i,a) 的耦合强度 (Frobenius 范数)。
-    #    H2 的 t1≈0 (Brillouin), 相关能几乎全来自 t2, 故由 t2 驱动。
-    #    SQD 只依赖采样的 |振幅|², 相位/符号不影响子空间构成。
-    nocc = nelec[0]
-    nvir = norb - nocc
-    pairs = []  # (strength, spin, occ_orb, vir_orb, theta)
-    for i in range(nocc):
-        for a in range(nvir):
-            strength = float(np.linalg.norm(t2[i, :, a, :])) if t2 is not None else 0.0
-            theta = ccsd_scale * angle_multiplier * strength
-            pairs.append((strength, "a", i, nocc + a, theta))
-            pairs.append((strength, "b", i, nocc + a, theta))
-
-    if max_excitations is not None:
-        pairs.sort(key=lambda x: -x[0])
-        pairs = pairs[:max_excitations]
+    # 2) occ-vir 对 + 角度 (t2 推导或 theta_list 变分覆盖)
+    pairs = _lucj_pairs_from_t2(
+        t2, norb, nelec, ccsd_scale=ccsd_scale,
+        max_excitations=max_excitations, angle_multiplier=angle_multiplier,
+        theta_list=theta_list,
+    )
 
     # 3) 对每个 occ-vir 对施加 Givens-like 门 (ry + cnot + ry)。
     #    粒子数违例由后续 tc_sqd.recover_configurations 修正。
@@ -177,6 +228,125 @@ def build_lucj_circuit(
         c.ry(q_occ, theta=-theta)
 
     return c
+
+
+# --------------------------------------------------------------------------- #
+#  SQD + VQE 混合优化: LUCJ 角度变分, SQD 能量作损失
+# --------------------------------------------------------------------------- #
+def optimize_ansatz_parameters(
+    mf,
+    h1e,
+    eri,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    ecore: float = 0.0,
+    n_samples: int = 2000,
+    max_excitations: Optional[int] = None,
+    num_restarts: int = 10,
+    maxiter: int = 100,
+    seed: int = 42,
+    max_iterations: int = 3,
+    verbose: bool = False,
+) -> dict:
+    """SQD+VQE 混合优化: Nelder-Mead 优化 LUCJ Givens 角度, 目标 = SQD 能量。
+
+    VQE 的变分原理 (参数优化) 与 SQD 的子空间对角化 (误差吸收) 互补: 电路角度
+    作为变分参数, 以**真实采样后的 SQD 总能量**为损失 (而非期望值), 优化器
+    搜索使 SQD 能量最小的角度。这是 tc_sqd 对"结合 qiskit + tc 优势"的落地之一。
+
+    **确定性**: 固定 ``seed`` 使每次目标评估 (采样 + recover + 对角化) 完全
+    可复现, Nelder-Mead 可稳定收敛。代价: 结果可能过拟合该 seed 的采样;
+    建议 ``num_restarts`` 多次重启并取最优。
+
+    Parameters
+    ----------
+    mf : pyscf scf.RHF 对象
+    h1e, eri, norb, nelec, ecore
+        分子积分与电子数 (SQD 输入)。
+    n_samples : int
+        每次评估的采样数 (shots)。更大更稳但更慢。
+    max_excitations : int | None
+        激活的 occ-vir entry 数 (None = 全部 2·nocc·nvir)。
+    num_restarts : int
+        Nelder-Mead 重启次数 (从 CCSD 初始角度 + 扰动出发)。
+    maxiter : int
+        每次重启的 Nelder-Mead 最大迭代。
+    seed : int
+        固定随机种子 (采样 + recover + 重启扰动)。
+    max_iterations : int
+        SQD 迭代轮数 (传给 diagonalize)。
+
+    Returns
+    -------
+    dict
+        ``theta`` 最优角度 (与 build_lucj_circuit(theta_list=...) 兼容);
+        ``energy`` 最优 SQD 总能量 (含 ecore);
+        ``energies`` 每重启的最优能量历史;
+        ``n_params`` 参数数; ``method="sqd+vqe"``。
+    """
+    from .counts import sample_from_circuit
+    from .fermion import compute_ground_state_energy
+
+    _t1, t2, _mycc = get_ccsd_amplitudes(mf)
+    pairs0 = _lucj_pairs_from_t2(
+        t2, norb, nelec, ccsd_scale=1.0,
+        max_excitations=max_excitations, angle_multiplier=2.0,
+    )
+    theta0 = np.array([p[4] for p in pairs0], dtype=np.float64)
+    K = theta0.size
+    if K <= 0:
+        raise ValueError(
+            f"无可优化参数 (K={K}): 检查 nelec/norb/max_excitations。"
+        )
+
+    def _objective(theta: np.ndarray) -> float:
+        c = build_lucj_circuit(
+            mf, norb, nelec, ccsd_scale=1.0,
+            max_excitations=max_excitations, theta_list=list(theta),
+        )
+        bsm, probs = sample_from_circuit(
+            c, n_samples=n_samples,
+            random_generator=np.random.default_rng(seed),
+        )
+        e = compute_ground_state_energy(
+            h1e, eri, norb, nelec, ecore=ecore, method="sqd",
+            bitstring_matrix=bsm, probabilities=probs,
+            max_iterations=max_iterations, seed=seed,
+        )
+        return float(e)
+
+    from scipy.optimize import minimize
+
+    best_energy = np.inf
+    best_theta = theta0.copy()
+    energies = []
+    rng = np.random.default_rng(seed)
+    for restart in range(num_restarts):
+        if restart == 0:
+            x0 = theta0
+        else:
+            x0 = theta0 + 0.1 * rng.standard_normal(K)
+        res = minimize(
+            _objective, x0, method="Nelder-Mead",
+            options={"maxiter": maxiter, "xatol": 1e-5, "fatol": 1e-7},
+        )
+        x = np.asarray(res.x, dtype=np.float64)
+        e = _objective(x)
+        energies.append(float(e))
+        if e < best_energy:
+            best_energy, best_theta = e, x.copy()
+        if verbose:
+            print(f"[sqd+vqe] restart {restart + 1}/{num_restarts}: "
+                  f"E = {e:.6f}")
+
+    return {
+        "theta": best_theta,
+        "energy": float(best_energy),
+        "energies": energies,
+        "n_params": int(K),
+        "method": "sqd+vqe",
+    }
 
 
 # --------------------------------------------------------------------------- #

@@ -134,9 +134,9 @@ shots 增采样误差降、max_depth 激发态更严。
 验证：`select_qubits`（模拟 6-qubit 链校准 → 选 T₂ 最大的连通 4 `[0,1,2,3]`）+
 `bitstring_matrix_to_energy`（H₂ HF bsm → −1.116759 = E_HF 正确）。
 
-## 五轮增强（commit c002d9e → c6d0eb6）
+## 六轮增强（commit c002d9e → 后续）
 
-在原有核心基础上连续五轮增强，每轮均带独立测试与验证：
+在原有核心基础上连续六轮增强，每轮均带独立测试与验证：
 
 | 轮 | 提交 | 内容 | 关键验证 |
 |---|---|---|---|
@@ -145,6 +145,7 @@ shots 增采样误差降、max_depth 激发态更严。
 | 3 | `800945c` | T1 感知恢复 `estimate_true_occupancies` | per-qubit γ 反卷积 RMSE 降 33%（0.116→0.078）；均匀 γ 保序退化（实验证明改翻转决策无效）|
 | 4 | `2228552` | 激发态采样策略 `excited_configurations` + 2 全链路示例 | H2 n_roots 精确复现 FCI 4 根 (1e-8)；LiH 激发态误差 ~2e-4 |
 | 5 | `c6d0eb6` | 统一采样后端 `sampler`（tc 模拟 / qcloud 真机）| tc 后端驱动 SQD 复现 FCI |
+| 6 | — | **SQD+VQE 混合优化** `optimize_ansatz_parameters` + `theta_list` 变分入口 | LiH：误差 +5.9e-3 → +7.3e-4（改善 5.2 mHa，14s/6 参数）；`get_ccsd_amplitudes` 缓存避免每次评估重跑 CCSD |
 
 ### 本轮 review（准确性 + 可用性 + 可读性）
 
@@ -211,5 +212,4 @@ tc_sqd 默认走 numpy 1.x 路径（tensorcircuit 0.12 原生兼容）。但若�
 - 完整开壳层（`n_alpha ≠ n_beta` 的独立 alpha/beta CI 空间）与自旋分辨哈密顿量
 - 配置恢复 tie-breaking 随机性的统计性测试
 - 多版本 numpy（1.x / 2.x）CI 矩阵，固化兼容性
-- **SQD + VQE 混合优化**（LUCJ 角度变分，SQD 能量作损失）—— 已规划为下一轮
 - UCJ 精确化（t2→SVD→Û/J，对标 ffsim）；GPU CI 对角化（大体系路线）

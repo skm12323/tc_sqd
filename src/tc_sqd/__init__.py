@@ -59,6 +59,7 @@ from .integrated import solve_sqd
 from .lucj import (
     get_ccsd_amplitudes,
     build_lucj_circuit,
+    optimize_ansatz_parameters,
     circuit_stats,
     lucj_report,
 )
@@ -141,6 +142,7 @@ __all__ = [
     # lucj
     "get_ccsd_amplitudes",
     "build_lucj_circuit",
+    "optimize_ansatz_parameters",
     "circuit_stats",
     "lucj_report",
     # noise (密度矩阵 Kraus 噪声模拟, cupy GPU 可选 — qiskit-Aer 风格 + tc GPU)
