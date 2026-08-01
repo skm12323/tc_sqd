@@ -27,6 +27,8 @@ numpy≥2 / jax 的硬性要求**。
   h1e/eri/ecore/norb/nelec，支持活性空间（冻结 core，含 core 平均场修正）
 - **采样诊断**（`diagnostics`）：采样熵 / 子空间维度 / 配置分布 / 能量随 shots 收敛曲线
 - **真机一站式**（`hardware`）：腾讯 qcloud 校准加载 / 选最优 qubit 子图 / 真机采样 / SQD 后处理
+- **统一采样后端**（`sampler`）：`sample(circuit, n_samples, backend="tc"/"qcloud")` 一行切换
+  模拟器 / 真机，下游 SQD 流水线不变（开发用 tc，交付用真机）
 
 ## 安装
 
@@ -196,6 +198,7 @@ e = tc_sqd.compute_ground_state_energy(
 | hardware | `select_qubits(calibration, nq)` | 多起点贪心选最优 nq 物理 qubit 子图（min T₂ 最大化）|
 | hardware | `bitstring_matrix_to_energy(bsm, h1e, eri, norb, nelec, ecore)` | 采样 bsm → recover → 子空间对角化 → 能量 |
 | hardware | `sample_on_hw(device, circuit, physical_qubits, ...)` | 真机采样（编译+submit_task+REM+字节序自校准）|
+| sampler | `sample(circuit, n_samples, *, backend, backend_kwargs)` | 统一采样后端：`"tc"` 模拟 / `"qcloud"` 真机，返回 (bsm, probs) |
 
 ## 比特串约定
 
@@ -229,6 +232,7 @@ PYTHONPATH=src python -m tests.test_lucj         # lucj 模块 4 个测试
 PYTHONPATH=src python -m tests.test_subsampling  # subsampling 模块 5 个测试
 PYTHONPATH=src python -m tests.test_t1_recovery  # T1 感知恢复 3 个测试
 PYTHONPATH=src python -m tests.test_excited      # 激发态采样策略 4 个测试
+PYTHONPATH=src python -m tests.test_sampler      # 统一采样后端 5 个测试
 PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 PYTHONPATH=src python examples/excited_sqd_demo.py  # 激发态 SQD 全链路 (LiH)
 PYTHONPATH=src python examples/noise_aware_demo.py  # 噪声感知全链路 (T1反卷积+规划+诊断)
@@ -253,8 +257,8 @@ tc_sqd/
 ├── README.md                 # 本文件
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
-├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, noise, predict, hardware, molecule, diagnostics, _compat
-├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_subsampling, test_t1_recovery, test_excited
+├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, noise, predict, hardware, molecule, diagnostics, sampler, _compat
+├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_subsampling, test_t1_recovery, test_excited, test_sampler
 └── examples/
     ├── h2_sqd_demo.py        # H2 完整演示
     ├── excited_sqd_demo.py   # 激发态 SQD 全链路 (LiH: n_roots + 激发配置强制纳入)

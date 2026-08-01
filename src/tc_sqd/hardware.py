@@ -197,9 +197,11 @@ def sample_on_hw(device_name, circuit, physical_qubits=None, shots: int = 8192,
             reverse = True
         else:
             reverse = False
-        return {"counts": counts, "bsm": bsm_a, "e_sqd": e_a, "reverse_key": reverse}
+        return {"counts": counts, "bsm": bsm_a, "probs": probs_a,
+                "e_sqd": e_a, "reverse_key": reverse}
 
     e_sqd = None
     if h1e is not None and norb is not None:
         e_sqd = bitstring_matrix_to_energy(bsm_a, h1e, eri, norb, nelec, ecore, probs_a)
-    return {"counts": counts, "bsm": bsm_a, "e_sqd": e_sqd, "reverse_key": False}
+    return {"counts": counts, "bsm": bsm_a, "probs": probs_a,
+            "e_sqd": e_sqd, "reverse_key": False}

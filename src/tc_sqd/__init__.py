@@ -90,6 +90,10 @@ from .molecule import (
     MolecularData,
     from_pyscf,
 )
+from .sampler import (
+    sample,
+    BACKENDS,
+)
 from .diagnostics import (
     shannon_entropy,
     subspace_dimension,
@@ -162,6 +166,9 @@ __all__ = [
     # molecule (from_pyscf 一键分子接口)
     "MolecularData",
     "from_pyscf",
+    # sampler (统一采样后端: tc 模拟 / qcloud 真机)
+    "sample",
+    "BACKENDS",
     # diagnostics (采样质量诊断报告)
     "shannon_entropy",
     "subspace_dimension",
