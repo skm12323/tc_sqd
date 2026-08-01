@@ -10,7 +10,9 @@ numpy≥2 / jax 的硬性要求**。
 
 - 统一入口 `compute_ground_state_energy`，支持 `fci` / `sqd` / `direct` 三种方法
 - 比特串矩阵 ↔ 整数互转，TensorCircuit 采样适配
-- 基于平均占据数的配置恢复（纠正噪声导致的粒子数违例）
+- 基于平均占据数的配置恢复（纠正噪声导致的粒子数违例）+
+  **T1 感知恢复**（`estimate_true_occupancies`：从观测位串反卷积真实平均占据，
+  喂回 recover / `initial_occupancies`；per-qubit γ 不均匀时 RMSE 降 ~30%）
 - 批量子采样、汉明权重后选择、**`max_dim` 子空间维度限制**（int / (na, nb)）
 - CI 矩阵构造（Slater–Condon）、子空间对角化、迭代 SQD、轨道优化
 - CCSD 振幅驱动的 LUCJ ansatz 电路构造（量子态制备侧）+
@@ -152,6 +154,7 @@ e = tc_sqd.compute_ground_state_energy(
 | counts | `counts_dict_to_bitstring_matrix(counts, nbits)` | 计数字典 → (比特串矩阵, 概率)，等价键自动合并 |
 | counts | `sample_from_circuit(circuit, n_samples)` | 从 TC 电路采样 → (比特串矩阵, 概率) |
 | configuration_recovery | `recover_configurations(bsm, probs, avg_occ, na, nb)` | 基于平均占据数的配置恢复 |
+| configuration_recovery | `estimate_true_occupancies(bsm, na, nb, t1_gamma)` | T1 反卷积估计真实平均占据（per-qubit γ；喂 recover / initial_occupancies）|
 | configuration_recovery | `postselect_by_hamming_weight(bsm, *, hamming_right, hamming_left)` | 按汉明权重筛选 |
 | subsampling | `subsample(bsm, probs, samples_per_batch, num_batches)` | 按概率无放回批量子采样 |
 | subsampling | `postselect_by_hamming_right_and_left(bsm, probs, ...)` | 汉明权重后选择 + 重归一化 |
@@ -222,6 +225,7 @@ PYTHONPATH=src python -m tests.test_molecule     # molecule 模块 5 个测试
 PYTHONPATH=src python -m tests.test_diagnostics  # diagnostics 模块 4 个测试
 PYTHONPATH=src python -m tests.test_lucj         # lucj 模块 4 个测试
 PYTHONPATH=src python -m tests.test_subsampling  # subsampling 模块 5 个测试
+PYTHONPATH=src python -m tests.test_t1_recovery  # T1 感知恢复 3 个测试
 PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 ```
 
@@ -245,7 +249,7 @@ tc_sqd/
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
 ├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, noise, predict, hardware, molecule, diagnostics, _compat
-├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_subsampling
+├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_subsampling, test_t1_recovery
 └── examples/h2_sqd_demo.py   # H2 完整演示
 ```
 

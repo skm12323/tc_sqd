@@ -703,14 +703,14 @@ def test_third_review_fixes():
         assert False, "width mismatch should raise"
     except ValueError:
         pass
-    # max_dim must raise NotImplementedError
+    # max_dim now supported (limit_subspace); illegal values raise
     try:
         tc_sqd.diagonalize_fermionic_hamiltonian(
             h1e, eri, (hf_det, np.array([1.0])),
-            samples_per_batch=1, norb=norb, nelec=nelec, max_dim=10,
+            samples_per_batch=1, norb=norb, nelec=nelec, max_dim=0,
         )
-        assert False, "max_dim should raise NotImplementedError"
-    except NotImplementedError:
+        assert False, "max_dim=0 should raise ValueError"
+    except ValueError:
         pass
     print("  PASS: include/carryover/max_iter/norb/max_dim validation")
 
