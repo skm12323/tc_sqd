@@ -133,6 +133,28 @@ def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None) -> MolecularData:
     ------
     ValueError
         非闭壳层 (奇电子)、``n_active`` 超出轨道数、输入既非 Mole 亦非 SCF。
+
+    Notes
+    -----
+    **开壳层 (n_α≠n_β)**: 本函数暂**只支持闭壳层** (奇电子 raise)。开壳层请自备
+    空间积分 (ROHF 式: 单个 ``h1e`` + 共用 ``eri``, 见下), 再交给 SQD 核心
+    (``solve_sci`` 经 PySCF ``direct_spin1`` 原生支持 (na,nb) 不等):
+
+    .. code-block:: python
+
+        mol = gto.M(atom="C 0 0 0; H 0 0 1.1", basis="sto-3g", spin=1)  # 5e
+        mf = scf.UHF(mol).run()            # 或 ROHF; 用 mo_coeff 做空间基
+        mo = mf.mo_coeff
+        h1e = mo.T @ mf.get_hcore() @ mo
+        eri = np.einsum("pqrs,pi,qj,rk,sl->ijkl",
+                        mol.intor("int2e_sph"), mo, mo, mo, mo)
+        nelec = (3, 2)                     # 由自旋/电子数给定, 非自动
+        e = tc_sqd.compute_ground_state_energy(h1e, eri, norb, nelec,
+                                               ecore=mf.energy_nuc(), method="fci")
+
+    真正的 ``from_pyscf`` 原生开壳层支持需重做 frozen-core/``nelec`` 配对逻辑
+    (当前 ``n_act = nelectron//2 - n_core`` 假设闭壳层成对, 见 ``molecule.py``
+    ``from_pyscf`` 主体), 列为后续工作。
     """
     from pyscf import gto, scf
 

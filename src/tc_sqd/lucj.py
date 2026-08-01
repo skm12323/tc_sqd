@@ -192,6 +192,13 @@ def build_lucj_circuit(
     ValueError
         若 nelec 非闭壳层 (当前仅支持 n_alpha == n_beta);
         或 theta_list 长度与激活 entry 数不符。
+
+    Notes
+    -----
+    **开壳层 (n_α≠n_β)**: LUCJ 暂保持闭壳层 (见 P2-1 决议)。开壳层请用 HF 电路
+    (``tc.Circuit`` 手动设 α/β 占据) 或用户自带电路采样, 交给 SQD 核心
+    (``solve_sci`` 原生支持 (na,nb) 不等); 开壳层 LUCJ (α/β 不同占据的 Givens)
+    列为后续工作。
     """
     if nelec[0] != nelec[1]:
         raise ValueError(
