@@ -1,0 +1,13 @@
+# 统一换行符 (根治 Windows 下 LF/CRLF 误报)
+# 所有文本文件: 检出时用 LF, 提交时归一化; 避免 VS Code/git 显示"无内容差异的改动"
+* text=auto eol=lf
+
+# 二进制文件不转换
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.pdf binary
+*.pyc binary
+*.so binary
+*.dll binary
