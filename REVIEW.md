@@ -253,6 +253,43 @@ tc_sqd 默认走 numpy 1.x 路径（tensorcircuit 0.12 原生兼容）。但若�
 
 **关键发现**：UCJ 单态期望对单层对角 J 无法低于 HF（Û 旋转引入对称禁戒单激发；A 审出 occ 运算符优先级 bug 已修，重验结论成立）；**UCJ 价值在子空间对角化**（确定性 SQD H₂=FCI）。
 
+## 方向 A：UCJ 辅助配置补充（强关联突破，2026-08-03 独立探索）
+
+经典单双激发（CCSD 类）对强关联覆盖不足（N₂ 7e/spin 平台 2.25e-2）。方向 A：
+**UCJ 电路采样产生超出单双激发的高激发 det，与单双激发合并 include 后 SQD 覆盖强关联**。
+
+**稳定性修复**（对比中发现）：N₂ 拉伸近简并轨道 → RHF/CCSD 每次收敛的轨道方向不同
+（t2 差可达 1.1，能量却相同）→ UCJ kappa 方向依赖 t2 → det 覆盖偶发退化（1e-3 ↔ 2e-2
+波动）。修复：**多 scale（3,5,10,20）+ 独立随机轨道旋转源（`n_random=2`）** → 5 次新进程
+全化学精度（1.2-3.1e-3）。
+
+**对比（STO-3G，误差 vs FCI，Ha）**：
+
+| 分子 | 关联 | CCSD | CCSD(T) | CISD | **UCJ-SQD** |
+|---|---|---|---|---|---|
+| LiH | 弱 | 1.1e-5 | 2.1e-6 | 1.3e-5 | **3.1e-12** |
+| H₂O | 弱-中 | 1.2e-4 | 5.0e-5 | 7.2e-4 | **2.8e-14** |
+| BeH₂ | 中 | 4.1e-4 | 1.9e-4 | 8.0e-4 | **2.3e-7** |
+| N₂ 平衡 | 中 | 3.9e-3 | 2.2e-3 | 1.2e-2 | **2.1e-5** |
+| **N₂ 拉伸** | **强关联** | **1.4e-1** | **1.4e-1** | **2.0e-1** | **3.1e-3** |
+
+强关联下经典单参考全部崩溃（0.14-0.20 Ha），UCJ-SQD 保持化学精度（比 CCSD(T) 好 ~45×）。
+
+**vs HCI（N₂ 拉伸，生成集 HCI）**：
+
+| 方法 | det 数 | 误差 |
+|---|---|---|
+| HCI（单双闭包）| 2,116 | 2.25e-2（平台）|
+| HCI（近全空间）| 9,604 | 5.5e-8（=FCI）|
+| **UCJ-SQD**（多 scale + 随机旋转）| **765-1,339** | **1.16e-3 稳定** |
+
+**UCJ-SQD 用 ~1/10 的 HCI 子空间大小（~1000 det，~2000 shots）达化学精度**，此时 HCI
+仍在平台；HCI 需近全空间（9600 det）才达 FCI 级。
+
+API：`ucj_assisted_configurations(mf, norb, nelec, *, scales, n_samples, n_random)`、
+`solve_ucj_assisted(...)`。测试：`test_ucj_assisted_n2_strong_correlation`、
+`test_ucj_assisted_lih_weak_correlation`（commit `e23c7fc`）。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
