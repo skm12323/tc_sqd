@@ -741,7 +741,7 @@ def build_ucj_circuit(mf, norb: int, nelec: Tuple[int, int], *,
 def ucj_assisted_configurations(mf, norb: int, nelec: Tuple[int, int], *,
                                 scales: tuple = (3.0, 5.0, 10.0, 20.0),
                                 n_samples: int = 2000, nlayers: int = 1,
-                                seed: int = 42) -> np.ndarray:
+                                seed: int = 42, n_random: int = 2) -> np.ndarray:
     """UCJ 辅助配置补充: 多 scale UCJ 采样合并 + 粒子数恢复 -> 补充 det 集合。
 
     **强关联突破** (方向 A): 经典单双激发 (CCSD 类) 对强关联体系覆盖不足
@@ -769,7 +769,7 @@ def ucj_assisted_configurations(mf, norb: int, nelec: Tuple[int, int], *,
     Returns
     -------
     ndarray (M, 2*norb) bool
-        恢复后的 det 位串集合 (多 scale 合并), 可直接
+        恢复后的 det 位串集合 (多 scale + 随机旋转合并), 可直接
         ``np.vstack([exc, ucj])`` 作 ``include_configurations``。
     """
     from .counts import sample_from_circuit
@@ -780,8 +780,34 @@ def ucj_assisted_configurations(mf, norb: int, nelec: Tuple[int, int], *,
     occ_b = np.zeros(norb)
     occ_b[:nelec[1]] = 1.0
     blocks = []
+    rng = np.random.default_rng(seed)
     for s in scales:
         circ = build_ucj_circuit(mf, norb, nelec, nlayers=nlayers, scale=float(s))
+        bsm, probs = sample_from_circuit(
+            circ, n_samples=n_samples,
+            random_generator=np.random.default_rng(seed))
+        rec, _ = recover_configurations(
+            bsm, probs, (occ_a, occ_b), nelec[0], nelec[1], rand_seed=seed)
+        blocks.append(rec)
+    # 独立随机轨道旋转源: 对 CCSD t2 的近简并轨道方向敏感性鲁棒
+    # (UCJ 电路依赖 t2 方向, 偶发收敛到低覆盖方向; 随机旋转保证高激发 det 总被覆盖)
+    nocc = nelec[0]
+    for _ in range(n_random):
+        circ = tc.Circuit(2 * norb)
+        for i in range(nelec[0]):
+            circ.x(_qubit("a", i, norb))
+        for i in range(nelec[1]):
+            circ.x(_qubit("b", i, norb))
+        for _ in range(int(rng.integers(2, 5))):
+            i = int(rng.integers(0, nocc))
+            a = int(rng.integers(nocc, norb))
+            th = float(rng.uniform(0.5, 2.0))
+            for spin in ("a", "b"):
+                q_occ = _qubit(spin, i, norb)
+                q_vir = _qubit(spin, a, norb)
+                circ.ry(q_occ, theta=th)
+                circ.cnot(q_occ, q_vir)
+                circ.ry(q_occ, theta=-th)
         bsm, probs = sample_from_circuit(
             circ, n_samples=n_samples,
             random_generator=np.random.default_rng(seed))
