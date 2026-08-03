@@ -71,6 +71,7 @@ from .lucj import (
     ucj_assisted_configurations,
     solve_ucj_assisted,
 )
+from .cipsi import solve_cipsi
 from . import noise
 from .noise import (
     has_gpu,
@@ -162,6 +163,8 @@ __all__ = [
     "build_ucj_circuit",
     "ucj_assisted_configurations",
     "solve_ucj_assisted",
+    # cipsi (PT2 筛选生成集扩展: UCJ 种子 -> 近 FCI 精化)
+    "solve_cipsi",
     # noise (密度矩阵 Kraus 噪声模拟, cupy GPU 可选 — qiskit-Aer 风格 + tc GPU)
     "has_gpu",
     "statevector_to_density",

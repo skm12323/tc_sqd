@@ -283,8 +283,13 @@ tc_sqd 默认走 numpy 1.x 路径（tensorcircuit 0.12 原生兼容）。但若�
 | HCI（近全空间）| 9,604 | 5.5e-8（=FCI）|
 | **UCJ-SQD**（多 scale + 随机旋转）| **765-1,339** | **1.16e-3 稳定** |
 
-**UCJ-SQD 用 ~1/10 的 HCI 子空间大小（~1000 det，~2000 shots）达化学精度**，此时 HCI
-仍在平台；HCI 需近全空间（9600 det）才达 FCI 级。
+**⚠️ 口径说明（2026-08-03 修正）**：表中 UCJ-SQD 的 `765-1,339` 是**采样 det 数**
+（bsm 唯一行，对应量子采样成本 ~2000 shots），**不是对角化维度**。SQD 库沿字符串乘积
+表示（`bitstring_matrix_to_ci_strs` 合并 α/β → 对角化维度 = 字符串数²）：N₂ 拉伸 UCJ 种子
+约 89-120 字符串 → 实际对角化维度约 7,900-14,400，**远大于采样 det 数**。HCI 的
+`2,116/9,604` 是具体 det 集合（即其对角化空间）。**两口径不可直接比大小**——UCJ-SQD 的
+真实优势是**采样效率**（少量 shots 达化学精度、量子资源省），而非对角化空间更小；"用 ~1/10
+的 HCI 子空间大小"的旧表述不成立。
 
 API：`ucj_assisted_configurations(mf, norb, nelec, *, scales, n_samples, n_random)`、
 `solve_ucj_assisted(...)`。测试：`test_ucj_assisted_n2_strong_correlation`、
@@ -321,6 +326,35 @@ eigh、多初始向量 davidson、scipy eigsh）后定位为**两个独立库 bu
 **C₂ 结论**：不是方法失效，而是**准简并收敛**的双重边界。UCJ 采样（多 scale + 随机旋转）
 覆盖准简并基态稳定（8/8 成功，~1e-3），比经典单参考（0.035-0.048）好 ~40×。之前增采样量
 （n_samples 3000→8000）不改变覆盖率，问题确在求解器收敛而非采样量。
+
+## 方向 B：CIPSI 迭代结合 UCJ 辅助（高精度 refine 层，2026-08-03 落地）
+
+**定位**：UCJ-SQD 用少量采样 shots 达化学精度；若需更高精度（FCI 级），从 UCJ 种子出发做
+PT2-CIPSI 生成集扩展，1-2 轮即补全到全空间。
+
+**算法**（`src/tc_sqd/cipsi.py`，`solve_cipsi`）：每轮 ① 子空间对角化（复用 solve_sci 稳健
+路径：dim≤1000 numpy eigh / 否则 eigsh）→ ② 取 |c|>ε 主导 dets 枚举单/双激发连接 →
+③ 扩展空间上 `contract_2e` 一次得 <a|H|Ψ>（pyscf 矩阵元，免手写 Slater-Condon 符号坑）→
+④ `PT2=⟨a|H|Ψ⟩²/(E_gs−E_a)` 按 |PT2| 加入 → 重复至全空间 / PT2 收敛。
+
+**实测**（修复后的 FCI 基准上）：
+
+| 体系 | 种子 | UCJ-SQD | solve_cipsi（S+D 或 UCJ 种子） |
+|---|---|---|---|
+| H₂ | S+D | =FCI | **= FCI（1e-6）** |
+| N₂ 拉伸 | S+D（单双平台 2.25e-2）| — | **< 1e-4（突破平台）** |
+| N₂ 拉伸 | S+D ∪ UCJ | 1.05e-3 | **= FCI（-7.1e-13）** |
+| C₂ 平衡 | S+D ∪ UCJ | 3.55e-5 | **= FCI（-4.4e-13）** |
+
+**关键观察**：UCJ 种子字符串已覆盖全空间大部分（N₂ 89-120/120，C₂ 133/210），CIPSI 单双激发
+闭包**一轮补全到全空间 = FCI**。代价是 det 规模 = 全空间（N₂ 14400 / C₂ 44100），与 HCI
+近全空间相当——**CIPSI 是"高精度 refine 层"，不是"少量 det"路线**；UCJ 的真正优势仍在采样效率。
+
+**口径提醒**：`solve_cipsi` 的对角化维度是字符串乘积（闭壳层 α/β 合并），与"采样 det 数"
+（bsm 行）不同口径，勿混用。
+
+API：`solve_cipsi(h1e, eri, norb, nelec, *, seed_bitstring_matrix, max_strings, ...)`。
+测试：`test_cipsi_h2_reaches_fci`、`test_cipsi_n2_stretch_breaks_sd_platform`。
 
 ## 后续可选改进（非阻塞）
 
