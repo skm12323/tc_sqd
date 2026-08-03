@@ -290,6 +290,38 @@ API：`ucj_assisted_configurations(mf, norb, nelec, *, scales, n_samples, n_rand
 `solve_ucj_assisted(...)`。测试：`test_ucj_assisted_n2_strong_correlation`、
 `test_ucj_assisted_lih_weak_correlation`（commit `e23c7fc`）。
 
+### C₂ 边界：准简并双 π + FCI 基准假收敛（2026-08-03 修复）
+
+探索中 C₂/STO-3G（平衡）曾呈现"所有方法失败"（CCSD 3.5e-2、CCSD(T) 4.8e-2、UCJ-SQD 偶发
+负误差 4.9e-2）。逐一排查（粒子数、字符串轨道映射、手写 Slater-Condon 交叉验证、稠密 numpy
+eigh、多初始向量 davidson、scipy eigsh）后定位为**两个独立库 bug**，修复后 UCJ-SQD 稳定化学精度：
+
+1. **FCI 基准假收敛**（`fermion.py` fci 分支）：C₂ FCI 空间 44100 维，双 π 准简并
+   （真基态 **-74.690041** vs 第二根 **-74.639599**，二重简并，差 0.0504 Ha）。
+   `direct_spin1.kernel` 默认 `conv_tol=1e-10` 的 Davidson 在 Ritz 值稳定（`max|de|` 小）但
+   残差仍 ~6e-6 时判定收敛，**假收敛到第二根**（基准虚高 0.0504 Ha；`max_cycle=50` 停在
+   第 17 步，而真基态要第 20 步 restart 后第 43 步才落到）。修复：默认 `conv_tol=1e-12,
+   max_cycle=1000`。其余分子（LiH/H₂O/BeH₂/N₂）FCI 早已收敛，本修复对它们误差变化 < 1e-12。
+
+2. **solve_sci 准简并陷阱**（`fermion.py` solve_sci 基态分支）：即便 FCI 基准正确，子空间内
+   **基态所有主导 det 均已被 S+D∪UCJ 覆盖**（|c|² 0.67~0.003 的 det 全在子空间），
+   `kernel_fixed_space` 的 Davidson 仍从部分初始向量收敛到第二根（-74.6396）而非基态
+   （-74.6900）——同一 H，`eigsh`（ARPACK SA）给 -74.6900，min-h 初始 davidson 给 -74.6389。
+   修复：`solve_sci` 基态对角化改用 scipy `eigsh`（求最小特征值稳健）替代 davidson；
+   小空间（dim ≤ 1000）直接显式建 H + numpy eigh（无 ARPACK k≥N 限制）。
+
+修复后 C₂ 平衡（STO-3G，8 次新进程）：
+
+| 方法 | 误差 (Ha) |
+|---|---|
+| CCSD | 3.5e-2 |
+| CCSD(T) | 4.8e-2 |
+| **UCJ-SQD**（修复后）| **3.5e-5 ~ 1.3e-3（8/8 化学精度）** |
+
+**C₂ 结论**：不是方法失效，而是**准简并收敛**的双重边界。UCJ 采样（多 scale + 随机旋转）
+覆盖准简并基态稳定（8/8 成功，~1e-3），比经典单参考（0.035-0.048）好 ~40×。之前增采样量
+（n_samples 3000→8000）不改变覆盖率，问题确在求解器收敛而非采样量。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端

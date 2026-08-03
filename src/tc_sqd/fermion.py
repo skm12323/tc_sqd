@@ -689,12 +689,47 @@ def solve_sci(
                                      avg_orb_occupancies=(oa, ob), spin_square=s2_i))
         return results
     else:
-        e_tot, civec = selected_ci.kernel_fixed_space(
-            myci, h1e, two_body_tensor, norb, nelec,
-            (np.asarray(ci_strs_a), np.asarray(ci_strs_b)),
-            **kwargs,
-        )
-        e_tot = float(e_tot)
+        # 基态子空间对角化: scipy eigsh (ARPACK) 替代 davidson kernel_fixed_space。
+        # kernel_fixed_space 的 Davidson 在准简并子空间 (如 C2/STO-3G, 双 π 态
+        # 基态与第二根差 ~0.05 Ha, 且基态主要 det 全在子空间内) 会从部分初始向量
+        # 收敛到非最小根, 报告虚高"基态"; ARPACK 的 SA 模式求最小特征值更稳健
+        # (实测同子空间 eigsh 给 -74.6900 而 davidson 给 -74.6396)。
+        from scipy.sparse.linalg import eigsh, LinearOperator
+        from pyscf import ao2mo as _ao2mo
+        from pyscf.fci import direct_spin1
+        ci_a = np.asarray(ci_strs_a)
+        ci_b = np.asarray(ci_strs_b)
+        h2e = direct_spin1.absorb_h1e(h1e, two_body_tensor, norb, nelec, 0.5)
+        h2e = _ao2mo.restore(1, h2e, norb)
+        link = selected_ci._all_linkstr_index((ci_a, ci_b), norb, nelec)
+        na, nb = len(ci_a), len(ci_b)
+        dim = na * nb
+
+        def _hop(v):
+            # ascontiguousarray float64 防护 contract_2e 内部 transpose buffer 布局
+            v = np.ascontiguousarray(v, dtype=np.float64)
+            hv = myci.contract_2e(
+                h2e, selected_ci._as_SCIvector(v, (ci_a, ci_b)),
+                norb, nelec, link).reshape(-1)
+            return np.ascontiguousarray(hv, dtype=np.float64)
+
+        if dim <= 1000:
+            # 小空间: 显式构建 H + numpy eigh (无 ARPACK k>=N 限制, 绝对可靠)
+            H = np.zeros((dim, dim))
+            for col in range(dim):
+                e_col = np.zeros(dim)
+                e_col[col] = 1.0
+                H[:, col] = _hop(e_col)
+            e_vals, c_vec = np.linalg.eigh(H)
+            e_tot = float(e_vals[0])
+            c_1d = c_vec[:, 0]
+        else:
+            op = LinearOperator((dim, dim), matvec=_hop, dtype=np.float64)
+            e_vals, c_vec = eigsh(op, k=1, which="SA", maxiter=2000)
+            e_tot = float(e_vals[0])
+            c_1d = np.asarray(c_vec).ravel()
+        civec = selected_ci._as_SCIvector(
+            c_1d.reshape(na, nb), (ci_a, ci_b))
         # Compute spin
         try:
             s2 = float(selected_ci.spin_square(civec, norb, nelec)[0])
@@ -1300,9 +1335,17 @@ def compute_ground_state_energy(
             # 用 PySCF 标准 FCI (direct_spin1), 精确: selected_ci.kernel_fixed_space
             # 对不等 nelec 的全空间 Davidson 可能陷于局部根 (P2-1b 实测 CH (4,3)
             # 差 2e-3), direct_spin1 无此问题。
+            #
+            # 收敛性坑 (P2-2 实测 C2/STO-3G): 近简并体系的双 π 态能量差 ~0.05 Ha,
+            # 默认 conv_tol=1e-10 时 Davidson 会在 Ritz 值稳定但残差仍 ~6e-6 时
+            # 判定收敛, 假收敛到局部极小 (基准虚高 5e-2)。需更严 tol 才翻越准简并
+            # 落到真基态。默认收紧收敛标准 (用户可通过 kwargs 覆盖)。
             from pyscf import fci as _fci
+            kw = dict(kwargs)
+            kw.setdefault("conv_tol", 1e-12)
+            kw.setdefault("max_cycle", 1000)
             e_elec = _fci.direct_spin1.kernel(
-                h1e_arr, eri_arr, norb, nelec, **kwargs)[0]
+                h1e_arr, eri_arr, norb, nelec, **kw)[0]
             return float(e_elec) + ecore
         result = solve_sci(
             (ci_strs_a, ci_strs_b), h1e_arr, eri_arr, norb, nelec,
