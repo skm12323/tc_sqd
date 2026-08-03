@@ -167,11 +167,11 @@ def test_ucj_assisted_n2_strong_correlation():
                       max_iterations=3, include_configurations=exc)
     err_sd = abs(e_sd - e_fci)
 
-    # UCJ 辅助 (两次调用验证稳定性: CCSD 浮点微差下误差稳健)
+    # UCJ 辅助 (两次调用验证稳定性: 多 scale 对近简并轨道鲁棒)
     for seed in (42, 7):
         e_ucj = tc_sqd.solve_ucj_assisted(
             data.h1e, data.eri, norb, nelec, ecore=data.ecore, mf=data.mf,
-            scale=10, n_samples=5000, seed=seed)
+            seed=seed)
         err_ucj = abs(e_ucj - e_fci)
         assert err_ucj < err_sd * 0.5, (
             f"UCJ 补充未显著改善: ucj_err={err_ucj:.2e}, sd_err={err_sd:.2e}")
@@ -185,7 +185,7 @@ def test_ucj_assisted_lih_weak_correlation():
     e_fci = data.solve(method="fci")
     e = tc_sqd.solve_ucj_assisted(
         data.h1e, data.eri, data.norb, data.nelec, ecore=data.ecore,
-        mf=data.mf, scale=10, n_samples=3000, seed=42)
+        mf=data.mf, scales=(5.0, 10.0), n_samples=1000, seed=42)
     assert abs(e - e_fci) < 1e-6
 
 
