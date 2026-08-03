@@ -150,6 +150,45 @@ def test_ucj_circuit_lih_better_than_lucj():
     assert stats["n_2q"] <= 50   # LiH 6 MO: 2*nocc*nvir = 16
 
 
+def test_ucj_assisted_n2_strong_correlation():
+    """UCJ 辅助: N2 强关联 (7e/spin), S+D 平台 ~2.25e-2 -> UCJ 补充化学精度。
+
+    方向 A 验证: UCJ 电路采样产生超出单双激发的高激发 det, 补充后
+    SQD 误差 ~1e-3 (化学精度)。断言: 显著优于 S+D, 且 < 5e-3。
+    """
+    mol = gto.M(atom="N 0 0 0; N 0 0 2.1", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    norb, nelec = data.norb, data.nelec
+    e_fci = data.solve(method="fci")
+
+    # S+D 基准
+    exc = tc_sqd.excited_configurations(norb, nelec, max_excitations=2)
+    e_sd = data.solve(method="sqd", bitstring_matrix=exc, probabilities=None,
+                      max_iterations=3, include_configurations=exc)
+    err_sd = abs(e_sd - e_fci)
+
+    # UCJ 辅助 (两次调用验证稳定性: CCSD 浮点微差下误差稳健)
+    for seed in (42, 7):
+        e_ucj = tc_sqd.solve_ucj_assisted(
+            data.h1e, data.eri, norb, nelec, ecore=data.ecore, mf=data.mf,
+            scale=10, n_samples=5000, seed=seed)
+        err_ucj = abs(e_ucj - e_fci)
+        assert err_ucj < err_sd * 0.5, (
+            f"UCJ 补充未显著改善: ucj_err={err_ucj:.2e}, sd_err={err_sd:.2e}")
+        assert err_ucj < 5e-3, f"UCJ 辅助应化学精度, got {err_ucj:.2e}"
+
+
+def test_ucj_assisted_lih_weak_correlation():
+    """UCJ 辅助弱关联 (LiH): 单双激发已穷尽, UCJ 补充不破坏 (=FCI)。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    e_fci = data.solve(method="fci")
+    e = tc_sqd.solve_ucj_assisted(
+        data.h1e, data.eri, data.norb, data.nelec, ecore=data.ecore,
+        mf=data.mf, scale=10, n_samples=3000, seed=42)
+    assert abs(e - e_fci) < 1e-6
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

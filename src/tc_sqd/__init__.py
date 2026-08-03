@@ -68,6 +68,8 @@ from .lucj import (
     ucj_matrix_energy,
     ucj_subspace_energy,
     build_ucj_circuit,
+    ucj_assisted_configurations,
+    solve_ucj_assisted,
 )
 from . import noise
 from .noise import (
@@ -158,6 +160,8 @@ __all__ = [
     "ucj_matrix_energy",
     "ucj_subspace_energy",
     "build_ucj_circuit",
+    "ucj_assisted_configurations",
+    "solve_ucj_assisted",
     # noise (密度矩阵 Kraus 噪声模拟, cupy GPU 可选 — qiskit-Aer 风格 + tc GPU)
     "has_gpu",
     "statevector_to_density",

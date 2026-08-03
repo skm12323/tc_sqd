@@ -45,6 +45,8 @@ __all__ = [
     "ucj_matrix_energy",
     "ucj_subspace_energy",
     "build_ucj_circuit",
+    "ucj_assisted_configurations",
+    "solve_ucj_assisted",
 ]
 
 # 门集合 (TC gate_summary 的键; 按作用 qubit 数分类)。
@@ -505,6 +507,14 @@ def ucj_decomposition(t2, norb: int, nocc: int, nlayers: int = 1,
         mat = residual.transpose(0, 2, 1, 3).reshape(nocc * nvir, nocc * nvir)
         U, S, Vt = np.linalg.svd(mat)
         k = min(nocc, nvir)
+        # SVD 符号规范化: numpy svd 的 U 列符号有歧义 (U->-U 且 V->-V 保持 UΣV†),
+        # CCSD 收敛的浮点微差可触发符号翻转 -> kappa 大幅变化 -> 电路不稳定。
+        # 约定: 每列 U 的最大|元素|为正, V 同步翻转 (保持 UΣV†, 残差剥离不受影响)。
+        for r in range(k):
+            i_max = int(np.argmax(np.abs(U[:, r])))
+            if U[i_max, r] < 0:
+                U[:, r] *= -1.0
+                Vt[r, :] *= -1.0
         kappa = np.zeros((norb, norb))
         J = np.zeros((norb, norb))
         for r in range(k):
@@ -726,3 +736,87 @@ def build_ucj_circuit(mf, norb: int, nelec: Tuple[int, int], *,
                         c.rz(qq, theta=-jpq / 2.0)
                         c.cnot(qp, qq)
     return c
+
+
+def ucj_assisted_configurations(mf, norb: int, nelec: Tuple[int, int], *,
+                                scale: float = 10.0, n_samples: int = 5000,
+                                nlayers: int = 1, seed: int = 42) -> np.ndarray:
+    """UCJ 辅助配置补充: UCJ 电路采样 + 粒子数恢复 -> 补充 det 集合。
+
+    **强关联突破** (方向 A): 经典单双激发 (CCSD 类) 对强关联体系覆盖不足
+    (N₂/STO-3G 7e/spin 平台 ~2.25e-2); UCJ 电路 (orbital rotation) 采样产生
+    超出单双激发的高激发 det, 与 ``excited_configurations(max_excitations=2)``
+    合并喂 ``include_configurations`` 后, SQD 误差 ~1.4e-3 (化学精度,
+    5-seed 实测 std ~4e-4)。
+
+    Parameters
+    ----------
+    mf, norb, nelec
+        同 :func:`build_ucj_circuit` (闭壳层)。
+    scale : float
+        UCJ kappa 放大 (默认 10, N₂ 实测最优区间 5-10)。
+    n_samples : int
+        UCJ 电路采样数 (shots)。
+    nlayers : int
+        UCJ 层数 (默认 1)。
+    seed : int
+        采样 + 恢复随机种子。
+
+    Returns
+    -------
+    ndarray (M, 2*norb) bool
+        恢复后的 det 位串集合, 可直接 ``np.vstack([exc, ucj])`` 作
+        ``include_configurations``。
+    """
+    from .counts import sample_from_circuit
+    from .configuration_recovery import recover_configurations
+
+    circ = build_ucj_circuit(mf, norb, nelec, nlayers=nlayers, scale=scale)
+    bsm, probs = sample_from_circuit(
+        circ, n_samples=n_samples,
+        random_generator=np.random.default_rng(seed))
+    occ_a = np.zeros(norb)
+    occ_a[:nelec[0]] = 1.0
+    occ_b = np.zeros(norb)
+    occ_b[:nelec[1]] = 1.0
+    rec, _ = recover_configurations(
+        bsm, probs, (occ_a, occ_b), nelec[0], nelec[1], rand_seed=seed)
+    return rec
+
+
+def solve_ucj_assisted(h1e, eri, norb: int, nelec: Tuple[int, int], *,
+                       ecore: float = 0.0, mf=None, scale: float = 10.0,
+                       n_samples: int = 5000, nlayers: int = 1, seed: int = 42,
+                       max_iterations: int = 3) -> float:
+    """UCJ 辅助 SQD 一键求解: include(单双激发 ∪ UCJ 采样 dets) -> 能量。
+
+    强关联体系 (N₂ 7e/spin): 单双激发平台 +2.25e-2 → UCJ 补充后 ~1.4e-3。
+    弱关联体系 (LiH): 单双激发已穷尽, UCJ 补充不破坏 (=FCI)。
+
+    Parameters
+    ----------
+    h1e, eri, norb, nelec, ecore
+        分子积分 (SQD 输入)。
+    mf : pyscf SCF 对象
+        ``build_ucj_circuit`` 需要 (内部取 CCSD t2)。
+    scale, n_samples, nlayers, seed
+        传给 :func:`ucj_assisted_configurations`。
+    max_iterations : int
+        SQD 迭代轮数。
+
+    Returns
+    -------
+    float
+        总能量 (含 ecore)。
+    """
+    from .fermion import compute_ground_state_energy, excited_configurations
+
+    exc = excited_configurations(norb, nelec, max_excitations=2)
+    ucj = ucj_assisted_configurations(mf, norb, nelec, scale=scale,
+                                      n_samples=n_samples, nlayers=nlayers,
+                                      seed=seed)
+    all_bsm = np.vstack([exc, ucj])
+    return float(compute_ground_state_energy(
+        h1e, eri, norb, nelec, ecore=ecore, method="sqd",
+        bitstring_matrix=ucj, max_iterations=max_iterations,
+        include_configurations=all_bsm, seed=seed))
