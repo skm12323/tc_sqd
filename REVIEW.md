@@ -547,6 +547,26 @@ A3 的 `E(γ)` 外推）。函数保留为通用统计量外推工具，docstrin
 随机，全量测试时 A3 偶发失败）；A3 断言放宽为"化学精度 + 不显著劣化"（ZNE 收益依赖 E(γ)
 曲线形状，方法固有）；CCSD-NO 稀疏度容差 +1→+3（近简并轨道组 CCSD 收敛波动）。
 
+## A4 ph-AFQMC 桥接（2026-08-04，实施路径探明，未跑通）
+
+**目标**（arXiv:2503.05967）：SQD 截断 trial → ph-AFQMC 恢复 O(100)mHa 关联能，突破 SQD
+精度上限。依赖外部 AFQMC 库。
+
+**探明的事实**：
+- `pyscf-afqmc` 不在 PyPI/清华镜像（需 git clone + 代理，WSL NAT 代理不通）。
+- **ipie 0.7.1 已装**（清华镜像可装）。深度面向对象 API，组装需
+  `integrals_from_scf` → `Generic`(ham) → `ParticleHole`(trial) → `UHFWalkers` →
+  propagator → `MPIHandler` → `QMCParams` → `AFQMC(...).run()`。
+- **ipie 0.7.1 源码 bug**（已修）：`from_pyscf.py:374` `print("..." % nchol_max)`
+  字符串无占位符 → TypeError（Cholesky 阶段崩溃）。
+- 反复试错（10 次探测）仍未完全组装：`PhaselessTrotter` 路径、system 对象、以及
+  **SQD MSD trial（MultiDetTrial from civec）对接**接口更深。
+
+**结论**：A4 的技术障碍大（ipie 0.7.1 深度 API + 外部依赖 + ph-AFQMC 计算成本），且
+tc_sqd 小体系（N₂/C₂）SQD 已达 FCI —— ph-AFQMC 增量主要在**真机大体系**场景（受用户
+约束）。建议：留待大体系/真机阶段，改用更成熟的 **ipie 0.6 旧 API**（`from_pyscf` 一键）
+或 NVIDIA CUDA-Q 的 `ipie` 教程路径。已修 bug + 探明接口记录于此，后续接手可省大量探测。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
