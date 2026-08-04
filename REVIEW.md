@@ -498,6 +498,24 @@ E_V 满足（变分原理）：E_V ≥ E_gs，且误差 ≤ ‖(I−P_V)|Ψ_gs�
 **后续可选**（若做）：把多 scale UCJ 收敛性做成可量化指标（如 ‖P_V|Ψ_gs⟩‖ 的估计，
 用采样 det 子空间的 Ritz 重叠近似）；或与 SKQD 的 1/poly 保证做数值对照。
 
+## B3/B4 缺陷修复（2026-08-04，方向探索第一优先"修缺口"）
+
+**B3 激发态 `n_roots>1` 分支 eigsh 修复**（`fermion.py solve_sci`）：多根分支原走
+`selected_ci.kernel_fixed_space`（davidson），与基态分支同款准简并陷阱（C₂ 式跳根虚高）。
+改为与基态分支一致的 scipy `eigsh`（`k=n_roots, which="SA"`，dim≤1000 或求全谱时 numpy eigh）。
+验证（N₂/STO-3G 拉伸，dim=14400）：多根分支基态根 = FCI 基态（diff < 1e-6，eigsh SA 不跳根），
+根升序。注：全空间子空间含非对称态（triplet），FCI direct_spin1 约束 singlet，故只断言基态根。
+
+**B4 carryover 语义统一 + 批内保留 probs**：
+- `solve_sqd`（integrated.py）carryover 从 Hamming-weight postselect（采样层语义）统一为
+  **振幅阈值**（保留上一轮解态 `|c|≥thr·max|c|` 的 det 注入下一轮），与
+  `diagonalize_fermionic_hamiltonian`（fermion.py，默认 1e-4）语义一致。
+- 批量子采样（`num_batches>1`）批内 recover 原用均匀 probs（丢弃原始概率）——`subsample`
+  加 `return_probs`，批内恢复改用真实采样概率。
+
+测试：`test_excited_sqd_n2_stretch_roots_no_root_skip`（B3 准简并不跳根）、
+`test_sqd_carryover_amplitude_threshold` + `test_sqd_batch_probs_preserved`（B4）。全库 99 测试全过。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端

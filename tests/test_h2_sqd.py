@@ -753,6 +753,47 @@ def test_third_review_fixes():
     print()
 
 
+def test_sqd_carryover_amplitude_threshold():
+    """B4: solve_sqd carryover_threshold>0 用振幅阈值 carryover, 不劣化结果。
+
+    统一语义 (与 diagonalize_fermionic_hamiltonian 一致): 保留上一轮解态
+    |c|>=thr·max|c| 的 det 注入下一轮子空间, 替代原 Hamming-weight postselect。
+    验证: 振幅阈值注入高置信 det 不劣化能量 (回归)。
+    """
+    mol, mf, h1e, eri, ecore = build_h2_integrals()
+    norb, nelec = 2, (1, 1)
+    c = make_tc_circuit(norb)
+    bsm, probs = tc_sqd.sample_from_circuit(c, n_samples=500)
+    e_fci = fci.direct_spin1.kernel(h1e, eri, norb, nelec)[0] + ecore
+
+    e0 = tc_sqd.solve_sqd(h1e, eri, norb, nelec, bitstring_matrix=bsm,
+                          probabilities=probs, max_iterations=3)
+    e1 = tc_sqd.solve_sqd(h1e, eri, norb, nelec, bitstring_matrix=bsm,
+                          probabilities=probs, max_iterations=3,
+                          carryover_threshold=1e-4)
+    assert np.isfinite(e0.energy) and np.isfinite(e1.energy)
+    # 振幅阈值 carryover 不劣化 (注入高置信 det)
+    assert abs(e1.energy - e_fci) <= abs(e0.energy - e_fci) + 1e-9, (
+        f"carryover 劣化: with={abs(e1.energy - e_fci):.2e} "
+        f"without={abs(e0.energy - e_fci):.2e}")
+
+
+def test_sqd_batch_probs_preserved():
+    """B4: solve_sqd num_batches>1 批内保留真实 probs (回归)。
+
+    批量子采样时 subsample(return_probs=True) 恢复原始概率, 不再用均匀 probs。
+    非均匀采样概率下 num_batches=2 应正常收敛 (回归, 不崩)。
+    """
+    mol, mf, h1e, eri, ecore = build_h2_integrals()
+    norb, nelec = 2, (1, 1)
+    c = make_tc_circuit(norb)
+    bsm, probs = tc_sqd.sample_from_circuit(c, n_samples=2000)  # 非均匀 probs
+    r = tc_sqd.solve_sqd(h1e, eri, norb, nelec, bitstring_matrix=bsm,
+                         probabilities=probs, num_batches=2, samples_per_batch=500,
+                         max_iterations=2)
+    assert np.isfinite(r.energy)
+
+
 if __name__ == "__main__":
     test_counts()
     test_fermion_sqd()

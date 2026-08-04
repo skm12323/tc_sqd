@@ -62,6 +62,37 @@ def test_excited_sqd_h2_matches_fci_roots():
     assert np.allclose(e_sqd, e_fci, atol=1e-8)
 
 
+def test_excited_sqd_n2_stretch_roots_no_root_skip():
+    """N2/STO-3G 拉伸 (近简并 π/π*, dim=14400): n_roots 多根分支走 eigsh (SA)。
+
+    B3 修复验证: 原 davidson kernel_fixed_space 在准简并子空间会从部分初始向量
+    收敛到非最小根 (虚高"基态"); eigsh SA 求最小根更稳健。
+
+    注: 全空间字符串子空间含非对称 (triplet) 态, FCI direct_spin1 约束 singlet,
+    故只验证**基态根与 FCI 基态一致** (davidson 跳根处) + 根升序。
+    """
+    mol = gto.M(atom="N 0 0 0; N 0 0 2.0", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    norb, nelec = data.norb, data.nelec
+    na, nb = nelec
+
+    # FCI 基态 (电子能量, 加 ecore 对齐)
+    e_fci = fci.direct_spin1.kernel(data.h1e, data.eri, norb, nelec,
+                                    conv_tol=1e-10)[0] + data.ecore
+
+    # 全空间字符串子空间 (N2/STO-3G: 120×120=14400, >1000 → eigsh 路径)
+    strs_a = cistring.make_strings(range(norb), na)
+    strs_b = cistring.make_strings(range(norb), nb)
+    results = tc_sqd.solve_sci((strs_a, strs_b), data.h1e, data.eri,
+                               norb, nelec, n_roots=3)
+    e_sqd = np.array([r.energy for r in results]) + data.ecore
+
+    # 根升序 + 基态根 = FCI 基态 (eigsh SA 不跳根)
+    assert np.all(np.diff(e_sqd) >= -1e-9), f"根未升序: {e_sqd}"
+    assert abs(e_sqd[0] - e_fci) < 1e-6, (
+        f"基态跳根 (虚高): SQD={e_sqd[0]:.8f} FCI={e_fci:.8f} diff={e_sqd[0] - e_fci:.2e}")
+
+
 def test_excited_sqd_lif_with_include_configurations():
     """LiH: 采样 + include_configurations(单双激发) + n_roots 提升激发态精度。
 

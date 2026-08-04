@@ -72,6 +72,8 @@ def subsample(
     samples_per_batch: int,
     num_batches: int,
     rand_seed: Optional[Union[int, np.random.Generator]] = None,
+    *,
+    return_probs: bool = False,
 ) -> list:
     """Subsample *batches* of bitstrings from the input matrix.
 
@@ -86,11 +88,16 @@ def subsample(
     samples_per_batch : int
     num_batches : int
     rand_seed : int | Generator | None
+    return_probs : bool
+        ``True`` 时每个批次返回 ``(bitstrings, probs)`` 元组 (批次内原始归一化
+        概率), 供下游配置恢复使用 —— 避免丢弃原始采样概率 (B4 修复)。
 
     Returns
     -------
-    list of ndarray
-        ``num_batches`` bitstring matrices, each of shape ``(<= samples_per_batch, N)``.
+    list
+        ``return_probs=False``: ``num_batches`` 个 ndarray, 每个 ``(<= spb, N)``。
+        ``return_probs=True``: ``[(bsm_i, probs_i), ...]``, ``probs_i`` 长度与
+        ``bsm_i`` 行数一致。
     """
     bsm = np.asarray(bitstring_matrix)
     if bsm.ndim != 2:
@@ -127,11 +134,13 @@ def subsample(
     probs = probs / total
     S = bsm.shape[0]
 
-    batches = []
+    batch_indices = []
     for _ in range(num_batches):
         idx = rng.choice(S, size=spb, replace=False, p=probs)
-        batches.append(bsm[idx])
-    return batches
+        batch_indices.append(idx)
+    if return_probs:
+        return [(bsm[idx], probs[idx]) for idx in batch_indices]
+    return [bsm[idx] for idx in batch_indices]
 
 
 def limit_subspace(bitstring_matrix: np.ndarray, max_dim, norb: int, *,

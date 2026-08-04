@@ -26,7 +26,12 @@ from .configuration_recovery import (
     postselect_by_hamming_weight,
 )
 from .subsampling import subsample
-from .fermion import bitstring_matrix_to_ci_strs, solve_sci, SCIResult
+from .fermion import (
+    bitstring_matrix_to_ci_strs,
+    solve_sci,
+    SCIResult,
+    _int_to_bits,
+)
 
 __all__ = ["solve_sqd"]
 
@@ -94,7 +99,9 @@ def solve_sqd(
     include_configurations : ndarray, optional
         强制纳入子空间的确定性比特串（如 HF determinant）。
     carryover_threshold : float, in [0, 1]
-        批量子采样时不同迭代间子空间的"遗忘"比例（0 = 仅保留当前批）。
+        振幅阈值 carryover（与 ``diagonalize_fermionic_hamiltonian`` 语义一致, B4 统一）:
+        保留上一轮解态 ``|c| >= carryover_threshold·max|c|`` 的 det, 确定性注入下一轮
+        子空间 (0 = 不启用 carryover)。
     avg_occupancy : (ndarray, ndarray), optional
         初始平均占据数 ``(occ_a, occ_b)``；省略时退化为 HF 占据。
     spin_sq :
@@ -203,35 +210,31 @@ def solve_sqd(
                 "samples_per_batch must be positive when num_batches > 1."
             )
 
-    # 预生成各批比特串（若启用批量子采样）
+    # 预生成各批比特串（若启用批量子采样）。批内恢复使用真实采样概率
+    # (subsample return_probs=True), 不再丢弃原始 probs (B4 修复)。
     bsm_list = []
     if num_batches > 1:
         bsm_list = subsample(
-            bsm_all, probs_all, samples_per_batch, num_batches, rand_seed=rand_seed
+            bsm_all, probs_all, samples_per_batch, num_batches,
+            rand_seed=rand_seed, return_probs=True,
         )
 
     result: Optional[SCIResult] = None
+    # 振幅阈值 carryover (与 diagonalize_fermionic_hamiltonian 语义一致, B4 统一):
+    # 保留上一轮解态 |c| >= carryover_threshold·max|c| 的 det, 确定性注入下一轮
+    # 子空间 —— 保留高置信配置, 替代原 Hamming-weight postselect (采样层语义)。
+    carryover_bsm: Optional[np.ndarray] = None
     for iteration in range(max_iterations):
         if num_batches > 1:
             recovered_blocks = []
-            for bsm in bsm_list:
-                p = np.full(bsm.shape[0], 1.0 / bsm.shape[0])
+            for bsm, p in bsm_list:
                 rec, _ = recover_configurations(
                     bsm, p, (occ_a, occ_b), na, nb, rand_seed=seed
                 )
                 recovered_blocks.append(rec)
-
-            if carryover_threshold == 0.0:
-                all_recovered = (
-                    np.vstack(recovered_blocks) if recovered_blocks else bsm_all
-                )
-            else:
-                pooled = np.vstack([bsm_all] + recovered_blocks)
-                all_recovered = postselect_by_hamming_weight(
-                    pooled,
-                    hamming_left=int(round((1.0 - carryover_threshold) * nb)),
-                    hamming_right=int(round((1.0 - carryover_threshold) * na)),
-                )
+            all_recovered = (
+                np.vstack(recovered_blocks) if recovered_blocks else bsm_all
+            )
         else:
             all_recovered, _ = recover_configurations(
                 bsm_all, probs_all, (occ_a, occ_b), na, nb, rand_seed=seed
@@ -241,6 +244,8 @@ def solve_sqd(
         if include_configurations is not None:
             inc = np.asarray(include_configurations, dtype=bool)
             rec_for_solve = np.vstack([all_recovered, inc])
+        if carryover_bsm is not None:
+            rec_for_solve = np.vstack([rec_for_solve, carryover_bsm])
 
         ci_a, ci_b = bitstring_matrix_to_ci_strs(rec_for_solve)
         result = solve_sci(
@@ -261,6 +266,23 @@ def solve_sqd(
 
         # 用解出的占据数更新平均占据，进入下一次迭代
         occ_a, occ_b = result.sci_state.orbital_occupancies()
+
+        # 振幅阈值 carryover: 提取解态大振幅 det (与 fermion.diagonalize 一致)
+        if carryover_threshold > 0.0:
+            amps = np.abs(np.asarray(result.sci_state.amplitudes))
+            keep = amps >= carryover_threshold * amps.max()
+            ia, ib = np.nonzero(keep)
+            st = result.sci_state
+            carry_rows = []
+            for a_i, b_i in zip(ia, ib):
+                bits_a = _int_to_bits(int(st.ci_strs_a[a_i]), norb)[::-1]
+                bits_b = _int_to_bits(int(st.ci_strs_b[b_i]), norb)[::-1]
+                carry_rows.append(np.concatenate([bits_b, bits_a]))
+            carryover_bsm = (
+                np.array(carry_rows, dtype=bool) if carry_rows else None
+            )
+        else:
+            carryover_bsm = None
 
     assert result is not None
     return result

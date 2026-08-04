@@ -667,25 +667,55 @@ def solve_sci(
         civec = c_roots[best_idx]
         s2 = float(selected_ci.spin_square(civec, norb, nelec)[0])
     elif n_roots is not None and n_roots > 1:
-        # 多根: 前 n_roots 个本征态 (基态 + 低激发态)
-        nroots_eff = min(int(n_roots), len(ci_strs_a) * len(ci_strs_b))
-        e_roots, c_roots = selected_ci.kernel_fixed_space(
-            myci, h1e, two_body_tensor, norb, nelec,
-            (np.asarray(ci_strs_a), np.asarray(ci_strs_b)),
-            nroots=nroots_eff,
-            **kwargs,
-        )
-        e_roots = np.atleast_1d(e_roots)
+        # 多根: 前 n_roots 个本征态 (基态 + 低激发态)。
+        # 与基态分支一致用 scipy eigsh (SA, 准简并稳健) / numpy eigh, 替代
+        # kernel_fixed_space 的 Davidson —— Davidson 在准简并子空间 (如 C2/STO-3G)
+        # 会从部分初始向量收敛到非最小根, 报告虚高"基态"; SA 模式取最小根更稳健。
+        from scipy.sparse.linalg import eigsh, LinearOperator
+        from pyscf import ao2mo as _ao2mo
+        from pyscf.fci import direct_spin1
+        ci_a = np.asarray(ci_strs_a)
+        ci_b = np.asarray(ci_strs_b)
+        h2e = direct_spin1.absorb_h1e(h1e, two_body_tensor, norb, nelec, 0.5)
+        h2e = _ao2mo.restore(1, h2e, norb)
+        link = selected_ci._all_linkstr_index((ci_a, ci_b), norb, nelec)
+        na, nb = len(ci_a), len(ci_b)
+        dim = na * nb
+        nroots_eff = min(int(n_roots), dim)
+
+        def _hop(v):
+            # ascontiguousarray float64 防护 contract_2e 内部 transpose buffer 布局
+            v = np.ascontiguousarray(v, dtype=np.float64)
+            hv = myci.contract_2e(
+                h2e, selected_ci._as_SCIvector(v, (ci_a, ci_b)),
+                norb, nelec, link).reshape(-1)
+            return np.ascontiguousarray(hv, dtype=np.float64)
+
+        if dim <= 1000 or nroots_eff >= dim:
+            # 小空间 / 求全谱: 显式构建 H + numpy eigh (无 ARPACK k>=N 限制)
+            H = np.zeros((dim, dim))
+            for col in range(dim):
+                e_col = np.zeros(dim)
+                e_col[col] = 1.0
+                H[:, col] = _hop(e_col)
+            e_vals, c_vec = np.linalg.eigh(H)
+        else:
+            op = LinearOperator((dim, dim), matvec=_hop, dtype=np.float64)
+            e_vals, c_vec = eigsh(op, k=nroots_eff, which="SA", maxiter=2000)
+
+        e_roots = np.atleast_1d(e_vals[:nroots_eff])
         results = []
-        for e_i, c_i in zip(e_roots, c_roots):
-            st = SCIState(amplitudes=c_i, ci_strs_a=np.asarray(ci_strs_a),
+        for i in range(nroots_eff):
+            c_2d = selected_ci._as_SCIvector(
+                np.asarray(c_vec[:, i]).reshape(na, nb), (ci_a, ci_b))
+            st = SCIState(amplitudes=c_2d, ci_strs_a=np.asarray(ci_strs_a),
                           ci_strs_b=np.asarray(ci_strs_b), norb=norb, nelec=nelec)
             oa, ob = st.orbital_occupancies()
             try:
-                s2_i = float(selected_ci.spin_square(c_i, norb, nelec)[0])
+                s2_i = float(selected_ci.spin_square(c_2d, norb, nelec)[0])
             except Exception:
                 s2_i = 0.0
-            results.append(SCIResult(energy=float(e_i), sci_state=st,
+            results.append(SCIResult(energy=float(e_roots[i]), sci_state=st,
                                      avg_orb_occupancies=(oa, ob), spin_square=s2_i))
         return results
     else:
