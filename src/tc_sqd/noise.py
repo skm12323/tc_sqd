@@ -257,6 +257,9 @@ def zero_noise_extrapolate_t1(
         raise ValueError("gammas 必须在 [0, 1]。")
 
     bsm0 = np.asarray(bitstring_matrix, dtype=bool)
+    # 固定 SQD 链路的随机性 (compute_ground_state_energy -> diagonalize 的
+    # 配置恢复 tie-breaking 需固定 seed, 否则 E(γ) 受全局随机状态影响)。
+    sqd_kwargs.setdefault("seed", seed)
     energies = []
     for g in gammas:
         bsm_noisy = apply_t1_bitstrings(bsm0, float(g), seed=seed)

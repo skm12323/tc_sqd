@@ -503,6 +503,11 @@ def solve_sqd_active(
     ecore: float = 0.0,
     rand_seed: Optional[int] = 0,
     verbose: bool = False,
+    # ---- B1 预算闭环 (增量采样 + 能量收敛停采) ----
+    shots_budget: Optional[int] = None,
+    shots_step: int = 0,
+    energy_tol: Optional[float] = None,
+    usage: Optional[list] = None,
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
 
@@ -549,6 +554,18 @@ def solve_sqd_active(
         配置恢复 tie-breaking 种子。
     verbose : bool
         打印每轮空间/能量/PT2 信息。
+    shots_budget : int | None
+        B1 预算: 总采样预算。``bitstring_matrix`` 行数不足时预生成随机位串补足成
+        采样池 (经典模拟)。``None`` = 用给定 ``bitstring_matrix`` 全量 (原行为)。
+    shots_step : int
+        B1 增量步长: 每轮用池的前 ``n_cur`` 行, ``n_cur`` 逐轮递增 (``>0`` 启用
+        增量采样; ``0`` = 一次性全量, 原行为)。
+    energy_tol : float | None
+        B1 停采阈值: 连续两轮能量变化小于它即停止 (能量已收敛, 省 shots)。
+        ``None`` = 不停采 (原行为)。
+    usage : list | None
+        B1 输出参数: 调用方传空 list, 结束后 ``usage[0]`` 为**实际使用的 shots 数**
+        (预算闭环的量化指标; 不传则只返回能量)。
 
     Returns
     -------
@@ -593,10 +610,25 @@ def solve_sqd_active(
     str_b: list = []
     e_prev = np.inf
 
+    # B1 预算闭环: 采样池 (预算 > 当前行数时补足随机位串) + 增量游标
+    n_pool = bsm.shape[0]
+    if shots_budget is not None and shots_budget > n_pool:
+        rng = np.random.default_rng(rand_seed)
+        extra = rng.random((shots_budget - n_pool, 2 * norb)) > 0.5
+        bsm = np.vstack([bsm, extra])
+        probs = np.concatenate(
+            [probs, np.full(shots_budget - n_pool, 1.0 / n_pool)]
+        )
+        n_pool = shots_budget
+    n_cur = n_pool if shots_step <= 0 else min(shots_step, n_pool)
+
     for r in range(max_rounds):
-        # ① 采样聚焦: 配置恢复 (偏置平均占据) 生成当前基 det, 并入子空间
+        # ① 采样聚焦: 配置恢复 (偏置平均占据) 生成当前基 det, 并入子空间。
+        #    B1 增量采样: 每轮用池的前 n_cur 行 (shots 逐轮递增)。
+        bsm_r = bsm[:n_cur] if shots_step > 0 else bsm
+        probs_r = probs[:n_cur] if shots_step > 0 else probs
         rec, _ = recover_configurations(
-            bsm, probs, (occ_a, occ_b), na, nb, rand_seed=rand_seed
+            bsm_r, probs_r, (occ_a, occ_b), na, nb, rand_seed=rand_seed
         )
         ci_a, ci_b = bitstring_matrix_to_ci_strs(rec, open_shell=open_shell)
         n_before = len(str_a) + len(str_b)
@@ -675,7 +707,15 @@ def solve_sqd_active(
         # PT2 贡献可忽略且能量稳定
         if n_pt2_new == 0 and abs(E - e_prev) < 1e-10:
             break
+        # B1 预算闭环: 能量收敛停采 (ΔE < energy_tol → 已收敛, 省 shots)
+        if energy_tol is not None and r > 0 and abs(E - e_prev) < energy_tol:
+            break
         e_prev = E
+        # B1 增量采样: 扩大下一轮使用的 shots
+        if shots_step > 0:
+            n_cur = min(n_cur + shots_step, n_pool)
 
     E, c2d, sa, sb = sub.diag(str_a, str_b)
+    if usage is not None:
+        usage.append(int(n_cur))
     return float(E) + ecore

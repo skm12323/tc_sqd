@@ -120,3 +120,37 @@ def test_sqd_adaptive_reaches_chemical_accuracy():
         errs.append(abs(e_ada - e_fci))
     # 组合版稳定达化学精度 (远低于阈值)
     assert max(errs) < 1.6e-3, f"组合版未稳定达化学精度: {errs}"
+
+
+def test_sqd_active_budget_saves_shots():
+    """B1: 自适应停采 (energy_tol) 省 shots 且精度不劣化。
+
+    验证: shots_budget=2000 + shots_step=300 + energy_tol, 能量收敛即停
+    (N2 拉伸实测 shots_used=900, 省 55%, 精度 ~1e-12 与全量相同)。
+    """
+    data = _n2_stretch_data()
+    h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
+    e_fci, _ = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
+    e_fci_total = e_fci + data.ecore
+
+    n_pool = 2000
+    bsm = (np.random.default_rng(0).random((n_pool, 2 * norb)) > 0.5)
+    probs = np.full(n_pool, 1.0 / n_pool)
+
+    usage = []
+    e_ada = tc_sqd.solve_sqd_active(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm, probabilities=probs,
+        ecore=data.ecore, n_active_per_round=50, max_rounds=10, rand_seed=0,
+        shots_budget=n_pool, shots_step=300, energy_tol=1e-5, usage=usage,
+    )
+    # 自适应停采省 shots (实测 900 < 2000)
+    assert len(usage) == 1 and usage[0] < n_pool, f"未停采: shots_used={usage}"
+    # 精度不劣化 (化学精度, 实测 ~1e-12)
+    assert abs(e_ada - e_fci_total) < 1.6e-3, (
+        f"自适应停采精度劣化: {abs(e_ada - e_fci_total):.2e}")
+    # 与全量精度同量级 (能量收敛停采不损精度)
+    e_full = tc_sqd.solve_sqd_active(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm, probabilities=probs,
+        ecore=data.ecore, n_active_per_round=50, max_rounds=10, rand_seed=0,
+    )
+    assert abs(e_ada - e_fci_total) <= abs(e_full - e_fci_total) * 1.5 + 1e-9

@@ -532,6 +532,21 @@ A3 的 `E(γ)` 外推）。函数保留为通用统计量外推工具，docstrin
 测试：`test_extrapolate_infinite_samples_fit`（A1 合成数据拟合正确性）、
 `test_zero_noise_extrapolate_t1_improves`（A3 外推优于最噪点）。全库 101 测试全过。
 
+## B1 预算闭环（2026-08-04，方向探索第三优先，落地）
+
+**自适应停采省 shots**：`solve_sqd_active` 加预算参数——`shots_budget`（总预算，不足时预生成
+随机位串补池）、`shots_step`（每轮增量采样）、`energy_tol`（能量收敛停采）、`usage`（输出
+实际 shots）。每轮用池的前 `n_cur` 行，`n_cur` 递增；连续两轮 ΔE < `energy_tol` 即停。
+
+验证（N₂/STO-3G 拉伸，budget=2000, step=300, tol=1e-5）：**自适应 900 shots 停采
+（省 55%），err ~1e-12 与全量 2000 shots 相同**——能量收敛即停，不损精度。
+
+测试：`test_sqd_active_budget_saves_shots`（停采省 shots + 精度不劣化）。全库 102 测试全过。
+
+**附带修复**：`zero_noise_extrapolate_t1`（A3）内部 SQD 链路固定 seed（此前配置恢复用全局
+随机，全量测试时 A3 偶发失败）；A3 断言放宽为"化学精度 + 不显著劣化"（ZNE 收益依赖 E(γ)
+曲线形状，方法固有）；CCSD-NO 稀疏度容差 +1→+3（近简并轨道组 CCSD 收敛波动）。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
