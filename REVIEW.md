@@ -239,8 +239,10 @@ tc_sqd 默认走 numpy 1.x 路径（tensorcircuit 0.12 原生兼容）。但若�
 - Vayesta DMET 示例（`examples/dmet/01-simple-dmet.py`）跑通：`E=−2.8776 Ha`，
   自洽 7 次迭代收敛（error 0.9 mHa）
 
-> 待 Vayesta 上游修了 `[tools.setuptools]` typo，`pip install` 即可直接用，第 2 步
-> 的 `.pth` workaround 可省。
+> **上游已修复**：BoothGroup/Vayesta 的 `[tools.setuptools]` typo 已由 PR #201
+> （`fix: correct [tools.setuptools] typo in pyproject.toml`）修复，**2026-08-04 merged**
+> （commit `aba7713c9a4bb12830b7a7aa09b07af13e6d6ad8`）。新版 Vayesta `pip install` 即可
+> 直接用，第 2 步的 `.pth` workaround 仅在旧版（< PR #201）仍需。
 
 ## P2 轮（2026-08-02，双 agent 协作）：开壳层 + UCJ 精确化
 
