@@ -274,3 +274,128 @@ def zero_noise_extrapolate_t1(
     coef = np.polyfit(g_arr, e_arr, deg=extrapolation_order)
     e_zero = float(coef[-1])  # 常数项 = E(γ=0)
     return e_zero, energies
+
+
+def solve_sqd_robust(
+    h1e,
+    eri,
+    norb: int,
+    nelec,
+    *,
+    bitstring_matrix,
+    probabilities=None,
+    gammas=(0.05, 0.1, 0.2, 0.3),
+    shots_budget: Optional[int] = None,
+    shots_step: int = 0,
+    energy_tol: Optional[float] = None,
+    extrapolation_order: int = 1,
+    ecore: float = 0.0,
+    seed: Optional[int] = 0,
+    verbose: bool = False,
+    **active_kwargs,
+):
+    """鲁棒自适应采样: A3 T1-ZNE × B1 预算闭环 统一 API。
+
+    组合两个已验证的方向, 同时获得**噪声鲁棒**(ZNE 外推 γ→0)与**预算高效**
+    (能量收敛停采省 shots):
+
+      B1 (预算闭环)  ×  A3 (T1 零噪声外推)
+      ──────────────────────────────────────
+      每个 γ 噪声水平下, 用自适应预算的 :func:`solve_sqd_active` (增量采样 +
+      energy_tol 收敛停采) 求收敛能量 E(γ) 与实际 shots 用量;
+      对 E(γ) 做低阶多项式外推得零噪声能量 E(0)。
+
+    Parameters
+    ----------
+    h1e, eri, norb, nelec, ecore
+        分子积分 (SQD 输入)。
+    bitstring_matrix : ndarray (S, 2*norb), bool
+        无噪声采样位串 (采样池; ``shots_budget`` 大于池行数时预生成随机补足)。
+    probabilities : ndarray (S,) | None
+        位串权重。
+    gammas : tuple[float]
+        T1 率网格 (A3 外推点)。
+    shots_budget : int | None
+        B1 总采样预算 (每个 γ 的 solve_sqd_active 采样池上限)。
+    shots_step : int
+        B1 增量采样步长 (0 = 一次性全量)。
+    energy_tol : float | None
+        B1 能量收敛停采阈值。
+    extrapolation_order : int
+        ZNE 外推多项式阶数 (1 = 线性)。
+    seed : int | None
+        T1 翻转 + SQD 链路随机种子 (确定性)。
+    verbose : bool
+        打印每 γ 能量与 shots。
+    **active_kwargs
+        透传给 ``solve_sqd_active`` (如 ``n_active_per_round``, ``max_rounds``)。
+
+    Returns
+    -------
+    dict
+        ``energy``          —— ZNE 外推零噪声能量 (含 ecore);
+        ``energies_by_gamma`` —— 各 γ 收敛能量 (含 ecore);
+        ``shots_by_gamma``   —— 各 γ 实际使用的 shots (B1 停采后);
+        ``total_shots``      —— Σ shots (预算对比指标);
+        ``gammas``           —— γ 网格。
+    """
+    from .cipsi import solve_sqd_active
+
+    if extrapolation_order < 1:
+        raise ValueError(f"extrapolation_order must be >= 1, got {extrapolation_order}.")
+    if len(gammas) < extrapolation_order + 1:
+        raise ValueError(
+            f"gammas 点数 ({len(gammas)}) 不足以拟合 order={extrapolation_order} "
+            f"多项式 (至少需 {extrapolation_order + 1})。"
+        )
+    if any(g < 0 or g > 1 for g in gammas):
+        raise ValueError("gammas 必须在 [0, 1]。")
+
+    # 采样池: 预算 > 池行数时预生成随机补足 (每个 γ 共用同一池, 只做 T1 翻转)
+    bsm0 = np.asarray(bitstring_matrix, dtype=bool)
+    n_pool = bsm0.shape[0]
+    probs0 = probabilities
+    if shots_budget is not None and shots_budget > n_pool:
+        rng = np.random.default_rng(seed)
+        extra = rng.random((shots_budget - n_pool, 2 * norb)) > 0.5
+        bsm0 = np.vstack([bsm0, extra])
+        if probs0 is None:
+            probs0 = np.full(shots_budget, 1.0 / shots_budget)
+        else:
+            probs0 = np.concatenate(
+                [np.asarray(probs0, dtype=np.float64),
+                 np.full(shots_budget - n_pool, 1.0 / n_pool)]
+            )
+        n_pool = shots_budget
+
+    energies = []
+    shots_used = []
+    # 确定性: rand_seed 统一用 seed (active_kwargs 里若传了则弹出, 避免冲突)
+    active_kwargs.pop("rand_seed", None)
+    for g in gammas:
+        bsm_noisy = apply_t1_bitstrings(bsm0, float(g), seed=seed)
+        usage: list = []
+        e = solve_sqd_active(
+            h1e, eri, norb, nelec,
+            bitstring_matrix=bsm_noisy, probabilities=probs0,
+            ecore=ecore, rand_seed=seed,
+            shots_budget=shots_budget, shots_step=shots_step,
+            energy_tol=energy_tol, usage=usage,
+            verbose=verbose, **active_kwargs,
+        )
+        energies.append(float(e))
+        shots_used.append(int(usage[0]) if usage else int(n_pool))
+        if verbose:
+            print(f"[robust] γ={g}: E={e:.6f} shots={shots_used[-1]}")
+
+    e_arr = np.asarray(energies, dtype=np.float64)
+    g_arr = np.asarray(gammas, dtype=np.float64)
+    coef = np.polyfit(g_arr, e_arr, deg=extrapolation_order)
+    e_zero = float(coef[-1])
+    return {
+        "energy": e_zero,
+        "energies_by_gamma": energies,
+        "shots_by_gamma": shots_used,
+        "total_shots": int(sum(shots_used)),
+        "gammas": list(gammas),
+    }

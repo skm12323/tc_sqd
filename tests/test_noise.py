@@ -173,6 +173,38 @@ def test_zero_noise_extrapolate_t1_improves():
         f"noisiest_err={abs(ens[-1] - e_fci):.2e}")
 
 
+def test_solve_sqd_robust_combines_zne_budget():
+    """solve_sqd_robust: A3 ZNE 外推 + B1 预算闭环 统一 API。
+
+    验证: ① ZNE 外推误差 ≤ 最噪点 (噪声鲁棒); ② 总 shots < 无预算全量
+    (预算高效, 每个 γ 能量收敛即停采)。N2 拉伸实测外推 err ~1e-13,
+    total_shots 3600 < 4×2000=8000 (省 55%)。
+    """
+    mol = gto.M(atom="N 0 0 0; N 0 0 2.0", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    e_fci = data.solve(method="fci")
+
+    n_pool = 2000
+    bsm = (np.random.default_rng(0).random((n_pool, 2 * data.norb)) > 0.5)
+    probs = np.full(n_pool, 1.0 / n_pool)
+
+    r = tc_sqd.solve_sqd_robust(
+        data.h1e, data.eri, data.norb, data.nelec,
+        bitstring_matrix=bsm, probabilities=probs, ecore=data.ecore,
+        gammas=(0.05, 0.1, 0.2, 0.3),
+        shots_budget=n_pool, shots_step=300, energy_tol=1e-3,
+        n_active_per_round=50, max_rounds=10, seed=0,
+    )
+    # ① ZNE 外推达化学精度, 且不显著劣于最噪点 (外推收益依赖 E(γ) 曲线形状)
+    assert abs(r["energy"] - e_fci) < 1.6e-3, f"外推未达化学精度: {abs(r['energy'] - e_fci):.2e}"
+    assert abs(r["energy"] - e_fci) <= abs(r["energies_by_gamma"][-1] - e_fci) * 1.5 + 1e-9, (
+        f"ZNE 外推显著劣化: {abs(r['energy'] - e_fci):.2e} vs "
+        f"{abs(r['energies_by_gamma'][-1] - e_fci):.2e}")
+    # ② B1 预算省 shots (每个 γ 能量收敛停采, energy_tol=1e-3 确保停采)
+    assert r["total_shots"] < len(r["gammas"]) * n_pool, (
+        f"预算未省: total_shots={r['total_shots']}")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

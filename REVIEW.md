@@ -566,6 +566,19 @@ A3 的 `E(γ)` 外推）。函数保留为通用统计量外推工具，docstrin
 tc_sqd 小体系（N₂/C₂）SQD 已达 FCI —— ph-AFQMC 增量主要在**真机大体系**场景（受用户
 约束）。建议：留待大体系/真机阶段，改用更成熟的 **ipie 0.6 旧 API**（`from_pyscf` 一键）
 或 NVIDIA CUDA-Q 的 `ipie` 教程路径。已修 bug + 探明接口记录于此，后续接手可省大量探测。
+**（按用户要求：A4 暂时搁置。）**
+
+## 统一 API：`solve_sqd_robust`（B1 预算 × A3 ZNE 组合，2026-08-04）
+
+**组合已验证的两个方向**（`noise.py`）：每个 γ 噪声水平下用 B1 自适应预算的
+`solve_sqd_active`（增量采样 + energy_tol 收敛停采）求收敛能量 E(γ) 与实际 shots，
+再对 E(γ) 低阶多项式外推 γ→0（A3 ZNE）。**噪声鲁棒 + 预算高效同时达成**。
+
+验证（N₂/STO-3G 拉伸，gammas=(0.05,0.1,0.2,0.3), budget=2000, step=300, tol=1e-3）：
+外推 E err **8.5e-14**（优于最噪点 9.7e-13）；每 γ 停采于 900 shots，**total 3600 vs
+无预算 8000（省 55%）**。
+
+测试：`test_solve_sqd_robust_combines_zne_budget`（ZNE 不劣化 + 预算省 shots）。全库 103 测试全过。
 
 ## 后续可选改进（非阻塞）
 

@@ -92,6 +92,7 @@ from .noise import (
     density_to_bitstring_matrix,
     apply_t1_bitstrings,
     zero_noise_extrapolate_t1,
+    solve_sqd_robust,
 )
 from .predict import (
     gamma_T1,
@@ -197,6 +198,7 @@ __all__ = [
     "density_to_bitstring_matrix",
     "apply_t1_bitstrings",
     "zero_noise_extrapolate_t1",
+    "solve_sqd_robust",
     # predict (噪声容限预测器, 独有)
     "gamma_T1",
     "predict_sqd_error",
