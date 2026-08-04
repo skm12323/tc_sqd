@@ -455,8 +455,10 @@ API：`solve_sqd_active(h1e, eri, norb, nelec, *, bitstring_matrix, max_strings,
 adaptive 均 **6/6**（覆盖率根治确认）。但 adaptive 误差略差于单独 active（mean 1.9e-6 vs
 4.0e-7；极低采样 n=15~40 亦然）——换基每轮作废 det 累积，丢失 PT2 覆盖收益，表示层改善
 不足以弥补。**结论**：`solve_sqd_active` 为实际推荐（简单、更准、稳定）；`solve_sqd_adaptive`
-保留为"表示层+选择层"统一框架（输出自然基积分，可接 `solve_cipsi` 精化利用方向①稀疏度
-收益），但不声称优于 active。测试断言相应调整为"稳定达化学精度"。
+保留为"表示层+选择层"统一框架，但不声称优于 active。**换基+CIPSI 验证（2026-08-04）**：
+受限 CIPSI 在 MO 与自然基下误差相同（~2.2e-2，均卡 S+D 平台）——CIPSI 的 PT2 选态已是
+最优排序，抵消基的稀疏度差异，方向①稀疏度收益在"PT2 自适应选态"场景不体现（只体现在
+确定性 top-K 截断场景）。测试断言相应调整为"稳定达化学精度"。
 
 ## 方向③：拟 Krylov 理论化（多 scale UCJ 的形式化表述，2026-08-04 文档）
 
