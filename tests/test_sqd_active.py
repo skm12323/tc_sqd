@@ -93,3 +93,30 @@ def test_sqd_active_subspace_limited():
     err_lim = abs(e_lim - e_fci)
     # 受限子空间 (≤100×100 维, 全空间 120×120=14400) 达化学精度
     assert err_lim < 1.6e-3, f"受限主动采样未达化学精度: {err_lim:.2e}"
+
+
+def test_sqd_adaptive_reaches_chemical_accuracy():
+    """组合版 (换基表示层 + PT2 选择层) 稳定达化学精度。
+
+    多 seed 验证 (REVIEW 方向②): 纯采样 0/6 达化学精度 (C₂ 3/8 式覆盖不稳),
+    active 与 adaptive 均 6/6。组合版因换基每轮作废 det 累积, 误差略差于单独
+    active (N2 拉伸 n=100: mean 1.9e-6 vs 4e-7), 但稳定在远低于化学精度的水平
+    —— 断言"稳定达化学精度", 不声称优于 active (实测组合不占优)。
+    """
+    data = _n2_stretch_data()
+    h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
+    e_fci, _ = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
+
+    n_samples = 100
+    bsm = (np.random.default_rng(0).random((n_samples, 2 * norb)) > 0.5)
+    probs = np.full(n_samples, 1.0 / n_samples)
+
+    errs = []
+    for seed in range(3):
+        e_ada = tc_sqd.solve_sqd_adaptive(
+            h1e, eri, norb, nelec, bitstring_matrix=bsm, probabilities=probs,
+            n_active_per_round=50, max_rounds=10, rand_seed=seed,
+        )
+        errs.append(abs(e_ada - e_fci))
+    # 组合版稳定达化学精度 (远低于阈值)
+    assert max(errs) < 1.6e-3, f"组合版未稳定达化学精度: {errs}"

@@ -309,6 +309,181 @@ def solve_cipsi(
 
 
 # --------------------------------------------------------------------------- #
+#  自适应 SQD (方向①②组合): 自洽换基表示层 + 受限 PT2 选态选择层
+# --------------------------------------------------------------------------- #
+def solve_sqd_adaptive(
+    one_body_tensor: np.ndarray,
+    two_body_tensor: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    bitstring_matrix: np.ndarray,
+    probabilities: Optional[np.ndarray] = None,
+    avg_occupancies: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    max_strings: Optional[int] = None,
+    n_active_per_round: int = 50,
+    max_pt2_iters: int = 3,
+    dom_thresh: float = 1e-3,
+    pt2_floor: float = 1e-7,
+    max_rounds: int = 10,
+    energy_tol: float = 1e-9,
+    ecore: float = 0.0,
+    rand_seed: Optional[int] = 0,
+    verbose: bool = False,
+) -> float:
+    """自适应 SQD: 自洽换基表示层 (方向①) + 受限 PT2 选态选择层 (方向②) 叠加。
+
+    **统一视角** (REVIEW 方向③): 表示层 (自然轨道换基使展开系数集中) + 生成层
+    (多样初猜) + 选择层 (PT2 确定性补足)。本函数组合**表示层与选择层**:
+
+    每轮:
+      1. 配置恢复 (当前基偏置平均占据) → 当前基 det 集合
+      2. 受限 PT2 精化 (当轮/当前基): 主导 det 枚举单双激发 → PT2 top-K 注入
+         (子空间受限, 不补全全空间)
+      3. 子空间对角化 → E
+      4. 解态 1-RDM → 自然轨道换基 → 更新 h1e/eri/平均占据 (下一轮采样更聚焦)
+      5. 能量稳定则收敛
+
+    **与单独方法的关系**:
+      - ``solve_sqd_active`` 只有选择层 (基固定); 本函数换基使下一轮采样 det 更有效
+      - ``solve_sqd_natural_orbitals`` 只有表示层 (无 PT2); 本函数当轮 PT2 补足
+        采样缺口 → 更准的 1-RDM → 更准的换基 (正反馈)
+
+    Parameters
+    ----------
+    同 :func:`solve_sqd_active`, 外加:
+    max_pt2_iters : int
+        每轮内受限 PT2 精化的迭代次数 (采样后确定性补足的程度)。
+    energy_tol : float
+        能量收敛阈值 (连续两轮变化小于它即停止换基)。
+
+    Returns
+    -------
+    energy : float
+        基态总能量 (含 ``ecore``)。
+    """
+    from .basis import rotate_to_natural_orbitals
+
+    if one_body_tensor.ndim == 3:
+        if not np.allclose(one_body_tensor[0], one_body_tensor[1]):
+            raise ValueError(
+                "solve_sqd_adaptive 不支持自旋分辨 h1e; 请传闭壳层 (norb, norb)。"
+            )
+        h1e = np.asarray(one_body_tensor[0])
+    else:
+        h1e = np.asarray(one_body_tensor)
+    eri = np.asarray(two_body_tensor)
+    na, nb = nelec
+    open_shell = na != nb
+
+    bsm = np.asarray(bitstring_matrix, dtype=bool)
+    if bsm.ndim != 2 or bsm.shape[1] != 2 * norb:
+        raise ValueError(
+            f"bitstring_matrix must have shape (S, 2*norb={2*norb}), got {bsm.shape}."
+        )
+    probs = (np.full(bsm.shape[0], 1.0 / bsm.shape[0]) if probabilities is None
+             else np.asarray(probabilities, dtype=np.float64))
+
+    if avg_occupancies is not None:
+        occ_a, occ_b = avg_occupancies
+    else:
+        occ_a = np.zeros(norb, dtype=np.float64)
+        occ_a[:na] = 1.0
+        occ_b = np.zeros(norb, dtype=np.float64)
+        occ_b[:nb] = 1.0
+
+    full_size = int(cistring.num_strings(norb, na))
+    if max_strings is None:
+        max_strings = full_size
+
+    sub = _Subspace(h1e, eri, norb, nelec)
+    e_prev = np.inf
+    n_rounds_done = 0
+
+    for r in range(max_rounds):
+        # ① 配置恢复 (当前基偏置平均占据) → 当前基 det
+        rec, _ = recover_configurations(
+            bsm, probs, (occ_a, occ_b), na, nb, rand_seed=rand_seed
+        )
+        ci_a, ci_b = bitstring_matrix_to_ci_strs(rec, open_shell=open_shell)
+        str_a = sorted(set(int(x) for x in ci_a))
+        str_b = str_a if not open_shell else sorted(set(int(x) for x in ci_b))
+
+        # ② 受限 PT2 精化 (当轮, 当前基)
+        for _ in range(max_pt2_iters):
+            E, c2d, sa, sb = sub.diag(str_a, str_b)
+            idx_a = {int(s): i for i, s in enumerate(sa)}
+            idx_b = {int(s): i for i, s in enumerate(sb)}
+            nA, nB = c2d.shape
+            flat = np.abs(c2d).ravel()
+            order = np.argsort(flat)[::-1]
+            dom = []
+            for k in order:
+                if flat[k] > dom_thresh:
+                    ia, ib = divmod(int(k), nB)
+                    dom.append((int(sa[ia]), int(sb[ib])))
+                else:
+                    break
+            cand = set()
+            if dom:
+                for a, b in dom:
+                    for ca, cb in _excited_dets(a, b, norb):
+                        if ca not in idx_a or cb not in idx_b:
+                            cand.add((ca, cb))
+            if not cand:
+                break
+            me = sub.pt2_matrix_elements(str_a, str_b, cand, c2d, sa, sb)
+            pt2 = {d: h * h / (E - Ea) for d, (h, Ea) in me.items()
+                   if abs(E - Ea) > 1e-12}
+            ranked = sorted(pt2.items(), key=lambda kv: -abs(kv[1]))
+            add = []
+            for d, v in ranked:
+                if abs(v) < pt2_floor:
+                    break
+                if len(str_a) + len(add) >= max_strings:
+                    break
+                add.append(d)
+            if len(add) > n_active_per_round:
+                add = add[:n_active_per_round]
+            if not add:
+                break
+            for ca, cb in add:
+                str_a.append(ca)
+                if cb not in str_b:
+                    str_b.append(cb)
+            str_a = sorted(set(str_a))
+            str_b = str_a if not open_shell else sorted(set(str_b))
+
+        # ③ 最终对角化 (当前基)
+        E, c2d, sa, sb = sub.diag(str_a, str_b)
+        dim_now = len(sa) * len(sb)
+
+        # ④ 表示层: 解态 1-RDM → 自然轨道换基
+        st = SCIState(amplitudes=c2d, ci_strs_a=np.asarray(sa),
+                      ci_strs_b=np.asarray(sb), norb=norb, nelec=nelec)
+        dm1 = st.rdm(rank=1, spin_summed=True)
+        h1e, eri, U_step, occ_nat = rotate_to_natural_orbitals(h1e, eri, dm1)
+        sub = _Subspace(h1e, eri, norb, nelec)  # 重建 (新基)
+        occ_a = np.clip(occ_nat / 2.0, 0.0, 1.0)
+        occ_b = occ_a.copy()
+
+        if verbose:
+            print(f"[adaptive r{r+1}/{max_rounds}] E={E + ecore:.6f} "
+                  f"dim={dim_now} |c2|max={float(np.abs(c2d).max() ** 2):.4f}")
+
+        n_rounds_done = r + 1
+        if r > 0 and abs(E - e_prev) < energy_tol:
+            break
+        e_prev = E
+
+    E, c2d, sa, sb = sub.diag(str_a, str_b)
+    if verbose:
+        print(f"[adaptive] 收敛 @ round {n_rounds_done}: E={E + ecore:.8f} "
+              f"dim={len(sa) * len(sb)}")
+    return float(E) + ecore
+
+
+# --------------------------------------------------------------------------- #
 #  主动采样 SQD (方向②): 受限 PT2 选态 + 采样聚焦 双闭环
 # --------------------------------------------------------------------------- #
 def solve_sqd_active(

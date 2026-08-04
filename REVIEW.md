@@ -448,6 +448,14 @@ API：`solve_sqd_active(h1e, eri, norb, nelec, *, bitstring_matrix, max_strings,
 测试：`tests/test_sqd_active.py`（低采样优于纯采样达化学精度 / 受限子空间达化学精度，2 项）。
 全库 95 测试全过。
 
+**组合版验证**（`solve_sqd_adaptive`，换基表示层① + PT2 选择层②，2026-08-04）：多 seed
+(n=100, 6 seed) 对比 —— 纯采样 **0/6** 达化学精度（C₂ 3/8 式覆盖不稳），active 与
+adaptive 均 **6/6**（覆盖率根治确认）。但 adaptive 误差略差于单独 active（mean 1.9e-6 vs
+4.0e-7；极低采样 n=15~40 亦然）——换基每轮作废 det 累积，丢失 PT2 覆盖收益，表示层改善
+不足以弥补。**结论**：`solve_sqd_active` 为实际推荐（简单、更准、稳定）；`solve_sqd_adaptive`
+保留为"表示层+选择层"统一框架（输出自然基积分，可接 `solve_cipsi` 精化利用方向①稀疏度
+收益），但不声称优于 active。测试断言相应调整为"稳定达化学精度"。
+
 ## 方向③：拟 Krylov 理论化（多 scale UCJ 的形式化表述，2026-08-04 文档）
 
 **定位**：采样策略探索第三步（对应 SURVEY §7 拟 Krylov 方向）。把方向 A 的"多 scale UCJ
