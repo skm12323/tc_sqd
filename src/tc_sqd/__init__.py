@@ -72,6 +72,14 @@ from .lucj import (
     solve_ucj_assisted,
 )
 from .cipsi import solve_cipsi
+from .basis import (
+    natural_orbitals_from_rdm,
+    rotate_to_natural_orbitals,
+    ccsd_natural_orbitals,
+    rdm1_from_sci_result,
+    natural_orbital_occupancies,
+    natural_orbital_basis_from_fci,
+)
 from . import noise
 from .noise import (
     has_gpu,
@@ -165,6 +173,13 @@ __all__ = [
     "solve_ucj_assisted",
     # cipsi (PT2 筛选生成集扩展: UCJ 种子 -> 近 FCI 精化)
     "solve_cipsi",
+    # basis (基设计: 自然轨道换基, 提升子空间构建效率)
+    "natural_orbitals_from_rdm",
+    "rotate_to_natural_orbitals",
+    "ccsd_natural_orbitals",
+    "rdm1_from_sci_result",
+    "natural_orbital_occupancies",
+    "natural_orbital_basis_from_fci",
     # noise (密度矩阵 Kraus 噪声模拟, cupy GPU 可选 — qiskit-Aer 风格 + tc GPU)
     "has_gpu",
     "statevector_to_density",
