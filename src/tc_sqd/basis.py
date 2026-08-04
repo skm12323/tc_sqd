@@ -16,7 +16,8 @@ SQD 子空间 = 采样 det 张的空间, 其效率取决于基态波函数在计
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -26,6 +27,8 @@ __all__ = [
     "ccsd_natural_orbitals",
     "rdm1_from_sci_result",
     "natural_orbital_occupancies",
+    "NaturalOrbitalResult",
+    "solve_sqd_natural_orbitals",
 ]
 
 
@@ -249,3 +252,205 @@ def natural_orbital_basis_from_fci(
         )
     dm1 = direct_spin1.make_rdm1(civec, norb, nelec)
     return rotate_to_natural_orbitals(h1e, eri, dm1)
+
+
+@dataclass
+class NaturalOrbitalResult:
+    """:func:`solve_sqd_natural_orbitals` 的结果。
+
+    Attributes
+    ----------
+    energy : float
+        最终基下 SQD 电子能量 (总能量 = ``energy + ecore``)。
+    h1e, eri : ndarray
+        最终自然轨道基的积分 (可直接再喂 ``solve_sqd``/``solve_sci``)。
+    orbitals : ndarray, shape (norb, norb)
+        **累计**旋转矩阵: 原始 MO 基轨道经各轮自然轨道变换后的最终轨道
+        (``φ_final = φ_MO @ orbitals``)。仅旋转回原始轨道时才需要; 若不关心
+        轨道显式形式, 直接使用 ``h1e``/``eri`` 即可。
+    occ : ndarray, shape (norb,)
+        最终自然轨道占据数。
+    history : list[dict]
+        每轮迭代记录: ``energy`` / ``dim`` (字符串乘积维度) / ``ndet`` /
+        ``maxc2`` / ``pr`` / ``k999`` (解态系数稀疏度, 供监控换基收敛)。
+    """
+    energy: float
+    h1e: np.ndarray
+    eri: np.ndarray
+    orbitals: np.ndarray
+    occ: np.ndarray
+    history: List[Dict] = field(default_factory=list)
+
+    @property
+    def total_energy(self) -> float:
+        return self.energy
+
+
+def solve_sqd_natural_orbitals(
+    h1e: np.ndarray,
+    eri: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    ecore: float = 0.0,
+    bitstring_matrix: Optional[np.ndarray] = None,
+    probabilities: Optional[np.ndarray] = None,
+    n_samples: int = 500,
+    avg_occupancies: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    rand_seed: Optional[int] = 0,
+    max_basis_iters: int = 4,
+    energy_tol: float = 1e-9,
+    verbose: bool = False,
+    **solve_sci_kwargs,
+) -> NaturalOrbitalResult:
+    """自洽换基 SQD: 解 SQD → 1-RDM → 自然轨道换基 → 重解, 迭代至收敛。
+
+    **动机** (方向①验证, 见 REVIEW): FCI-NO 换基使 N₂/STO-3G 拉伸达到化学精度
+    所需子空间维度 2116→676; 低采样自洽换基突破配置恢复在 MO 基的覆盖瓶颈,
+    能量误差最多改善 263×。此函数把该闭环固化为库功能, 是方向② (自适应采样)
+    的表示层地基。
+
+    **流程** (经典模拟, 配置恢复替代电路采样): 每轮 ① 配置恢复 (按当前基平均
+    占据生成 det, ``recover_configurations``——只依赖平均占据, 故换基无缝) →
+    ② ``solve_sci`` 子空间对角化 → ③ 解态 1-RDM (``rdm1_from_sci_result``)
+    → ④ 对角化 1-RDM 得自然轨道, 换基 ``h1e``/``eri`` → ⑤ 更新平均占据
+    (闭壳层: 每自旋 = 占据数/2)。迭代直到能量变化 < ``energy_tol`` 或达到
+    ``max_basis_iters``。
+
+    Parameters
+    ----------
+    h1e, eri : ndarray
+        初始基 (通常 MO 基) 积分。
+    norb : int
+        空间轨道数。
+    nelec : tuple(int, int)
+        电子数。**当前实现要求闭壳层** (α=β 占据), 与 ``natural_orbital_occupancies``
+        的自旋分辨假设一致。
+    ecore : float
+        核排斥能; 总能量 = ``energy + ecore`` (结果属性 ``total_energy``)。
+    bitstring_matrix : ndarray, shape (S, 2*norb), optional
+        配置恢复的种子位串。省略时用 ``n_samples`` 个均匀随机位串 (经典初猜)。
+        注意: 换基后种子位串的轨道占据语义随基变化, 但配置恢复只依赖平均占据,
+        恢复出的 det 始终在当前基下 —— 这是自洽换基能在经典层无缝运行的原因。
+    probabilities : ndarray, shape (S,), optional
+        对应概率; 省略时均匀。
+    n_samples : int
+        ``bitstring_matrix`` 为 ``None`` 时的随机种子数。
+    avg_occupancies : tuple(ndarray, ndarray), optional
+        初始平均占据 (闭壳层)。省略时退化为 HF 占据。
+    rand_seed : int | None
+        随机种子 (配置恢复 tie-breaking + 随机种子生成)。
+    max_basis_iters : int
+        最大换基轮数。
+    energy_tol : float
+        能量收敛阈值: 连续两轮能量变化小于它即停止换基。
+    verbose : bool
+        打印每轮能量/维度/稀疏度。
+    **solve_sci_kwargs
+        透传给 ``solve_sci`` (如 ``spin_sq``)。
+
+    Returns
+    -------
+    NaturalOrbitalResult
+        ``energy`` 为最终电子能量; ``h1e``/``eri`` 为最终自然基积分。
+
+    Notes
+    -----
+    * **换基后的量子电路对接** (真机): 若电路在原始 MO 基下采样, 换基后需把
+      电路参数重编译到自然基 (单粒子变换合成) 才能保持物理一致。本函数面向
+      配置恢复路径 (经典/模拟), 该路径换基无缝。
+    * 收敛时能量可能在小数后几位波动 (数值噪声), ``energy_tol`` 不宜过严;
+      观测建议 1e-9 ~ 1e-10 对 N₂/STO-3G 量级体系已足够。
+    """
+    from .configuration_recovery import recover_configurations
+    from .fermion import bitstring_matrix_to_ci_strs, solve_sci
+
+    h1e = np.asarray(h1e, dtype=np.float64)
+    eri = np.asarray(eri, dtype=np.float64)
+    na, nb = nelec
+    if na != nb:
+        raise ValueError(
+            "solve_sqd_natural_orbitals 当前仅支持闭壳层 (nelec[0]==nelec[1]): "
+            f"got {(na, nb)}。开壳层需自旋分辨 1-RDM 换基, 见 TODO。"
+        )
+
+    # 采样种子 (省略时随机)
+    if bitstring_matrix is None:
+        rng = np.random.default_rng(rand_seed)
+        bsm = (rng.random((n_samples, 2 * norb)) > 0.5)
+        probs = np.full(n_samples, 1.0 / n_samples)
+    else:
+        bsm = np.asarray(bitstring_matrix, dtype=bool)
+        if bsm.ndim != 2 or bsm.shape[1] != 2 * norb:
+            raise ValueError(
+                f"bitstring_matrix must have shape (S, 2*norb={2*norb}), got {bsm.shape}."
+            )
+        probs = (np.full(bsm.shape[0], 1.0 / bsm.shape[0]) if probabilities is None
+                 else np.asarray(probabilities, dtype=np.float64))
+
+    # 初始平均占据
+    if avg_occupancies is not None:
+        occ_a, occ_b = avg_occupancies
+    else:
+        occ_a = np.zeros(norb, dtype=np.float64)
+        occ_a[:na] = 1.0
+        occ_b = np.zeros(norb, dtype=np.float64)
+        occ_b[:nb] = 1.0
+
+    h1e_cur, eri_cur = h1e, eri
+    U_total = np.eye(norb, dtype=np.float64)
+    history: List[Dict] = []
+    energy_prev = np.inf
+
+    for it in range(max_basis_iters):
+        # ① 配置恢复 (当前基平均占据) ② 子空间对角化
+        rec, _ = recover_configurations(
+            bsm, probs, (occ_a, occ_b), na, nb, rand_seed=rand_seed
+        )
+        ci_a, ci_b = bitstring_matrix_to_ci_strs(rec)
+        result = solve_sci(
+            (ci_a, ci_b), h1e_cur, eri_cur, norb, nelec, **solve_sci_kwargs
+        )
+        dim = ci_a.shape[0] * ci_b.shape[0]
+
+        # ③ 解态 1-RDM → ④ 自然轨道换基
+        dm1 = rdm1_from_sci_result(result)
+        h1e_cur, eri_cur, U_step, occ_nat = rotate_to_natural_orbitals(
+            h1e_cur, eri_cur, dm1
+        )
+        U_total = U_total @ U_step
+
+        # ⑤ 更新平均占据 (闭壳层)
+        occ_a = np.clip(occ_nat / 2.0, 0.0, 1.0)
+        occ_b = occ_a.copy()
+
+        # 稀疏度监控 (当前基下解态系数的长尾指标; 各轮口径一致可作相对比较)
+        c2 = np.abs(np.asarray(result.sci_state.amplitudes).ravel()) ** 2
+        c2 = c2[c2 > 1e-15]
+        p = c2 / c2.sum()
+        history.append({
+            "energy": float(result.energy),
+            "dim": dim,
+            "ndet": len(rec),
+            "maxc2": float(p.max()),
+            "pr": float(1.0 / (p**2).sum()),
+            "k999": int(np.sort(p)[::-1].cumsum().searchsorted(0.999) + 1),
+        })
+        if verbose:
+            print(f"[basis iter {it+1}/{max_basis_iters}] E(elec)={result.energy:.8f} "
+                  f"dim={dim} ndet={len(rec)} k999={history[-1]['k999']}")
+
+        if abs(result.energy - energy_prev) < energy_tol:
+            if verbose:
+                print(f"  能量收敛: ΔE={abs(result.energy - energy_prev):.2e} < {energy_tol}")
+            break
+        energy_prev = result.energy
+
+    return NaturalOrbitalResult(
+        energy=float(result.energy),
+        h1e=h1e_cur,
+        eri=eri_cur,
+        orbitals=U_total,
+        occ=occ_nat,
+        history=history,
+    )

@@ -79,24 +79,95 @@ def test_natural_orbital_occupancies_sum_to_nelec():
     assert np.all(occ_a >= 0.0) and np.all(occ_a <= 1.0)
 
 
-def test_ccsd_no_overlaps_fci_no():
-    """CCSD-NO 是合理的先验: 与 FCI-NO 轨道重叠 (逐列 max) 应高。
+def test_ccsd_no_increases_sparsity():
+    """CCSD-NO 是可行的自举先验: 换基后波函数稀疏度不劣化于 MO 基。
 
-    用**弱关联** N2 平衡验证 —— CCSD 可靠区, 自然轨道应接近 FCI-NO
-    (实测 max-per-column > 0.99)。强关联区 CCSD-NO 退化 (自身多参考缺失)
-    是已知结论, 见 basis.ccsd_natural_orbitals docstring, 不做断言。
+    用**弱关联** N2 平衡验证 (CCSD 可靠区)。不测"与 FCI-NO 轨道重叠": 近简并
+    轨道组 (占据数相近) 内部方向物理任意, 逐列重叠低不代表 CCSD-NO 差; 稀疏度
+    才是换基有效性的直接度量。强关联区 CCSD-NO 退化是已知结论 (自身多参考缺失),
+    见 basis.ccsd_natural_orbitals docstring, 不做断言。
     """
     data = _n2_equil_data()
     h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
     _, c_mo = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
-    dm1 = direct_spin1.make_rdm1(c_mo, norb, nelec)
-    U_fci = tc_sqd.natural_orbitals_from_rdm(dm1)[0]
     try:
         U_cc = tc_sqd.ccsd_natural_orbitals(data.mf)[0]
     except Exception:
         pytest.skip("CCSD 不可用 (pyscf cc 模块缺失)")
-    ovlp = np.abs(U_fci.T @ U_cc).max(axis=0)
-    assert np.mean(ovlp) > 0.95, f"CCSD-NO 与 FCI-NO 轨道重叠过低: {np.round(ovlp, 3)}"
+    h1e_cn = U_cc.T @ h1e @ U_cc
+    eri_cn = np.einsum("pqrs,pi,qj,rk,sl->ijkl", eri, U_cc, U_cc, U_cc, U_cc,
+                       optimize=True)
+    # 旋转不变性: CCSD-NO 基下 FCI 能量不变
+    e_cn, c_cn = direct_spin1.kernel(h1e_cn, eri_cn, norb, nelec, conv_tol=1e-12)
+    e_mo, _ = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
+    assert abs(e_cn - e_mo) < 1e-7
+    # 稀疏度不劣化 (实测 N2 平衡: k999 MO=97 -> CCSD-NO=92)
+    m_mo = _sparsity(c_mo)
+    m_cn = _sparsity(c_cn)
+    assert m_cn["k999"] <= m_mo["k999"], f"CCSD-NO 稀疏度劣化: {m_mo} -> {m_cn}"
+
+
+def test_solve_sqd_natural_orbitals_converges():
+    """自洽换基 SQD 收敛: 低采样 (400) 下能量接近 FCI, 且换基积分有效。
+
+    方向① 验证 (demo): N₂/STO-3G 拉伸 n_samples=400 自洽换基 err~1.7e-6,
+    无换基卡在 ~1.9e-4 (MO 基覆盖瓶颈)。此处断言 err < 1e-5 (保守阈值)。
+    """
+    data = _n2_stretch_data()
+    h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
+    e_fci, _ = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
+
+    res = tc_sqd.solve_sqd_natural_orbitals(
+        h1e, eri, norb, nelec, n_samples=400, max_basis_iters=4, rand_seed=0
+    )
+    # 能量收敛到近 FCI
+    assert abs(res.energy - e_fci) < 1e-5, f"自洽换基未收敛: {res.energy - e_fci:.2e}"
+    # 至少迭代了换基闭环
+    assert len(res.history) >= 2
+    # 换基后的积分仍描述同一哈密顿量 (旋转不变性): 换基积分的 FCI 能量不变
+    e_n, _ = direct_spin1.kernel(res.h1e, res.eri, norb, nelec, conv_tol=1e-12)
+    assert abs(e_n - e_fci) < 1e-7, f"换基积分破坏能量: {e_n - e_fci:.2e}"
+    # 占据数物理约束
+    assert np.all(res.occ >= -1e-8) and np.all(res.occ <= 2.0 + 1e-8)
+
+
+def test_solve_sqd_natural_orbitals_beats_no_basis():
+    """自洽换基优于无换基 (纯 MO 基迭代): 方向① 覆盖瓶颈突破的回归断言。"""
+    data = _n2_stretch_data()
+    h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
+    na, nb = nelec
+    e_fci, _ = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
+
+    n_samples = 400
+    bsm = (np.random.default_rng(0).random((n_samples, 2 * norb)) > 0.5)
+    probs = np.full(n_samples, 1.0 / n_samples)
+
+    # 无换基: 配置恢复 + 更新平均占据 (不复用换基)
+    def _plain_iter():
+        occ_a = np.zeros(norb); occ_a[:na] = 1.0
+        occ_b = np.zeros(norb); occ_b[:nb] = 1.0
+        h = h1e
+        e_ = np.inf
+        for _ in range(4):
+            rec, _ = tc_sqd.recover_configurations(
+                bsm, probs, (occ_a, occ_b), na, nb, rand_seed=0)
+            ca, cb = tc_sqd.bitstring_matrix_to_ci_strs(rec)
+            r = tc_sqd.solve_sci((ca, cb), h, eri, norb, nelec)
+            e_ = r.energy
+            dm1 = tc_sqd.rdm1_from_sci_result(r)
+            occ_a = np.clip(np.diag(dm1) / 2.0, 0, 1)
+            occ_b = occ_a.copy()
+        return e_
+
+    e_plain = _plain_iter()
+    res = tc_sqd.solve_sqd_natural_orbitals(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm, probabilities=probs,
+        max_basis_iters=4, rand_seed=0,
+    )
+    # 自洽换基不劣于无换基 (验证不回归); 且两者都不差于初猜
+    assert res.energy <= e_plain + 1e-12, f"换基退化: {res.energy} vs {e_plain}"
+    # 方向① 结论的量化: 换基显著更优 (无换基卡在 MO 基瓶颈 ~1e-4 量级)
+    assert abs(res.energy - e_fci) < abs(e_plain - e_fci) * 0.5
 
 
 def test_rdm1_from_sci_result():

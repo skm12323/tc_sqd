@@ -404,9 +404,10 @@ max|C|² 几乎不变（强关联 HF 非主导），但**长尾被大幅压缩**
    持续降至 ~1e-7（改善最多 263×）。纯经典后处理，无额外量子采样。
 4. 与方向 B（CIPSI）、方向②（自适应采样）衔接：换基后的稀疏表示是自适应采样的地基。
 
-API：`tc_sqd.basis`（`rotate_to_natural_orbitals` 等 6 函数，非侵入换基工具）。
-测试：`tests/test_basis.py`（旋转不变性 / 稀疏度改善 / CCSD-NO 重叠 / 电子数守恒，7 项）。
-自洽迭代闭环函数留待方向②落地。
+API：`tc_sqd.basis`（`rotate_to_natural_orbitals` 等 6 函数，非侵入换基工具）+ `solve_sqd_natural_orbitals`
+（自洽换基闭环，方向② 表示层地基：解 SQD → 1-RDM → 自然轨道换基 → 重解，返回 `NaturalOrbitalResult`）。
+测试：`tests/test_basis.py`（旋转不变性 / 稀疏度改善 / CCSD-NO 不劣化 / 自洽换基收敛 / 优于无换基 / 电子数守恒，9 项）。
+自洽换基与主动采样分布偏置（PT2 反哺采样，对应 AS-SQD）衔接方向②后续。
 
 ## 后续可选改进（非阻塞）
 
