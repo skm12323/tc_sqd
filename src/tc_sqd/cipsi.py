@@ -32,7 +32,10 @@ from pyscf.fci import cistring, selected_ci, direct_spin1
 from pyscf import ao2mo
 from scipy.sparse.linalg import eigsh, LinearOperator
 
-__all__ = ["solve_cipsi"]
+from .configuration_recovery import recover_configurations
+from .fermion import bitstring_matrix_to_ci_strs, SCIState
+
+__all__ = ["solve_cipsi", "solve_sqd_active"]
 
 
 # --------------------------------------------------------------------------- #
@@ -300,6 +303,204 @@ def solve_cipsi(
             dim_now = len(str_a) * len(str_b)
             print(f"[CIPSI] it{it}: strings={len(str_a)}x{len(str_b)} "
                   f"diag_dim={dim_now} E={E + ecore:.6f} pt2_top={pt2_sum:.2e}")
+
+    E, c2d, sa, sb = sub.diag(str_a, str_b)
+    return float(E) + ecore
+
+
+# --------------------------------------------------------------------------- #
+#  主动采样 SQD (方向②): 受限 PT2 选态 + 采样聚焦 双闭环
+# --------------------------------------------------------------------------- #
+def solve_sqd_active(
+    one_body_tensor: np.ndarray,
+    two_body_tensor: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    bitstring_matrix: np.ndarray,
+    probabilities: Optional[np.ndarray] = None,
+    avg_occupancies: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    max_strings: Optional[int] = None,
+    n_active_per_round: int = 50,
+    dom_thresh: float = 1e-3,
+    pt2_floor: float = 1e-7,
+    max_rounds: int = 10,
+    ecore: float = 0.0,
+    rand_seed: Optional[int] = 0,
+    verbose: bool = False,
+) -> float:
+    """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
+
+    **动机**: 纯采样 SQD 的子空间只含"采到"的 det, 低采样/噪声下覆盖不全
+    (C₂ 曾 3/8 失败)。AS-SQD (Miura, arXiv:2603.13536) 用 Epstein-Nesbet
+    PT2 得分从外部候选**确定性补足**采样缺口 —— 无需额外量子测量, 且噪声
+    bitstring 的 PT2 得分近零 (抗噪)。
+
+    **与 solve_cipsi 的区别**: :func:`solve_cipsi` 是**纯经典 det 空间精化**
+    (静态种子, 补全到全空间, 不碰采样); 本函数是**采样与选态双闭环** ——
+    每轮先用**偏置的平均占据**做配置恢复 (采样聚焦), 再用受限 PT2 注入
+    高价值 det (子空间不补全全空间), 两者交替直到收敛。
+
+    Parameters
+    ----------
+    one_body_tensor : ndarray, shape (norb, norb)
+        单电子积分 (闭壳层单矩阵)。
+    two_body_tensor : ndarray, shape (norb, norb, norb, norb)
+        双电子积分 (chemist 记号)。
+    norb : int
+        空间轨道数。
+    nelec : tuple(int, int)
+        ``(n_alpha, n_beta)``。
+    bitstring_matrix : ndarray, shape (S, 2*norb)
+        采样位串 (电路 shot 或经典随机种子)。配置恢复每轮按当前平均占据修正。
+    probabilities : ndarray, shape (S,), optional
+        对应概率; 省略时均匀。
+    avg_occupancies : tuple(ndarray, ndarray), optional
+        初始平均占据 (采样偏置)。省略时退化为 HF。
+    max_strings : int | None
+        字符串集合上限 (对角化维度 ≈ n_str_a × n_str_b)。``None`` = 默认
+        全空间 ``C(norb, nelec[0])`` (受限时给较小值)。
+    n_active_per_round : int
+        每轮 PT2 选态注入的 top 候选 det 数上限 (受限核心参数)。
+    dom_thresh : float
+        主导 det 的 |c| 阈值 (低于此不参与生成集扩展)。
+    pt2_floor : float
+        |PT2| 低于此的候选 det 不再加入。
+    max_rounds : int
+        采样↔选态轮数上限。
+    ecore : float
+        Core 能量偏移, 计入返回值。
+    rand_seed : int | None
+        配置恢复 tie-breaking 种子。
+    verbose : bool
+        打印每轮空间/能量/PT2 信息。
+
+    Returns
+    -------
+    energy : float
+        基态能量 (含 ``ecore``)。
+    """
+    if one_body_tensor.ndim == 3:
+        if not np.allclose(one_body_tensor[0], one_body_tensor[1]):
+            raise ValueError(
+                "solve_sqd_active 不支持自旋分辨 h1e; 请传闭壳层 (norb, norb)。"
+            )
+        h1e = np.asarray(one_body_tensor[0])
+    else:
+        h1e = np.asarray(one_body_tensor)
+    eri = np.asarray(two_body_tensor)
+    na, nb = nelec
+    open_shell = na != nb
+
+    bsm = np.asarray(bitstring_matrix, dtype=bool)
+    if bsm.ndim != 2 or bsm.shape[1] != 2 * norb:
+        raise ValueError(
+            f"bitstring_matrix must have shape (S, 2*norb={2*norb}), got {bsm.shape}."
+        )
+    probs = (np.full(bsm.shape[0], 1.0 / bsm.shape[0]) if probabilities is None
+             else np.asarray(probabilities, dtype=np.float64))
+
+    # 初始平均占据 (采样偏置)
+    if avg_occupancies is not None:
+        occ_a, occ_b = avg_occupancies
+    else:
+        occ_a = np.zeros(norb, dtype=np.float64)
+        occ_a[:na] = 1.0
+        occ_b = np.zeros(norb, dtype=np.float64)
+        occ_b[:nb] = 1.0
+
+    full_size = int(cistring.num_strings(norb, na))
+    if max_strings is None:
+        max_strings = full_size
+
+    sub = _Subspace(h1e, eri, norb, nelec)
+    str_a: list = []
+    str_b: list = []
+    e_prev = np.inf
+
+    for r in range(max_rounds):
+        # ① 采样聚焦: 配置恢复 (偏置平均占据) 生成当前基 det, 并入子空间
+        rec, _ = recover_configurations(
+            bsm, probs, (occ_a, occ_b), na, nb, rand_seed=rand_seed
+        )
+        ci_a, ci_b = bitstring_matrix_to_ci_strs(rec, open_shell=open_shell)
+        n_before = len(str_a) + len(str_b)
+        str_a = sorted(set(str_a) | set(int(x) for x in ci_a))
+        str_b = sorted(set(str_a) if not open_shell else (set(str_b) | set(int(x) for x in ci_b)))
+        n_sampled_new = len(str_a) + len(str_b) - n_before
+        # 采样覆盖不受 max_strings 限制 (真实采样的 det 都应进子空间);
+        # max_strings 只约束 PT2 扩展 (下方 ④), 与 solve_cipsi 语义一致。
+
+        # ② 子空间对角化
+        E, c2d, sa, sb = sub.diag(str_a, str_b)
+        idx_a = {int(s): i for i, s in enumerate(sa)}
+        idx_b = {int(s): i for i, s in enumerate(sb)}
+
+        # ③ 主导 dets
+        nA, nB = c2d.shape
+        flat = np.abs(c2d).ravel()
+        order = np.argsort(flat)[::-1]
+        dom = []
+        for k in order:
+            if flat[k] > dom_thresh:
+                ia, ib = divmod(int(k), nB)
+                dom.append((int(sa[ia]), int(sb[ib])))
+            else:
+                break
+
+        # ④ 候选连接 → PT2 受限选态 (不补全全空间)
+        cand = set()
+        if dom:
+            for a, b in dom:
+                for ca, cb in _excited_dets(a, b, norb):
+                    if ca not in idx_a or cb not in idx_b:
+                        cand.add((ca, cb))
+        if cand:
+            me = sub.pt2_matrix_elements(str_a, str_b, cand, c2d, sa, sb)
+            pt2 = {d: h * h / (E - Ea) for d, (h, Ea) in me.items()
+                   if abs(E - Ea) > 1e-12}
+            ranked = sorted(pt2.items(), key=lambda kv: -abs(kv[1]))
+            add = []
+            for d, v in ranked:
+                if abs(v) < pt2_floor:
+                    break
+                if len(str_a) + len(add) >= max_strings:
+                    break
+                add.append(d)
+            if len(add) > n_active_per_round:
+                add = add[:n_active_per_round]
+            for ca, cb in add:
+                str_a.append(ca)
+                if cb not in str_b:
+                    str_b.append(cb)
+            str_a = sorted(set(str_a))
+            if open_shell:
+                str_b = sorted(set(str_b))
+            else:
+                str_b = str_a
+            n_pt2_new = len(add)
+        else:
+            n_pt2_new = 0
+
+        # ⑤ 更新平均占据 (采样偏置): 解态 1-RDM 对角
+        st = SCIState(amplitudes=c2d, ci_strs_a=np.asarray(sa),
+                      ci_strs_b=np.asarray(sb), norb=norb, nelec=nelec)
+        dm1 = st.rdm(rank=1, spin_summed=True)
+        occ_a = np.clip(np.diag(dm1) / 2.0, 0.0, 1.0)
+        occ_b = occ_a.copy()
+
+        if verbose:
+            print(f"[active r{r+1}/{max_rounds}] E={E + ecore:.6f} "
+                  f"strings={len(str_a)}x{len(str_b)} "
+                  f"sampled_new={n_sampled_new} pt2_new={n_pt2_new}")
+
+        # 收敛: 无 PT2 新 det 且采样无新增 (子空间不再扩展) → 稳定
+        if n_pt2_new == 0 and n_sampled_new == 0:
+            break
+        # PT2 贡献可忽略且能量稳定
+        if n_pt2_new == 0 and abs(E - e_prev) < 1e-10:
+            break
+        e_prev = E
 
     E, c2d, sa, sb = sub.diag(str_a, str_b)
     return float(E) + ecore

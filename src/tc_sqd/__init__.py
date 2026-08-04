@@ -71,7 +71,7 @@ from .lucj import (
     ucj_assisted_configurations,
     solve_ucj_assisted,
 )
-from .cipsi import solve_cipsi
+from .cipsi import solve_cipsi, solve_sqd_active
 from .basis import (
     natural_orbitals_from_rdm,
     rotate_to_natural_orbitals,
@@ -173,8 +173,9 @@ __all__ = [
     "build_ucj_circuit",
     "ucj_assisted_configurations",
     "solve_ucj_assisted",
-    # cipsi (PT2 筛选生成集扩展: UCJ 种子 -> 近 FCI 精化)
+    # cipsi (PT2 筛选生成集扩展: UCJ 种子 -> 近 FCI 精化 + 主动采样闭环)
     "solve_cipsi",
+    "solve_sqd_active",
     # basis (基设计: 自然轨道换基 + 自洽迭代, 提升子空间构建效率)
     "natural_orbitals_from_rdm",
     "rotate_to_natural_orbitals",

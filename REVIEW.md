@@ -409,6 +409,45 @@ API：`tc_sqd.basis`（`rotate_to_natural_orbitals` 等 6 函数，非侵入换�
 测试：`tests/test_basis.py`（旋转不变性 / 稀疏度改善 / CCSD-NO 不劣化 / 自洽换基收敛 / 优于无换基 / 电子数守恒，9 项）。
 自洽换基与主动采样分布偏置（PT2 反哺采样，对应 AS-SQD）衔接方向②后续。
 
+## 方向②：自适应/主动采样闭环（受限 PT2 选态 + 采样聚焦，2026-08-04 落地）
+
+**定位**：采样策略探索第二步（对应 SURVEY §7 自适应方向 / AS-SQD arXiv:2603.13536）。
+纯采样 SQD 的子空间只含"采到"的 det，低采样/噪声下覆盖不全（C₂ 曾 3/8 失败）；
+主动采样用 Epstein-Nesbet PT2 得分**确定性补足采样缺口**——无需额外量子测量，且
+噪声 bitstring 的 PT2 得分近零（抗噪）。
+
+**与 solve_cipsi 的区别**：solve_cipsi 是**纯经典 det 空间精化**（静态种子、补全到全空间、
+不碰采样）；`solve_sqd_active` 是**采样↔选态双闭环**——每轮先用偏置的平均占据做配置恢复
+（采样聚焦），再用受限 PT2 注入高价值 det（子空间不补全全空间），交替至收敛。
+
+**方法**（`src/tc_sqd/cipsi.py`，`solve_sqd_active`）：
+1. 每轮配置恢复（平均占据偏置）生成当前基 det 并入子空间（采样覆盖不受 max_strings 限）
+2. 子空间对角化（复用 `_Subspace`，dim≤1000 numpy eigh / eigsh）
+3. 主导 det 枚举单/双激发候选 → PT2=⟨a|H|Ψ⟩²/(E−E_a) → top `n_active_per_round` 注入
+4. 用解态 1-RDM 更新平均占据（采样偏置），循环至 PT2 无新 det 且采样无新增
+- `max_strings` 只约束 PT2 扩展（与 solve_cipsi 语义一致），采样覆盖不受限
+
+**验证**（N₂/STO-3G 拉伸，强关联，n_samples=100 低采样）：
+
+| 场景 | 误差 vs FCI | 说明 |
+|---|---|---|
+| 纯采样 SQD（配置恢复 3 轮）| ~2e-3 | 超化学精度（1.6e-3）|
+| **solve_sqd_active（全空间）** | **3.95e-7** | PT2 确定性补足采样缺口 |
+| solve_sqd_active（max_strings=100）| <1.6e-3 | 受限子空间 ≤100²（全空间 120²=14400）仍达化学精度 |
+
+**关键结论**：
+1. **主动采样突破低采样覆盖瓶颈**：n=100 时从 ~2e-3（超化学精度）压到 3.95e-7——一个量级以上的
+   PT2 补足收益，且无需额外量子测量（对应 AS-SQD 主张）。
+2. **受限闭环可行**：max_strings 约束 PT2 扩展，子空间远小于全空间仍达化学精度——区别于
+   solve_cipsi 补全全空间的"高精度 refine"路线，主动采样是"少量 det"路线。
+3. **与方向①衔接**：方向①的自洽换基（`solve_sqd_natural_orbitals`）提供稀疏表示层，
+   主动采样在其上做选态聚焦——两者都是"提升子空间构建效率"的不同杠杆。
+4. 覆盖率不稳（C₂ 3/8 失败）的根治：PT2 选态确定性保证关键 det 必进子空间，不再依赖采样运气。
+
+API：`solve_sqd_active(h1e, eri, norb, nelec, *, bitstring_matrix, max_strings, n_active_per_round, ...)`。
+测试：`tests/test_sqd_active.py`（低采样优于纯采样达化学精度 / 受限子空间达化学精度，2 项）。
+全库 95 测试全过。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
