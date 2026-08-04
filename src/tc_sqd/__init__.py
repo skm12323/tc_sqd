@@ -91,6 +91,7 @@ from .noise import (
     apply_depolarizing,
     density_to_bitstring_matrix,
     apply_t1_bitstrings,
+    zero_noise_extrapolate_t1,
 )
 from .predict import (
     gamma_T1,
@@ -121,6 +122,7 @@ from .diagnostics import (
     subspace_dimension,
     energy_convergence,
     sampling_report,
+    extrapolate_infinite_samples,
 )
 
 __version__ = "0.1.0"
@@ -194,6 +196,7 @@ __all__ = [
     "apply_depolarizing",
     "density_to_bitstring_matrix",
     "apply_t1_bitstrings",
+    "zero_noise_extrapolate_t1",
     # predict (噪声容限预测器, 独有)
     "gamma_T1",
     "predict_sqd_error",
@@ -214,9 +217,10 @@ __all__ = [
     # sampler (统一采样后端: tc 模拟 / qcloud 真机)
     "sample",
     "BACKENDS",
-    # diagnostics (采样质量诊断报告)
+    # diagnostics (采样质量诊断报告 + 无限采样外推 A1)
     "shannon_entropy",
     "subspace_dimension",
     "energy_convergence",
     "sampling_report",
+    "extrapolate_infinite_samples",
 ]

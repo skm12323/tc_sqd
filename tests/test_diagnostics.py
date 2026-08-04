@@ -88,3 +88,24 @@ if __name__ == "__main__":
             fn()
             print(f"  PASS {name}")
     print("test_diagnostics: all PASS")
+
+
+def test_extrapolate_infinite_samples_fit():
+    """A1: 合成 1/√S 数据 (统计量), 外推 E∞ 与斜率正确恢复。
+
+    注: 该外推对 SQD 子空间能量不适用 (非统计量, A1 验证证伪, 见 docstring);
+    测试用合成统计量数据验证拟合数学正确性。
+    """
+    e_inf_true, a_true = -1.2345, 0.1
+    shots = np.array([100.0, 200.0, 400.0, 800.0, 1600.0])
+    energies = e_inf_true + a_true / np.sqrt(shots)
+    e_inf, a, r2, fit_std = tc_sqd.extrapolate_infinite_samples(energies, shots)
+    assert abs(e_inf - e_inf_true) < 1e-10, f"E∞ 未恢复: {e_inf}"
+    assert abs(a - a_true) < 1e-10
+    assert r2 > 0.999
+    # 不足 2 点报错
+    try:
+        tc_sqd.extrapolate_infinite_samples([1.0], [10.0])
+        assert False, "单点应报错"
+    except ValueError:
+        pass

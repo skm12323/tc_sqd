@@ -516,6 +516,22 @@ E_V 满足（变分原理）：E_V ≥ E_gs，且误差 ≤ ‖(I−P_V)|Ψ_gs�
 测试：`test_excited_sqd_n2_stretch_roots_no_root_skip`（B3 准简并不跳根）、
 `test_sqd_carryover_amplitude_threshold` + `test_sqd_batch_probs_preserved`（B4）。全库 99 测试全过。
 
+## A1/A3 外推族（2026-08-04，方向探索第二优先）
+
+**A1 无限采样外推（证伪）**：`extrapolate_infinite_samples`（diagnostics.py）拟合
+`E(S)=E∞+a/√S`。验证（N₂/STO-3G 拉伸，shots 50→2000）：外推 E∞ err=3.6e-2，
+**比最大 shots 点（3.6e-5）差 ~1000×**——SQD 能量是采样 det 覆盖决定的**变分下界**
+（随覆盖阶梯式收敛），非统计量，`1/√S` 模型不适用（该模型适用于期望值测量，如
+A3 的 `E(γ)` 外推）。函数保留为通用统计量外推工具，docstring 已注明对 SQD 能量不适用。
+
+**A3 T1 零噪声外推（落地）**：`zero_noise_extrapolate_t1`（noise.py）对 γ 网格用位串级
+`apply_t1_bitstrings` 模拟 T1 噪声跑 SQD，最小二乘多项式外推 γ→0（参考 arXiv:2502.20673
+低阶避免过拟合）。验证（N₂/STO-3G 拉伸）：外推 err=1.94e-4，**优于最噪点（4.77e-4）与
+无噪声随机参考（7.35e-4）**。位串级模拟支持大体系（免 2^nq 密度矩阵）。
+
+测试：`test_extrapolate_infinite_samples_fit`（A1 合成数据拟合正确性）、
+`test_zero_noise_extrapolate_t1_improves`（A3 外推优于最噪点）。全库 101 测试全过。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端

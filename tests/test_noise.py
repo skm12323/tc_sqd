@@ -1,6 +1,7 @@
 """tc_sqd.noise 模块测试 —— 密度矩阵 Kraus 噪声通道。"""
 import numpy as np
 import tc_sqd
+from pyscf import gto
 
 
 def test_statevector_to_density():
@@ -145,6 +146,31 @@ def test_density_sqd_end_to_end_h2():
 
     assert abs(e_sqd - (e_fci + ecore)) < 1e-3, (
         f"density->SQD 偏离 FCI: SQD={e_sqd:.6f}, FCI={e_fci + ecore:.6f}")
+
+
+def test_zero_noise_extrapolate_t1_improves():
+    """A3: N2 拉伸 T1 ZNE——外推 γ→0 误差 < 最噪点 (γ=0.2)。
+
+    验证: 多项式外推稳定恢复零噪声能量, 优于单个噪声点 (位串级 T1, 大体系可跑)。
+    """
+    mol = gto.M(atom="N 0 0 0; N 0 0 2.0", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    e_fci = data.solve(method="fci")
+
+    bsm = (np.random.default_rng(0).random((2000, 2 * data.norb)) > 0.5)
+    probs = np.full(2000, 1.0 / 2000)
+    gammas = (0.02, 0.05, 0.1, 0.2)
+    e_z, ens = tc_sqd.zero_noise_extrapolate_t1(
+        data.h1e, data.eri, data.norb, data.nelec,
+        bitstring_matrix=bsm, probabilities=probs, gammas=gammas,
+        ecore=data.ecore, max_iterations=3, seed=0,
+    )
+    # 外推误差 < 最噪点误差 (ZNE 收益)
+    assert abs(e_z - e_fci) < abs(ens[-1] - e_fci), (
+        f"外推未改善: e_z_err={abs(e_z - e_fci):.2e} "
+        f"noisiest_err={abs(ens[-1] - e_fci):.2e}")
+    # 达化学精度
+    assert abs(e_z - e_fci) < 1.6e-3, f"外推未达化学精度: {abs(e_z - e_fci):.2e}"
 
 
 if __name__ == "__main__":

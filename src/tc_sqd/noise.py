@@ -192,3 +192,82 @@ def apply_t1_bitstrings(bitstring_matrix, gamma: float, *, seed=None):
     flip = rng.random(bsm.shape) < gamma
     bsm &= ~flip
     return bsm
+
+
+def zero_noise_extrapolate_t1(
+    h1e,
+    eri,
+    norb: int,
+    nelec,
+    *,
+    bitstring_matrix,
+    probabilities=None,
+    gammas=(0.05, 0.1, 0.2, 0.3),
+    extrapolation_order: int = 1,
+    ecore: float = 0.0,
+    seed: Optional[int] = 0,
+    **sqd_kwargs,
+):
+    """T1 零噪声外推 (ZNE, A3): 位串级 T1 噪声能量多项式外推到 γ→0。
+
+    T1 (振幅阻尼) 是 SQD 主导误差源 (漏低概率 determinant)。对一组噪声强度
+    γ 用 :func:`apply_t1_bitstrings` 破坏无噪声位串, 跑 SQD 得 ``E(γ)``,
+    最小二乘多项式外推到 γ=0 (零噪声极限) —— 提高受 T1 影响时的能量精度。
+
+    外推模型: 低阶多项式 ``E(γ) ≈ Σ c_k γ^k`` (k=0..order), ``c_0 = E(0)``。
+    推荐线性 (order=1); 高阶可吸收曲率但放大测量噪声 (arXiv:2502.20673
+    建议最小二乘 + 低阶避免过拟合)。验证用模拟器: 对比外推 E0 与无噪声
+    SQD 参考 (γ=0 直接跑)。
+
+    Parameters
+    ----------
+    h1e, eri, norb, nelec, ecore
+        分子积分 (SQD 输入)。
+    bitstring_matrix : ndarray (S, 2*norb), bool
+        无噪声采样位串 (如 ``sample_from_circuit`` 输出)。
+    probabilities : ndarray (S,) | None
+        位串权重 (T1 翻转后近似沿用, 仅配置恢复去重合并用)。
+    gammas : tuple[float]
+        T1 率网格 (外推点, 建议覆盖 γ∈[0.02, 0.4])。
+    extrapolation_order : int
+        外推多项式阶数 (1=线性)。
+    ecore : float
+        Core 能量偏移 (计入返回值与 E(γ) 序列)。
+    seed : int | None
+        T1 翻转随机种子。
+    **sqd_kwargs
+        透传给 ``compute_ground_state_energy`` (如 ``max_iterations``)。
+
+    Returns
+    -------
+    (e_zero, energies_by_gamma) : (float, list[float])
+        ``e_zero`` 外推零噪声能量 (含 ecore); ``energies_by_gamma`` 各 γ 的
+        噪声能量 (含 ecore, 与 ``gammas`` 同序)。
+    """
+    from .fermion import compute_ground_state_energy
+
+    if extrapolation_order < 1:
+        raise ValueError(f"extrapolation_order must be >= 1, got {extrapolation_order}.")
+    if len(gammas) < extrapolation_order + 1:
+        raise ValueError(
+            f"gammas 点数 ({len(gammas)}) 不足以拟合 order={extrapolation_order} "
+            f"多项式 (至少需 {extrapolation_order + 1})。"
+        )
+    if any(g < 0 or g > 1 for g in gammas):
+        raise ValueError("gammas 必须在 [0, 1]。")
+
+    bsm0 = np.asarray(bitstring_matrix, dtype=bool)
+    energies = []
+    for g in gammas:
+        bsm_noisy = apply_t1_bitstrings(bsm0, float(g), seed=seed)
+        e = compute_ground_state_energy(
+            h1e, eri, norb, nelec, ecore=ecore, method="sqd",
+            bitstring_matrix=bsm_noisy, probabilities=probabilities,
+            **sqd_kwargs,
+        )
+        energies.append(float(e))
+    e_arr = np.asarray(energies, dtype=np.float64)
+    g_arr = np.asarray(gammas, dtype=np.float64)
+    coef = np.polyfit(g_arr, e_arr, deg=extrapolation_order)
+    e_zero = float(coef[-1])  # 常数项 = E(γ=0)
+    return e_zero, energies

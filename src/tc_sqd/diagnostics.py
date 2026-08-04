@@ -14,7 +14,7 @@ from typing import Optional, Tuple
 import numpy as np
 
 __all__ = ["shannon_entropy", "subspace_dimension", "energy_convergence",
-           "sampling_report"]
+           "sampling_report", "extrapolate_infinite_samples"]
 
 
 def shannon_entropy(probs: np.ndarray) -> float:
@@ -151,3 +151,60 @@ def sampling_report(h1e, eri, norb, nelec, bsm, *, probs=None, ecore=0.0,
         "top_configs": top_configs,
         "energy_convergence": conv,
     }
+
+
+def extrapolate_infinite_samples(
+    energies,
+    shots,
+) -> Tuple[float, float, float, float]:
+    """无限采样外推 (A1): 拟合 ``E(S) = E∞ + a/√S``, 取 ``E∞``。
+
+    采样能量随 shots S 单调收敛到子空间极限, 且统计收敛主导项 ~ 1/√S
+    (采样 det 覆盖随 √S 增长)。对 :func:`energy_convergence` 的 S→E 曲线做
+    ``E vs 1/√S`` 线性最小二乘拟合, 外推到 S→∞ 的 ``E∞`` —— 比最大 shots
+    点的能量更接近真值 (纯经典后处理, 零额外量子资源)。
+
+    Parameters
+    ----------
+    energies : array-like, shape (K,)
+        ``energy_convergence`` 输出的能量序列 (含 ecore 或电子能量均可, 口径不变)。
+    shots : array-like, shape (K,)
+        对应采样数序列 (需与 ``energies`` 同序)。
+
+    Returns
+    -------
+    (e_inf, a, r2, fit_std) : (float, float, float, float)
+        ``e_inf`` 外推无限采样能量; ``a`` 斜率 (a/√S 修正); ``r2`` 拟合优度;
+        ``fit_std`` 拟合残差标准差 (误差带参考)。
+
+    Notes
+    -----
+    - 至少 2 个点; 建议 shots 跨度 ≥ 一个数量级 (覆盖充分, 外推更稳)。
+    - **对 SQD 子空间能量不适用 (A1 验证证伪)**: SQD 能量是采样 det 覆盖决定的
+      变分下界, 非统计量, ``E(S)`` 随覆盖阶梯式收敛而非 ``1/√S`` 平滑收敛
+      (N₂ 拉伸实测: 外推反而不如最大 shots 点, 差 ~1000×)。本函数面向**统计量**
+      (如期望值测量、噪声外推 ``E(γ)`` 等) 的无限采样/参数外推。
+    """
+    y = np.asarray(energies, dtype=np.float64)
+    s = np.asarray(shots, dtype=np.float64)
+    if y.ndim != 1 or len(y) < 2:
+        raise ValueError(
+            f"至少需要 2 个 (shots, energy) 点, got {len(y)}."
+        )
+    if len(y) != len(s):
+        raise ValueError(
+            f"energies 与 shots 长度不一致: {len(y)} vs {len(s)}."
+        )
+    if np.any(s <= 0):
+        raise ValueError("shots 必须为正。")
+    # E vs 1/√S 线性拟合: E = e_inf + a·(1/√S)
+    x = 1.0 / np.sqrt(s)
+    A = np.vstack([np.ones_like(x), x]).T
+    coef, *_ = np.linalg.lstsq(A, y, rcond=None)
+    e_inf, a = float(coef[0]), float(coef[1])
+    resid = y - (e_inf + a * x)
+    fit_std = float(np.sqrt(np.mean(resid**2)))
+    ss_res = float(np.sum(resid**2))
+    ss_tot = float(np.sum((y - y.mean())**2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    return e_inf, a, r2, fit_std
