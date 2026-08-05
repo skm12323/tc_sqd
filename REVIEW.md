@@ -598,6 +598,16 @@ tc_sqd 小体系（N₂/C₂）SQD 已达 FCI —— ph-AFQMC 增量主要在**�
 
 数据由 `_plot_err_cost.py`（临时脚本，已删）生成；图存于仓库根，可重新生成。
 
+**图 3 `fig_error_hci_vs_sqd.png`（经典选态 CI vs SQD：误差 vs 子空间维度，N₂ 拉伸）**：
+- `classical HCI/CIPSI (solve_cipsi)`：**垂直段**——S+D 种子平台（err 0.022 Ha）在维度 ~9409
+  几乎不变下经 PT2 补全跳降到 FCI（~1e-7）。选态 CI 的特性：用 PT2 挑少量关键 det，不靠维度增长。
+- `traditional SQD`：平滑下降（2209→14161，err 0.042→2.2e-6），但**同维度下误差最高**。
+- `solve_sqd_active`：维度 8836 即 err 5.3e-7（比 SQD 同维度低 3-4 个量级），14400 时 4.7e-13。
+- `FCI-NO top-K`：平滑可控，维度 676 达化学精度（方向①确定性 top-K 的可预测性）。
+- `CCSD` 参照线 err 0.10 Ha：经典单参考在强关联拉伸的失效基准。
+- **结论**：active 是"同子空间规模下误差最低"的方法；CIPSI 是"几乎不增维度却补全到 FCI"的
+  方法；FCI-NO 提供可预测的维度-误差标度。
+
 ## 后续可选改进（非阻塞）
 
 ## 后续可选改进（非阻塞）
