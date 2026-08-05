@@ -320,24 +320,29 @@ def solve_hci(
     seed_bitstring_matrix: Optional[np.ndarray] = None,
     eps_hb: float = 1e-3,
     dom_thresh: float = 1e-3,
+    pt2_floor: float = 1e-7,
     max_iter: int = 40,
     ecore: float = 0.0,
     verbose: bool = False,
-) -> float:
-    """真正的 HCI (Heat-bath Configuration Interaction, Holmes 2016 JCTC 12, 3674).
+    return_details: bool = False,
+):
+    """SHCI (heat-bath CI + PT2 修正, Holmes 2016 / Sharma 2017).
 
-    **与 solve_cipsi 的本质区别 (heat-bath 选态 vs PT2 全排序)**:
+    **与 solve_cipsi 的区别 (heat-bath 选态 vs PT2 全排序)**:
       - :func:`solve_cipsi` (CIPSI): 候选加入用完整 Epstein-Nesbet PT2 得分
         ``⟨a|H|Ψ⟩²/(E−E_a)`` 排序选 top —— 每轮对全波函数求 H|Ψ⟩。
-      - 本函数 (HCI): 候选加入用**单参考 det 对矩阵元** ``|⟨j|H|i⟩| ≥ eps_hb``
-        (heat-bath 筛选) —— 不需要完整 PT2 排序, 只按"与某主导 det 的耦合强度"
-        选态。HCI 的两个参数: ``eps_hb`` (变分空间选态阈值) + ``dom_thresh``
-        (主导 det |c| 阈值)。
+      - 本函数 (SHCI): **两阶段** —— ① heat-bath 选态 ``|⟨j|H|i⟩| ≥ eps_hb``
+        构建变分空间 V (只用单参考 det 对矩阵元, 不求完整 ⟨a|H|Ψ⟩); ② 对角化 V
+        得 ``E_V``, 对 V 外候选算 **PT2 能量修正** ``E_PT2 = Σ_a |⟨a|H|Ψ⟩|²/(E−E_a)``。
+        返回标准 SHCI 报告的总能量 ``E_total = E_V + E_PT2``。
 
-    **实现** (朴素 heat-bath, 与 pyscf/naive-hci 同思路): 对每个主导 det |i⟩,
+    **参数** (SHCI 双阈值): ``eps_hb`` = ε₁ (变分空间选态); ``pt2_floor`` = ε₂
+    (PT2 修正精度参考, 用于判断变分空间是否足够; 本实现不做 semistochastic,
+    ε₂ 仅标注)。
+
+    **实现** (朴素 heat-bath, 同 pyscf/naive-hci 思路): 对每个主导 det |i⟩,
     枚举单/双激发候选 |j⟩, 用单位向量 ``e_i`` 经 PySCF ``contract_2e`` 一次算
-    ``⟨j|H|i⟩`` (复用 :class:`_Subspace.pt2_matrix_elements`, 传 ``c2d=e_i``),
-    保留 ``|⟨j|H|i⟩| ≥ eps_hb`` 的候选。对角化 - 选态迭代至无新增。
+    ``⟨j|H|i⟩`` (复用 :class:`_Subspace.pt2_matrix_elements`, 传 ``c2d=e_i``)。
 
     Parameters
     ----------
@@ -352,28 +357,27 @@ def solve_hci(
     seed_bitstring_matrix : ndarray (S, 2*norb) | None
         种子 det 集合 (位串)。``None`` = 从 HF 出发 (标准 HCI)。
     eps_hb : float
-        heat-bath 选态阈值: ``|⟨j|H|i⟩| ≥ eps_hb`` 的候选 det 加入变分空间。
-        越小空间越大、越接近 FCI。
+        heat-bath 选态阈值 (ε₁): ``|⟨j|H|i⟩| ≥ eps_hb`` 的候选 det 加入变分空间。
+        越小变分空间越大, E_PT2 越小, 越接近 FCI。
     dom_thresh : float
         主导 det 的 |c| 阈值 (低于此不参与生成集扩展)。
+    pt2_floor : float
+        PT2 修正阈值 (ε₂ 参考): 仅 verbose 标注变分空间是否足够, 不强制收敛。
     max_iter : int
         迭代轮数上限。
     ecore : float
         Core 能量偏移, 计入返回值。
     verbose : bool
-        打印每轮空间/能量。
+        打印每轮变分空间/能量/PT2。
+    return_details : bool
+        ``True`` 返回 ``(E_total, E_PT2, dim)`` 元组 (含 ecore 的 E_total,
+        不含 ecore 的 E_PT2, 变分空间维度) —— 供诊断/绘图。
 
     Returns
     -------
-    energy : float
-        基态能量 (含 ``ecore``)。
-
-    Notes
-    -----
-    - 真正的 heat-bath CI (不是 CIPSI/PT2 排序), 与 solve_cipsi 在选态标准上
-      严格不同; 两者都收敛到 FCI, 但 HCI 的 heat-bath 筛选更便宜 (只用单对
-      矩阵元, 不求完整 ⟨a|H|Ψ⟩)。
-    - 实现是"朴素"版本 (每主导 det 单独算矩阵元), 类似 pyscf/naive-hci。
+    float | tuple
+        ``return_details=False``: SHCI 总能量 ``E_V + E_PT2`` (含 ``ecore``)。
+        ``return_details=True``: ``(E_total, E_PT2, dim)``。
     """
     from .fermion import bitstring_matrix_to_ci_strs
 
@@ -404,12 +408,8 @@ def solve_hci(
             str_b = str_a
 
     sub = _Subspace(h1e, eri, norb, nelec)
-    for it in range(max_iter):
-        E, c2d, sa, sb = sub.diag(str_a, str_b)
-        idx_a = {int(s): i for i, s in enumerate(sa)}
-        idx_b = {int(s): i for i, s in enumerate(sb)}
 
-        # 主导 dets
+    def _dominant(c2d, sa, sb):
         nA, nB = c2d.shape
         flat = np.abs(c2d).ravel()
         order = np.argsort(flat)[::-1]
@@ -420,11 +420,18 @@ def solve_hci(
                 dom.append((int(sa[ia]), int(sb[ib])))
             else:
                 break
+        return dom
+
+    # ---- 阶段 1: heat-bath 选态构建变分空间 V (|⟨j|H|i⟩| ≥ eps_hb, 到无新增) ----
+    for it in range(max_iter):
+        E, c2d, sa, sb = sub.diag(str_a, str_b)
+        idx_a = {int(s): i for i, s in enumerate(sa)}
+        idx_b = {int(s): i for i, s in enumerate(sb)}
+        dom = _dominant(c2d, sa, sb)
         if not dom:
             break
 
-        # HCI heat-bath 选态: |<j|H|i>| >= eps_hb (单参考 det 对矩阵元)
-        new_dets = set()
+        hb_new = set()
         sa_list, sb_list = list(sa), list(sb)
         for a, b in dom:
             cand = _excited_dets(a, b, norb)
@@ -438,23 +445,47 @@ def solve_hci(
             me = sub.pt2_matrix_elements(str_a, str_b, cand, e_i, sa, sb)
             for (ca, cb), (hji, _) in me.items():
                 if abs(hji) >= eps_hb:
-                    new_dets.add((ca, cb))
-
-        if not new_dets:
+                    hb_new.add((ca, cb))
+        if not hb_new:
             break
-        for ca, cb in new_dets:
+        for ca, cb in hb_new:
             str_a.append(ca)
             if cb not in str_b:
                 str_b.append(cb)
         str_a = sorted(set(str_a))
         str_b = str_a if not open_shell else sorted(set(str_b))
         if verbose:
-            dim_now = len(str_a) * len(str_b)
-            print(f"[HCI] it{it+1}/{max_iter}: strings={len(str_a)}x{len(str_b)} "
-                  f"diag_dim={dim_now} E={E + ecore:.6f} new={len(new_dets)}")
+            print(f"[HCI:hb] it{it+1}/{max_iter}: dim={len(str_a)*len(str_b)} "
+                  f"E_V={E + ecore:.6f} new={len(hb_new)}")
 
+    # ---- 阶段 2: 对角化 + PT2 能量修正 (E_PT2 = Σ |⟨a|H|Ψ⟩|²/(E−E_a)) ----
     E, c2d, sa, sb = sub.diag(str_a, str_b)
-    return float(E) + ecore
+    idx_a = {int(s): i for i, s in enumerate(sa)}
+    idx_b = {int(s): i for i, s in enumerate(sb)}
+    dom = _dominant(c2d, sa, sb)
+
+    cand_all = set()
+    for a, b in dom:
+        for ca, cb in _excited_dets(a, b, norb):
+            if ca not in idx_a or cb not in idx_b:
+                cand_all.add((ca, cb))
+    if cand_all:
+        me = sub.pt2_matrix_elements(str_a, str_b, cand_all, c2d, sa, sb)
+        pt2 = {d: h * h / (E - Ea) for d, (h, Ea) in me.items()
+               if abs(E - Ea) > 1e-12}
+        e_pt2 = float(sum(pt2.values()))
+    else:
+        e_pt2 = 0.0
+    dim = len(str_a) * len(str_b)
+    e_total = float(E + e_pt2) + ecore
+
+    if verbose:
+        print(f"[HCI] dim={dim} E_V={E + ecore:.8f} E_PT2={e_pt2:.2e} "
+              f"E_total={e_total:.8f} "
+              f"{'PT2 OK' if abs(e_pt2) < pt2_floor else 'PT2 large (reduce eps_hb)'}")
+    if return_details:
+        return e_total, float(e_pt2), dim
+    return e_total
 
 
 # --------------------------------------------------------------------------- #

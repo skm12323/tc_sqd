@@ -582,19 +582,26 @@ tc_sqd 小体系（N₂/C₂）SQD 已达 FCI —— ph-AFQMC 增量主要在**�
 
 ## 真正的 HCI 实现（`solve_hci`，2026-08-04）
 
-**Heat-bath CI**（Holmes 2016 JCTC 12, 3674）——与 `solve_cipsi` 的本质区别在选态标准：
+**SHCI（Holmes 2016 JCTC 12, 3674 + Sharma 2017）**——与 `solve_cipsi` 的本质区别在选态标准：
 CIPSI 用完整 Epstein-Nesbet **PT2 排序**（⟨a|H|Ψ⟩²/(E−E_a)），HCI 用**单参考 det 对矩阵元
 heat-bath 筛选**（|⟨j|H|i⟩| ≥ `eps_hb`）——更便宜（不求完整 ⟨a|H|Ψ⟩，只按与某主导 det 的
 耦合强度选态）。
+
+**两阶段 SHCI**（补 PT2 修正后）：
+- **阶段 1（ε₁ = `eps_hb`）**：heat-bath 选态构建变分空间 V（到无新增）。
+- **阶段 2（ε₂ = `pt2_floor`）**：对角化 V 得 `E_V`，对 V 外候选算 **PT2 能量修正**
+  `E_PT2 = Σ_a |⟨a|H|Ψ⟩|²/(E−E_a)`。返回标准 SHCI 报告 `E_total = E_V + E_PT2`。
+- `return_details=True` 返回 `(E_total, E_PT2, dim)`（诊断/绘图）。
 
 **依赖确认**：外部 HCI 包在当前网络环境**均不可装**——`pyhci`（清华镜像无）、
 `pyscf-forge`（wheel 编译失败）、`pyscf/naive-hci`（git+ GitHub 克隆失败）、`pyscf.hci`
 （pyscf 2.14 无内置）。因此 **HCI 在库内实现（无额外依赖）**，复用 pyscf `contract_2e` +
 `_Subspace`（传单位向量 `e_i` 得单对矩阵元 ⟨j|H|i⟩），与 pyscf/naive-hci 同思路的朴素实现。
 
-**验证**（`tests/test_cipsi.py` +3）：H₂/N₂ 拉伸**从 HF 单 det 出发**（seed=None）经 heat-bath
-选态自动补全到 FCI（err < 1e-4）；`eps_hb` 阈值控制子空间规模（松阈值误差大、紧阈值近 FCI）。
-全库 106 测试全过。
+**验证**（`tests/test_cipsi.py`，SHCI 相关 3 项）：H₂/N₂ 拉伸**从 HF 单 det 出发**
+（seed=None）经 heat-bath 选态补全到 FCI（err < 1e-4）；`eps_hb` 控制变分空间规模 +
+**PT2 修正补足**（N₂ 拉伸 eps_hb=5e-2 时 dim=3481, E_PT2=-3.9e-5 → E_total 接近 FCI；
+eps_hb=1e-4 时 E_PT2≈-7e-11）。全库 106 测试全过（本小节的 HCI 三项）。
 
 ## 汇总图：减误差 / 提速方法与经典 baseline 对比（2026-08-04）
 
@@ -614,16 +621,17 @@ heat-bath 筛选**（|⟨j|H|i⟩| ≥ `eps_hb`）——更便宜（不求完整
 
 数据由 `_plot_err_cost.py`（临时脚本，已删）生成；图存于仓库根，可重新生成。
 
-**图 3 `fig_error_hci_vs_sqd.png`（真正 HCI vs SQD：误差 vs 子空间维度，N₂ 拉伸）**：
-- `classical HCI (solve_hci, heat-bath)`：eps_hb 网格下**平滑下降**（维度 3364→13689，
-  err 3.96e-5→7.5e-11）——heat-bath 阈值连续控制空间规模（区别于 CIPSI 的垂直跳降）。
+**图 3 `fig_error_hci_vs_sqd.png`（SHCI vs SQD：误差 vs 子空间维度，N₂ 拉伸）**：
+- `HCI variational E_V`（虚线）与 `SHCI E_V+E_PT2`（实线）：**低维度（dim~3481）处虚线误差
+  高于实线（E_PT2=-3.9e-5 补足）**——直观展示 PT2 修正价值; 维度增大（eps_hb 减小）两者
+  趋同（E_PT2→0）。
 - `traditional SQD`：平滑下降（2209→14161，err 0.042→2.2e-6），但**同维度下误差最高**。
 - `solve_sqd_active`：维度 8836 即 err 5.3e-7（比 SQD 同维度低 3-4 个量级），14400 时 4.7e-13。
-- `FCI-NO top-K`：**同维度下误差最低**（维度 3969 时 3.2e-6 vs HCI 3364 时 4.0e-5）——
+- `FCI-NO top-K`：**同维度下误差最低**（维度 3969 时 3.2e-6 vs HCI 3481 时 E_V 4.0e-5）——
   确定性 top-K 是选态上限，HCI 的 heat-bath 是近似选择。
 - `CCSD` 参照线 err 0.10 Ha：经典单参考在强关联拉伸的失效基准。
-- **结论**：active 是"同子空间规模下误差最低"的方法；HCI 是 heat-bath 近似（略逊于 top-K
-  上限但廉价）；FCI-NO top-K 提供选态方法的理论上限标度。
+- **结论**：SHCI 的 PT2 修正让"小变分空间 + 外推修正"达到高精度; active 是"同子空间规模下
+  误差最低"的采样方法; FCI-NO top-K 提供选态方法的理论上限标度。
 
 ## 后续可选改进（非阻塞）
 
