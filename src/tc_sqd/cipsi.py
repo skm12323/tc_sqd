@@ -35,7 +35,7 @@ from scipy.sparse.linalg import eigsh, LinearOperator
 from .configuration_recovery import recover_configurations
 from .fermion import bitstring_matrix_to_ci_strs, SCIState
 
-__all__ = ["solve_cipsi", "solve_sqd_active"]
+__all__ = ["solve_cipsi", "solve_sqd_active", "solve_sqd_adaptive", "solve_hci"]
 
 
 # --------------------------------------------------------------------------- #
@@ -303,6 +303,155 @@ def solve_cipsi(
             dim_now = len(str_a) * len(str_b)
             print(f"[CIPSI] it{it}: strings={len(str_a)}x{len(str_b)} "
                   f"diag_dim={dim_now} E={E + ecore:.6f} pt2_top={pt2_sum:.2e}")
+
+    E, c2d, sa, sb = sub.diag(str_a, str_b)
+    return float(E) + ecore
+
+
+# --------------------------------------------------------------------------- #
+#  真正的 HCI (heat-bath CI): |<j|H|i>| >= eps_hb 选态 (Holmes 2016 JCTC)
+# --------------------------------------------------------------------------- #
+def solve_hci(
+    one_body_tensor: np.ndarray,
+    two_body_tensor: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    seed_bitstring_matrix: Optional[np.ndarray] = None,
+    eps_hb: float = 1e-3,
+    dom_thresh: float = 1e-3,
+    max_iter: int = 40,
+    ecore: float = 0.0,
+    verbose: bool = False,
+) -> float:
+    """真正的 HCI (Heat-bath Configuration Interaction, Holmes 2016 JCTC 12, 3674).
+
+    **与 solve_cipsi 的本质区别 (heat-bath 选态 vs PT2 全排序)**:
+      - :func:`solve_cipsi` (CIPSI): 候选加入用完整 Epstein-Nesbet PT2 得分
+        ``⟨a|H|Ψ⟩²/(E−E_a)`` 排序选 top —— 每轮对全波函数求 H|Ψ⟩。
+      - 本函数 (HCI): 候选加入用**单参考 det 对矩阵元** ``|⟨j|H|i⟩| ≥ eps_hb``
+        (heat-bath 筛选) —— 不需要完整 PT2 排序, 只按"与某主导 det 的耦合强度"
+        选态。HCI 的两个参数: ``eps_hb`` (变分空间选态阈值) + ``dom_thresh``
+        (主导 det |c| 阈值)。
+
+    **实现** (朴素 heat-bath, 与 pyscf/naive-hci 同思路): 对每个主导 det |i⟩,
+    枚举单/双激发候选 |j⟩, 用单位向量 ``e_i`` 经 PySCF ``contract_2e`` 一次算
+    ``⟨j|H|i⟩`` (复用 :class:`_Subspace.pt2_matrix_elements`, 传 ``c2d=e_i``),
+    保留 ``|⟨j|H|i⟩| ≥ eps_hb`` 的候选。对角化 - 选态迭代至无新增。
+
+    Parameters
+    ----------
+    one_body_tensor : ndarray (norb, norb)
+        单电子积分 (闭壳层单矩阵)。
+    two_body_tensor : ndarray (norb, norb, norb, norb)
+        双电子积分 (chemist 记号)。
+    norb : int
+        空间轨道数。
+    nelec : tuple(int, int)
+        ``(n_alpha, n_beta)``。
+    seed_bitstring_matrix : ndarray (S, 2*norb) | None
+        种子 det 集合 (位串)。``None`` = 从 HF 出发 (标准 HCI)。
+    eps_hb : float
+        heat-bath 选态阈值: ``|⟨j|H|i⟩| ≥ eps_hb`` 的候选 det 加入变分空间。
+        越小空间越大、越接近 FCI。
+    dom_thresh : float
+        主导 det 的 |c| 阈值 (低于此不参与生成集扩展)。
+    max_iter : int
+        迭代轮数上限。
+    ecore : float
+        Core 能量偏移, 计入返回值。
+    verbose : bool
+        打印每轮空间/能量。
+
+    Returns
+    -------
+    energy : float
+        基态能量 (含 ``ecore``)。
+
+    Notes
+    -----
+    - 真正的 heat-bath CI (不是 CIPSI/PT2 排序), 与 solve_cipsi 在选态标准上
+      严格不同; 两者都收敛到 FCI, 但 HCI 的 heat-bath 筛选更便宜 (只用单对
+      矩阵元, 不求完整 ⟨a|H|Ψ⟩)。
+    - 实现是"朴素"版本 (每主导 det 单独算矩阵元), 类似 pyscf/naive-hci。
+    """
+    from .fermion import bitstring_matrix_to_ci_strs
+
+    if one_body_tensor.ndim == 3:
+        if not np.allclose(one_body_tensor[0], one_body_tensor[1]):
+            raise ValueError(
+                "solve_hci 不支持自旋分辨 h1e; 请传闭壳层 (norb, norb)。"
+            )
+        h1e = np.asarray(one_body_tensor[0])
+    else:
+        h1e = np.asarray(one_body_tensor)
+    eri = np.asarray(two_body_tensor)
+    na, nb = nelec
+    open_shell = na != nb
+
+    # 种子 -> 字符串集合 (默认 HF)
+    if seed_bitstring_matrix is None:
+        hf_a = (1 << na) - 1
+        hf_b = (1 << nb) - 1
+        str_a = [hf_a]
+        str_b = [hf_b] if open_shell else [hf_a]
+    else:
+        ci_a, ci_b = bitstring_matrix_to_ci_strs(
+            seed_bitstring_matrix, open_shell=open_shell)
+        str_a = sorted(set(int(x) for x in ci_a))
+        str_b = sorted(set(int(x) for x in ci_b))
+        if not open_shell:
+            str_b = str_a
+
+    sub = _Subspace(h1e, eri, norb, nelec)
+    for it in range(max_iter):
+        E, c2d, sa, sb = sub.diag(str_a, str_b)
+        idx_a = {int(s): i for i, s in enumerate(sa)}
+        idx_b = {int(s): i for i, s in enumerate(sb)}
+
+        # 主导 dets
+        nA, nB = c2d.shape
+        flat = np.abs(c2d).ravel()
+        order = np.argsort(flat)[::-1]
+        dom = []
+        for k in order:
+            if flat[k] > dom_thresh:
+                ia, ib = divmod(int(k), nB)
+                dom.append((int(sa[ia]), int(sb[ib])))
+            else:
+                break
+        if not dom:
+            break
+
+        # HCI heat-bath 选态: |<j|H|i>| >= eps_hb (单参考 det 对矩阵元)
+        new_dets = set()
+        sa_list, sb_list = list(sa), list(sb)
+        for a, b in dom:
+            cand = _excited_dets(a, b, norb)
+            cand = {(ca, cb) for (ca, cb) in cand
+                    if ca not in idx_a or cb not in idx_b}
+            if not cand:
+                continue
+            # 单位向量 e_i: 只在主导 det (a,b) 处为 1 -> H e_i 的第 j 分量 = <j|H|i>
+            e_i = np.zeros((len(sa), len(sb)))
+            e_i[sa_list.index(a), sb_list.index(b)] = 1.0
+            me = sub.pt2_matrix_elements(str_a, str_b, cand, e_i, sa, sb)
+            for (ca, cb), (hji, _) in me.items():
+                if abs(hji) >= eps_hb:
+                    new_dets.add((ca, cb))
+
+        if not new_dets:
+            break
+        for ca, cb in new_dets:
+            str_a.append(ca)
+            if cb not in str_b:
+                str_b.append(cb)
+        str_a = sorted(set(str_a))
+        str_b = str_a if not open_shell else sorted(set(str_b))
+        if verbose:
+            dim_now = len(str_a) * len(str_b)
+            print(f"[HCI] it{it+1}/{max_iter}: strings={len(str_a)}x{len(str_b)} "
+                  f"diag_dim={dim_now} E={E + ecore:.6f} new={len(new_dets)}")
 
     E, c2d, sa, sb = sub.diag(str_a, str_b)
     return float(E) + ecore
