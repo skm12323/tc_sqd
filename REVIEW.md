@@ -580,6 +580,26 @@ tc_sqd 小体系（N₂/C₂）SQD 已达 FCI —— ph-AFQMC 增量主要在**�
 
 测试：`test_solve_sqd_robust_combines_zne_budget`（ZNE 不劣化 + 预算省 shots）。全库 103 测试全过。
 
+## 汇总图：减误差 / 提速方法与经典 baseline 对比（2026-08-04）
+
+**基准**：N₂/STO-3G 拉伸（强关联，dim=14400），FCI 为精确参考，经典 baseline = 纯采样 SQD。
+
+**图 1 `fig_error_vs_dimension.png`（减误差：误差 vs 子空间维度，log-log）**：
+- `top-K dets (FCI-NO basis)`（自然轨道换基）< `top-K dets (MO basis)` < `classical SQD`
+  在**相同子空间维度**下误差从低到高 —— 换基让子空间更高效（方向①）。
+- 化学精度线 1.6 mHa：FCI-NO/MO top-K 在大维度达标，classical SQD 误差几乎不随维度下降
+  （配置恢复在 MO 基的覆盖瓶颈，~1e-3~1e-4 平台）。
+
+**图 2 `fig_error_vs_shots.png`（提速：误差 vs 采样成本，log-log）**：
+- `solve_sqd_active (PT2 selection)` < `solve_sqd_robust (B1-budget × ZNE)` < `classical SQD`
+  在**相同采样成本**下误差从低到高。
+- 化学精度交点：active ≈ **100 shots**、robust ≈ 1000 shots、**classical SQD 达不到**
+  —— PT2 主动选态把达到化学精度的采样成本降低一个数量级以上（方向②）。
+
+数据由 `_plot_err_cost.py`（临时脚本，已删）生成；图存于仓库根，可重新生成。
+
+## 后续可选改进（非阻塞）
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
