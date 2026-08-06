@@ -14,7 +14,8 @@ from typing import Optional, Tuple
 import numpy as np
 
 __all__ = ["shannon_entropy", "subspace_dimension", "energy_convergence",
-           "sampling_report", "extrapolate_infinite_samples"]
+           "sampling_report", "extrapolate_infinite_samples",
+           "extrapolate_energy_variance"]
 
 
 def shannon_entropy(probs: np.ndarray) -> float:
@@ -207,4 +208,67 @@ def extrapolate_infinite_samples(
     ss_res = float(np.sum(resid**2))
     ss_tot = float(np.sum((y - y.mean())**2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    return e_inf, a, r2, fit_std
+
+
+def extrapolate_energy_variance(
+    energies,
+    variances,
+    degree: int = 1,
+) -> Tuple[float, float, float, float]:
+    """能量-方差外推 (方向 D): 拟合 ``E(σ²)`` 线性/多项式, 外推到 σ²→0。
+
+    **理论 (截断 CI 子空间)**: 对子空间 V 对角化得的本征矢 |Ψ⟩, 精确能量方差
+    ``σ² = ⟨Ψ|H²|Ψ⟩ − E² = Σ_{a∉V} |⟨a|H|Ψ⟩|²`` (只含子空间外矩阵元)。
+    截断引起的能量误差 ``ΔE = E − E_gs`` 与 σ² 近似**线性**相关
+    (Temple 不等式方向 ``E_gs ≥ E − σ²/(H_max−E)``, CI 外推文献, 大子空间极限
+    成立)。因此对同一分子不同子空间规模 (如主动采样轨迹 :func:`solve_sqd_active`
+    的 ``trajectory``) 收集 ``(E, σ²)`` 序列, 拟合后外推到 σ²=0 —— 用**规模趋势**
+    修正**最终子空间**的残余误差, 不增大维度即降误差。
+
+    **与 :func:`extrapolate_infinite_samples` 的区别**: A1 用 shots 作收敛坐标
+    已被证伪 (SQD 子空间能量非统计量); 本函数用**方差**作坐标, 是子空间方法的
+    固有收敛指标 (PT2/方差随扩展单调下降), 对 SQD/CIPSI/HCI 轨迹均适用。
+
+    Parameters
+    ----------
+    energies : array-like, shape (K,)
+        各子空间规模的对角化基态能量 ``E_k`` (含 ecore 口径一致即可)。
+    variances : array-like, shape (K,)
+        对应能量方差 ``σ²_k`` (如 ``trajectory`` 里的 ``sigma2`` 字段)。
+    degree : int
+        拟合多项式次数 (默认 1 = 线性 E = E∞ + a·σ²)。数据噪声大时可用 2。
+
+    Returns
+    -------
+    (e_inf, a, r2, fit_std) : (float, float, float, float)
+        ``e_inf`` 外推方差零点的能量; ``a`` 首项系数 (degree=1 时为斜率,
+        估计每单位方差的误差); ``r2`` 拟合优度 (接近 1 表示外推可信);
+        ``fit_std`` 拟合残差标准差 (误差带参考)。
+
+    Notes
+    -----
+    - 至少 2 个点, 建议 ≥3 个且方差跨度 ≥1 个数量级 (外推更稳)。
+    - 方差须**单调下降** (子空间扩展); 若未单调, 拟合仍执行但 ``r2`` 会低,
+      提示轨迹质量差。
+    """
+    y = np.asarray(energies, dtype=np.float64)
+    x = np.asarray(variances, dtype=np.float64)
+    if y.ndim != 1 or len(y) < 2:
+        raise ValueError(f"至少需要 2 个 (σ², energy) 点, got {len(y)}.")
+    if len(y) != len(x):
+        raise ValueError(f"energies 与 variances 长度不一致: {len(y)} vs {len(x)}.")
+    if degree < 1 or degree >= len(y):
+        raise ValueError(f"degree={degree} 需满足 1 ≤ degree < 点数={len(y)}.")
+    if np.any(x < 0):
+        raise ValueError("方差必须非负。")
+    # 多项式最小二乘: E = Σ_c c_p · σ^(2p), 外推到 σ²=0 -> e_inf = c_0
+    coef = np.polyfit(x, y, deg=degree)
+    e_inf = float(coef[-1])                      # 常数项 (σ²→0)
+    resid = y - np.polyval(coef, x)
+    fit_std = float(np.sqrt(np.mean(resid**2)))
+    ss_res = float(np.sum(resid**2))
+    ss_tot = float(np.sum((y - y.mean())**2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    a = float(coef[-2]) if degree >= 1 else 0.0
     return e_inf, a, r2, fit_std

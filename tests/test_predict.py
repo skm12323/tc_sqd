@@ -152,6 +152,36 @@ def test_plan_sampling():
     assert r_w["best"].shots > 0 and r_w["best"].depth > 0
 
 
+def test_recommend_sqd_params():
+    """recommend_sqd_params: 组装 plan_sampling + 子空间启发式, 结构完整。
+
+    给定 N2/STO-3G (norb=10, nelec=(5,5)) + 真机参数, 应给出 shots/depth/
+    max_strings/n_active_per_round, 且子空间上限 ≤ 全空间 C(10,5)=252。
+    """
+    rec = tc_sqd.recommend_sqd_params(10, (5, 5), T1_us=30.0, t_gate_ns=100.0)
+    assert isinstance(rec, tc_sqd.SqdParams)
+    for k in ("shots", "depth", "max_strings", "n_active_per_round",
+              "dom_thresh", "pt2_floor", "predicted_error", "dominant",
+              "feasible", "reason"):
+        assert hasattr(rec, k), f"缺字段 {k}"
+    assert rec.feasible, "默认硬件参数下应存在可行方案"
+    assert rec.shots > 0 and rec.depth > 0
+    assert rec.max_strings <= 252, f"max_strings 超全空间: {rec.max_strings}"
+    assert rec.max_strings >= 50
+    assert rec.n_active_per_round >= 10
+    assert len(rec.reason) > 0
+    # 手动覆盖子空间上限
+    rec2 = tc_sqd.recommend_sqd_params(
+        10, (5, 5), T1_us=30.0, t_gate_ns=100.0, max_strings_override=80)
+    assert rec2.max_strings == 80
+    # 极紧目标 -> feasible=False (目标过紧无可行组合)
+    rec3 = tc_sqd.recommend_sqd_params(
+        10, (5, 5), T1_us=30.0, t_gate_ns=100.0, target=1e-9,
+        shots_max=1000)
+    assert not rec3.feasible
+    assert "无可行" in rec3.reason
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

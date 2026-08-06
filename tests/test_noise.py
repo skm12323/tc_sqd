@@ -173,6 +173,41 @@ def test_zero_noise_extrapolate_t1_improves():
         f"noisiest_err={abs(ens[-1] - e_fci):.2e}")
 
 
+def test_noise_impact_reports_safe_zone():
+    """noise_impact: 逐级 T1 评估能量退化, 报告安全区与主导因子。
+
+    N2/STO-3G + active 采样对 T1 免疫 (recover 纠正), 各 γ 误差应单调不增
+    退化 (≈相等), safe_gamma 存在, 建议字符串非空。
+    """
+    mol = gto.M(atom="N 0 0 0; N 0 0 2.0", basis="sto-3g", verbose=0)
+    data = tc_sqd.from_pyscf(mol)
+    e_fci = data.solve(method="fci")
+    bsm = (np.random.default_rng(0).random((300, 2 * data.norb)) > 0.5)
+    probs = np.full(300, 1.0 / 300)
+
+    ni = tc_sqd.noise_impact(
+        data.h1e, data.eri, data.norb, data.nelec,
+        bitstring_matrix=bsm, probabilities=probs, ecore=data.ecore,
+        seed=0, e_reference=e_fci, return_details=True)
+    assert set(ni.keys()) >= {"e0", "gammas", "energies", "errors",
+                              "safe_gamma", "dominant", "recommendation",
+                              "target"}
+    # active 采样对 T1 免疫 (recover 纠正 + PT2 抗噪): 各 γ 误差都不爆 (保持
+    # 化学精度内), 且相对 γ=0 不劣化超 10× (容 1e-10 级随机抖动, 不做单调断言)。
+    assert max(ni["errors"]) < ni["target"], (
+        f"噪声下误差超化学精度: {max(ni['errors']):.2e}")
+    assert ni["errors"][-1] <= ni["errors"][0] * 10 + 1e-9, (
+        f"噪声显著劣化: err0={ni['errors'][0]:.2e} err_last={ni['errors'][-1]:.2e}")
+    # 基线达化学精度 -> 安全区存在
+    assert ni["safe_gamma"] is not None and ni["safe_gamma"] >= 0.0
+    assert isinstance(ni["recommendation"], str) and len(ni["recommendation"]) > 0
+    # 简要版返回核心字段
+    brief = tc_sqd.noise_impact(
+        data.h1e, data.eri, data.norb, data.nelec,
+        bitstring_matrix=bsm, probabilities=probs, ecore=data.ecore, seed=0)
+    assert set(brief.keys()) >= {"e0", "safe_gamma", "recommendation"}
+
+
 def test_solve_sqd_robust_combines_zne_budget():
     """solve_sqd_robust: A3 ZNE 外推 + B1 预算闭环 统一 API。
 

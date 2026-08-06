@@ -154,3 +154,127 @@ def test_sqd_active_budget_saves_shots():
         ecore=data.ecore, n_active_per_round=50, max_rounds=10, rand_seed=0,
     )
     assert abs(e_ada - e_fci_total) <= abs(e_full - e_fci_total) * 1.5 + 1e-9
+
+
+# --------------------------------------------------------------------------- #
+#  方向 D: 能量-方差外推轨迹 + solve_sqd_ev + 本征矢重要性采样
+# --------------------------------------------------------------------------- #
+def test_sqd_active_trajectory_monotone():
+    """D: trajectory 记录每轮 (E, σ², E_PT2, dim), 方差单调不增、能量单调降。
+
+    子空间逐步扩展 -> σ² = Σ|⟨a|H|Ψ⟩|² (子空间外矩阵元) 单调不增, E 单调不增
+    (变分). 这是能量-方差外推的输入前提。
+    """
+    data = _n2_stretch_data()
+    h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
+    n_samples = 100
+    bsm = (np.random.default_rng(0).random((n_samples, 2 * norb)) > 0.5)
+    probs = np.full(n_samples, 1.0 / n_samples)
+
+    traj = []
+    tc_sqd.solve_sqd_active(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm, probabilities=probs,
+        n_active_per_round=50, max_rounds=10, rand_seed=0, trajectory=traj,
+    )
+    assert len(traj) >= 2, f"轨迹应 ≥2 点: {len(traj)}"
+    E_seq = [t["E"] for t in traj]
+    V_seq = [t["sigma2"] for t in traj]
+    D_seq = [t["dim"] for t in traj]
+    for k in range(1, len(traj)):
+        assert E_seq[k] <= E_seq[k - 1] + 1e-12, f"能量未单调: {E_seq}"
+        assert V_seq[k] <= V_seq[k - 1] + 1e-12, f"方差未单调不增: {V_seq}"
+        assert D_seq[k] >= D_seq[k - 1], f"维度未单调增: {D_seq}"
+    assert all("e_pt2" in t and "shots" in t for t in traj)
+
+
+def test_solve_sqd_ev_n2_reaches_chemical_accuracy():
+    """D: solve_sqd_ev 外推能量达化学精度 (EV 修正后非变分, 允许略低)。
+
+    N2/STO-3G 拉伸低采样下, 能量-方差外推估计须落在化学精度带内 (实测
+    |err| ~ 1e-5, 远优于 1.6e-3 阈值)。
+    """
+    data = _n2_stretch_data()
+    h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
+    e_fci, _ = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
+    n_samples = 100
+    bsm = (np.random.default_rng(0).random((n_samples, 2 * norb)) > 0.5)
+    probs = np.full(n_samples, 1.0 / n_samples)
+
+    e_ev, det = tc_sqd.solve_sqd_ev(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm, probabilities=probs,
+        n_active_per_round=50, max_rounds=10, rand_seed=0,
+        return_details=True,
+    )
+    assert abs(e_ev - e_fci) < 1.6e-3, f"EV 外推未达化学精度: {abs(e_ev - e_fci):.2e}"
+    assert det["r2"] > 0.9, f"EV 外推拟合质量差: r2={det['r2']:.4f}"
+    assert len(det["trajectory"]) >= 2
+    # EV 估计是修正量: 与直接能量同侧 (非变分, 允许略低), 但不得离谱
+    assert abs(e_ev - det["E_direct"]) < 1e-2
+
+
+def test_eigenvector_importance_sample_concentrates_dominant():
+    """D: 本征矢重要性采样按振幅平方分布采样, 聚焦主导 det。
+
+    低 temperature (锐化) -> 采样集中到主导 det (argmax |c|²); 高 temperature
+    (展平) -> 分布更均匀。验证"学习型采样先验"确实按振幅加权。
+    """
+    # 用 H2 (小空间) 验证分布性质, 保证确定性
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    d2 = tc_sqd.from_pyscf(mol)
+    h1e2, eri2, norb2, nelec2 = d2.h1e, d2.eri, d2.norb, d2.nelec
+    ci = tc_sqd.excited_configurations(norb2, nelec2, max_excitations=2)
+    ci_a, ci_b = tc_sqd.bitstring_matrix_to_ci_strs(ci, open_shell=False)
+    res = tc_sqd.solve_sci((ci_a, ci_b), h1e2, eri2, norb2, nelec2)
+    c2d = res.sci_state.amplitudes.reshape(len(ci_a), len(ci_b))
+    assert c2d.shape == (2, 2)          # H2/STO-3G 两字符串: HF + 双激发
+    sa = sb = np.asarray(ci_a)
+
+    # 低温度: 主导 det (HF, |c| 更大) 被多数采样
+    bsm_hot = tc_sqd.eigenvector_importance_sample(
+        c2d, sa, sb, norb2, 500, rand_seed=0, temperature=10.0)
+    bsm_cold = tc_sqd.eigenvector_importance_sample(
+        c2d, sa, sb, norb2, 500, rand_seed=0, temperature=0.1)
+    assert bsm_hot.shape == (500, 2 * norb2) and bsm_hot.dtype == bool
+    # 电子数守恒 (每个 det 位串都有 na=1, nb=1)
+    assert bsm_cold.sum(axis=1).min() == 2
+    # 展平 -> 两 det 比例接近均匀; 锐化 -> 主导 det 明显占优
+    from tc_sqd.counts import bitarray_to_int
+    u_hot = np.unique(bitarray_to_int(bsm_hot), return_counts=True)[1]
+    u_cold = np.unique(bitarray_to_int(bsm_cold), return_counts=True)[1]
+    ratio_hot = u_hot.max() / u_hot.sum()
+    ratio_cold = u_cold.max() / u_cold.sum()
+    assert ratio_cold > ratio_hot + 0.1, (
+        f"锐化未更聚焦主导 det: cold={ratio_cold:.3f} hot={ratio_hot:.3f}")
+
+
+def test_solve_sqd_auto_end_to_end():
+    """E: solve_sqd_auto 一键流程 —— 推荐 + 自适应收敛 + EV 外推。
+
+    给真机参数, 自动取 shots/max_strings, 自适应停采, 轨迹外推; 返回
+    details 含全部诊断, 能量达化学精度, 实际 shots ≤ 预算。
+    """
+    data = _n2_stretch_data()
+    h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
+    e_fci, _ = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
+    e_fci_total = e_fci + data.ecore   # auto 返回含 ecore 的总能量
+
+    auto = tc_sqd.solve_sqd_auto(
+        h1e, eri, norb, nelec, ecore=data.ecore,
+        T1_us=30.0, t_gate_ns=100.0, return_details=True,
+    )
+    assert {"energy", "E_direct", "E_ev", "shots_used", "shots_budget",
+            "recommendation", "trajectory", "converged", "n_rounds"} <= set(auto)
+    # 推荐已执行: 有 SqdParams, 且 shots 预算匹配
+    assert auto["recommendation"] is not None
+    assert auto["shots_budget"] == auto["recommendation"].shots
+    # 实际 shots ≤ 预算 (自适应停采)
+    assert auto["shots_used"] <= auto["shots_budget"]
+    # 轨迹 ≥2 点 (EV 外推前提) 且能量达化学精度
+    assert auto["n_rounds"] >= 2
+    assert abs(auto["energy"] - e_fci_total) < 1.6e-3, (
+        f"auto 未达化学精度: {abs(auto['energy'] - e_fci_total):.2e}")
+    # EV 外推版启用时 E_ev 与 E_direct 同侧 (修正量小)
+    assert auto["E_ev"] is not None
+    # 简易版返回 float
+    e_float = tc_sqd.solve_sqd_auto(h1e, eri, norb, nelec, ecore=data.ecore)
+    assert isinstance(e_float, float)

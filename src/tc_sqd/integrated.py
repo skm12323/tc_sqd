@@ -33,7 +33,7 @@ from .fermion import (
     _int_to_bits,
 )
 
-__all__ = ["solve_sqd"]
+__all__ = ["solve_sqd", "solve_sqd_auto"]
 
 
 def solve_sqd(
@@ -286,3 +286,170 @@ def solve_sqd(
 
     assert result is not None
     return result
+
+
+# --------------------------------------------------------------------------- #
+#  自动 SQD 流程 (方向 E): 超参推荐 -> 采样 -> 自适应收敛 -> 能量-方差外推
+# --------------------------------------------------------------------------- #
+def solve_sqd_auto(
+    h1e: np.ndarray,
+    eri: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    ecore: float = 0.0,
+    circuit=None,
+    bitstring_matrix: Optional[np.ndarray] = None,
+    T1_us: Optional[float] = None,
+    t_gate_ns: Optional[float] = None,
+    target: Optional[float] = None,
+    shots_budget: Optional[int] = None,
+    shots_step: Optional[int] = None,
+    energy_tol: Optional[float] = None,
+    max_strings: Optional[int] = None,
+    n_active_per_round: Optional[int] = None,
+    extrapolate_ev: bool = True,
+    seed: Optional[int] = 0,
+    verbose: bool = False,
+    return_details: bool = False,
+) -> Union[float, dict]:
+    """自动 SQD 流程: 超参推荐 → 采样 → 自适应收敛 → (可选) 能量-方差外推。
+
+    把"推荐 + 执行 + 收敛判断 + 精度提升"串成一条流水线 (工程自动化入口):
+      1. **超参推荐**: 给真机参数 (``T1_us``/``t_gate_ns``) 时用
+         :func:`recommend_sqd_params` 自动取 ``shots``/``depth``/``max_strings``
+         /``n_active_per_round``; 不给则用调用方传入值或库默认。
+      2. **采样**: 给 ``circuit`` 用 ``sample_from_circuit``; 否则随机位串
+         (经典自举)。
+      3. **自适应收敛**: :func:`solve_sqd_active` 的 B1 预算闭环 (增量采样 +
+         ``energy_tol`` 停采), 自动判断收敛并记录轨迹。
+      4. **能量-方差外推**: 默认用轨迹做 ``E(σ²)→0`` 外推 (方向 D), 修正残余
+         截断误差 (不增大维度)。
+
+    Parameters
+    ----------
+    h1e, eri, norb, nelec, ecore
+        分子积分与电子数 (SQD 输入)。
+    circuit : tensorcircuit.Circuit | None
+        采样电路。``None`` = 随机位串自举 (经典模拟; 真机用 ``sample_on_hw``
+        先采样再传 ``bitstring_matrix``)。
+    bitstring_matrix : ndarray (S, 2*norb) | None
+        预采样位串 (优先级最高; 与 ``circuit`` 二选一)。
+    T1_us, t_gate_ns : float | None
+        真机校准 (启用超参推荐; 否则用传入的 shots 预算)。
+    target : float | None
+        推荐目标精度 (默认化学精度)。
+    shots_budget, shots_step : int | None
+        B1 预算与增量步长。``None`` = 由推荐 (有 T1) 或默认 2000/300 给出。
+    energy_tol : float | None
+        能量收敛停采阈值。``None`` = 默认 1e-5 (自选停止)。
+    max_strings : int | None
+        子空间维度上限 (覆盖推荐)。
+    n_active_per_round : int | None
+        每轮 PT2 选态注入数 (覆盖推荐)。
+    extrapolate_ev : bool
+        ``True`` 用轨迹做能量-方差外推 (方向 D, 默认)。
+    seed : int | None
+        随机种子。
+    verbose : bool
+        打印每轮进度。
+    return_details : bool
+        ``True`` 返回 dict (见下)。
+
+    Returns
+    -------
+    float | dict
+        ``return_details=False``: 能量 (外推版若启用, 否则 active 直接能量; 含
+        ``ecore``)。``return_details=True``: ``{"energy", "E_direct", "E_ev",
+        "shots_used", "recommendation" (SqdParams | None), "trajectory",
+        "converged", "n_rounds"}``。
+    """
+    from .cipsi import solve_sqd_active
+    from .diagnostics import extrapolate_energy_variance
+    from .predict import recommend_sqd_params, CHEMICAL_ACCURACY
+
+    if target is None:
+        target = CHEMICAL_ACCURACY
+
+    # 1) 超参推荐 (有硬件参数时)
+    recommendation = None
+    shots = shots_budget
+    if T1_us is not None and t_gate_ns is not None:
+        recommendation = recommend_sqd_params(
+            norb, nelec, T1_us=T1_us, t_gate_ns=t_gate_ns, target=target)
+        if shots is None:
+            shots = recommendation.shots
+        if max_strings is None:
+            max_strings = recommendation.max_strings
+        if n_active_per_round is None:
+            n_active_per_round = recommendation.n_active_per_round
+    if shots is None:
+        shots = 2000
+    shots_step = shots_step if shots_step is not None else 300
+    energy_tol = energy_tol if energy_tol is not None else 1e-5
+    if n_active_per_round is None:
+        n_active_per_round = 50
+
+    # 2) 采样
+    if bitstring_matrix is None:
+        if circuit is not None:
+            from .counts import sample_from_circuit
+            bsm = np.asarray(sample_from_circuit(circuit, int(shots)), dtype=bool)
+            probs = np.full(bsm.shape[0], 1.0 / bsm.shape[0])
+        else:
+            rng = np.random.default_rng(seed)
+            bsm = rng.random((int(shots), 2 * norb)) > 0.5
+            probs = np.full(int(shots), 1.0 / int(shots))
+    else:
+        bsm = np.asarray(bitstring_matrix, dtype=bool)
+        probs = None
+
+    # 3) 自适应收敛 (B1 预算闭环 + 轨迹)
+    traj: list = []
+    usage: list = []
+    e_direct = solve_sqd_active(
+        h1e, eri, norb, nelec,
+        bitstring_matrix=bsm, probabilities=probs,
+        max_strings=max_strings, n_active_per_round=n_active_per_round,
+        ecore=ecore, rand_seed=seed, verbose=verbose,
+        shots_budget=int(shots), shots_step=int(shots_step),
+        energy_tol=energy_tol, usage=usage, trajectory=traj,
+    )
+    shots_used = int(usage[0]) if usage else int(shots)
+
+    # 4) 能量-方差外推 (方向 D, 用已有轨迹, 不重跑)
+    e_ev = None
+    if extrapolate_ev and len(traj) >= 2:
+        es = np.asarray([t["E"] for t in traj], dtype=np.float64)
+        vs = np.asarray([t["sigma2"] for t in traj], dtype=np.float64)
+        if np.max(vs) >= 1e-14:      # 子空间未饱和才外推
+            e_inf, *_ = extrapolate_energy_variance(es, vs, degree=1)
+            e_ev = float(e_inf) + ecore
+        else:
+            e_ev = float(es[-1]) + ecore
+    energy = e_ev if e_ev is not None else float(e_direct)
+
+    # 收敛判定: 末两轮能量变化 < energy_tol 且无 PT2 新 det
+    converged = (len(traj) >= 2
+                 and abs(traj[-1]["E"] - traj[-2]["E"]) < energy_tol
+                 and traj[-1]["e_pt2"] is not None
+                 and abs(traj[-1]["e_pt2"]) < 1e-6)
+    if verbose:
+        print(f"[auto] shots_used={shots_used}/{shots} "
+              f"E_direct={e_direct:.8f} "
+              f"E_ev={e_ev if e_ev is not None else e_direct:.8f} "
+              f"converged={converged} rounds={len(traj)}")
+
+    if not return_details:
+        return energy
+    return {
+        "energy": float(energy),
+        "E_direct": float(e_direct),
+        "E_ev": e_ev,
+        "shots_used": shots_used,
+        "shots_budget": int(shots),
+        "recommendation": recommendation,
+        "trajectory": traj,
+        "converged": bool(converged),
+        "n_rounds": len(traj),
+    }

@@ -249,6 +249,146 @@ def plan_sampling(T1_us: float, t_gate_ns: float, *,
     }
 
 
+@dataclass
+class SqdParams:
+    """SQD 超参数推荐结果 (结构化, 推荐用 :func:`recommend_sqd_params` 获取)。
+
+    Attributes
+    ----------
+    shots, depth : int
+        硬件预算: 采样次数与电路深度 (来自 ``plan_sampling`` 最便宜可行方案)。
+    max_strings : int
+        子空间维度上限 (对角化维度 ≈ n_str_a × n_str_b 的上界启发式)。
+    n_active_per_round : int
+        每轮 PT2 选态注入的 top 候选 det 数。
+    dom_thresh, pt2_floor : float
+        主动采样选态阈值 (主导 det 阈值 / PT2 贡献阈值)。
+    predicted_error : float
+        模型预测的 SQD 总误差 (vs FCI, Ha)。
+    dominant : str
+        主误差来源 (``"T1"`` / ``"sampling"``)。
+    feasible : bool
+        是否有 (shots, depth) 组合能达到目标精度。
+    reason : str
+        人类可读的推荐依据 (含各参数来源)。
+    """
+
+    shots: int
+    depth: int
+    max_strings: int
+    n_active_per_round: int
+    dom_thresh: float
+    pt2_floor: float
+    predicted_error: float
+    dominant: str
+    feasible: bool
+    reason: str
+
+
+def recommend_sqd_params(norb: int, nelec, *,
+                         T1_us: float, t_gate_ns: float,
+                         target: float = CHEMICAL_ACCURACY,
+                         excited: bool = False,
+                         shots_max: int = 1_000_000,
+                         max_strings_override: "int | None" = None) -> SqdParams:
+    """根据分子体系 + 硬件参数自动推荐 SQD 超参数 (工程自动化入口)。
+
+    **组装已有的决策零件**:
+      - 硬件/采样预算: :func:`plan_sampling` 枚举 (shots, depth) 网格, 取**最便宜**
+        的可行方案 (达到 ``target`` 精度) -> ``shots`` / ``depth``;
+      - 子空间规模: 对角化维度 ≈ ``n_str_a × n_str_b``, 用分子尺寸 (norb, nelec)
+        的启发式给 ``max_strings`` 上限 (保持对角化可解);
+      - 选态阈值: ``dom_thresh`` / ``pt2_floor`` 用库默认值, ``n_active_per_round``
+        按子空间规模缩放。
+
+    **精度模型注意**: ``plan_sampling`` 用 H₄/STO-3G 拟合的 KS/KT1 (见模块头
+    校准说明), 跨体系只作**数量级起点**。对具体分子建议用 ``calibrate`` 在
+    模拟器上重新标定 KS/KT1, 再喂回本函数 (传 ``target`` 不变即可)。
+
+    Parameters
+    ----------
+    norb : int
+        空间轨道数。
+    nelec : tuple(int, int)
+        ``(n_alpha, n_beta)``。
+    T1_us, t_gate_ns : float
+        真机校准 (T₁ in µs, 单门时长 in ns)。
+    target : float
+        目标误差 (默认化学精度 1.6e-3 Ha)。
+    excited : bool
+        True 时按激发态误差 (3×) 评估。
+    shots_max : int
+        shots 上限 (防止推荐超预算)。
+    max_strings_override : int | None
+        手动指定子空间上限 (覆盖启发式)。
+
+    Returns
+    -------
+    SqdParams
+        结构化推荐 (见类文档)。``feasible=False`` 时 ``shots/depth`` 取上限、
+        ``reason`` 说明为何不可行 (目标过紧或噪声预算不足)。
+    """
+    import numpy as np
+    from pyscf.fci import cistring as _cistr
+
+    na, nb = nelec
+    full = int(_cistr.num_strings(norb, na))
+
+    # 1) 硬件预算: 最便宜可行 (shots, depth)
+    plan = plan_sampling(T1_us, t_gate_ns, target=target, excited=excited)
+    best = plan["best"]
+    if best is not None:
+        shots, depth = int(best.shots), int(best.depth)
+        pred_err, dominant = float(best.error), best.dominant
+        feasible = True
+    else:
+        # 无可行方案: 给上限 + 明确警告
+        feasible = False
+        shots = int(min(shots_max, 1_000_000))
+        # 深度: 无 T1 限制时给一个保守中值 (20..2000 网格中位)
+        depth = 200
+        r_hi = predict_sqd_error(T1_us, depth, t_gate_ns, shots, n_excited=1)
+        pred_err = r_hi["excited"][0] if excited else r_hi["ground"]
+        dominant = r_hi["dominant"]
+
+    # 2) 子空间规模启发式 (对角化维度 ≈ n_str_a×n_str_b 上界)
+    if max_strings_override is not None:
+        max_strings = int(max_strings_override)
+    else:
+        # 经验: dim ≤ ~(25·norb)² 可快速对角化; 大体系需更大 (受限精度优先)
+        cap = max(50, min(250, 25 * norb))
+        max_strings = min(full, cap)
+
+    # 3) 选态阈值按子空间规模缩放
+    n_active = int(max(10, min(50, max_strings // 3)))
+    dom_thresh = 1e-3
+    pt2_floor = 1e-7
+
+    # 4) 推荐理由
+    if feasible:
+        reason = (
+            f"硬件预算来自 plan_sampling: 最便宜可行方案 shots={shots} "
+            f"depth={depth} (预测误差 {pred_err:.2e}, {dominant} 主导)。"
+            f"子空间 max_strings={max_strings} (全空间 {full}); "
+            f"主动采样每轮注入 n_active={n_active} 个 PT2 候选。"
+            f"注: 精度模型基于 H₄/STO-3G, 跨体系建议先 calibrate 再精调。"
+        )
+    else:
+        reason = (
+            f"目标 {target:.2e} 在硬件参数 (T1={T1_us}µs, "
+            f"t_gate={t_gate_ns}ns) 下无可行 (shots, depth) 组合: "
+            f"即使上限 shots={shots} 预测误差仍 {pred_err:.2e} ({dominant} 主导)。"
+            f"建议: 增大 shots 上限 / 用 ZNE (solve_sqd_robust) 抑 T1 / "
+            f"换基 (solve_sqd_natural_orbitals) 减截断。"
+        )
+    return SqdParams(
+        shots=shots, depth=depth, max_strings=max_strings,
+        n_active_per_round=n_active, dom_thresh=dom_thresh,
+        pt2_floor=pt2_floor, predicted_error=pred_err,
+        dominant=dominant, feasible=feasible, reason=reason,
+    )
+
+
 def calibrate(h1e, eri, norb, nelec, *, ecore: float = 0.0, circuit=None,
               shots_grid=None, gamma_grid=None, n_avg: int = 1,
               seed: int = 42, max_iterations: int = 3) -> dict:

@@ -34,8 +34,10 @@ from scipy.sparse.linalg import eigsh, LinearOperator
 
 from .configuration_recovery import recover_configurations
 from .fermion import bitstring_matrix_to_ci_strs, SCIState
+from .diagnostics import extrapolate_energy_variance
 
-__all__ = ["solve_cipsi", "solve_sqd_active", "solve_sqd_adaptive", "solve_hci"]
+__all__ = ["solve_cipsi", "solve_sqd_active", "solve_sqd_adaptive", "solve_hci",
+           "solve_sqd_ev", "eigenvector_importance_sample"]
 
 
 # --------------------------------------------------------------------------- #
@@ -688,6 +690,8 @@ def solve_sqd_active(
     shots_step: int = 0,
     energy_tol: Optional[float] = None,
     usage: Optional[list] = None,
+    # ---- 能量-方差外推轨迹 (方向 D) ----
+    trajectory: Optional[list] = None,
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
 
@@ -746,6 +750,12 @@ def solve_sqd_active(
     usage : list | None
         B1 输出参数: 调用方传空 list, 结束后 ``usage[0]`` 为**实际使用的 shots 数**
         (预算闭环的量化指标; 不传则只返回能量)。
+    trajectory : list | None
+        方向 D 输出参数: 调用方传空 list, 每轮追加 ``dict`` 记录 ``{round, E,
+        sigma2, e_pt2, dim, shots}``。``sigma2 = Σ_a |⟨a|H|Ψ⟩|²`` (子空间外
+        PT2 分子平方和, 即对生成集的**精确方差**); ``e_pt2`` 为 Epstein-Nesbet
+        PT2 全和; ``dim`` 为对角化维度。供 :func:`solve_sqd_ev` 做能量-方差
+        外推 (E(σ²)→0)。不传则无额外开销。
 
     Returns
     -------
@@ -822,6 +832,9 @@ def solve_sqd_active(
         E, c2d, sa, sb = sub.diag(str_a, str_b)
         idx_a = {int(s): i for i, s in enumerate(sa)}
         idx_b = {int(s): i for i, s in enumerate(sb)}
+        # 方向 D: 每轮默认 (无候选时方差/PT2 = 0)
+        sigma2 = 0.0
+        e_pt2_sum = 0.0
 
         # ③ 主导 dets
         nA, nB = c2d.shape
@@ -844,8 +857,11 @@ def solve_sqd_active(
                         cand.add((ca, cb))
         if cand:
             me = sub.pt2_matrix_elements(str_a, str_b, cand, c2d, sa, sb)
+            # 方向 D: σ² = Σ|⟨a|H|Ψ⟩|² (PT2 分子平方和, 对生成集的精确方差)
+            sigma2 = sum(h * h for h, _ in me.values())
             pt2 = {d: h * h / (E - Ea) for d, (h, Ea) in me.items()
                    if abs(E - Ea) > 1e-12}
+            e_pt2_sum = float(sum(pt2.values()))
             ranked = sorted(pt2.items(), key=lambda kv: -abs(kv[1]))
             add = []
             for d, v in ranked:
@@ -876,6 +892,14 @@ def solve_sqd_active(
         occ_a = np.clip(np.diag(dm1) / 2.0, 0.0, 1.0)
         occ_b = occ_a.copy()
 
+        # 方向 D: 记录轨迹点 (E, σ², E_PT2, dim, shots) 供能量-方差外推
+        if trajectory is not None:
+            trajectory.append({
+                "round": r + 1, "E": float(E), "sigma2": sigma2,
+                "e_pt2": e_pt2_sum, "dim": len(str_a) * len(str_b),
+                "shots": int(n_cur),
+            })
+
         if verbose:
             print(f"[active r{r+1}/{max_rounds}] E={E + ecore:.6f} "
                   f"strings={len(str_a)}x{len(str_b)} "
@@ -896,6 +920,200 @@ def solve_sqd_active(
             n_cur = min(n_cur + shots_step, n_pool)
 
     E, c2d, sa, sb = sub.diag(str_a, str_b)
+
+    # 方向 D: 最终对角化点也进轨迹 (最大子空间 -> 方差最小, 外推最右端点)
+    if trajectory is not None:
+        idx_a = {int(s): i for i, s in enumerate(sa)}
+        idx_b = {int(s): i for i, s in enumerate(sb)}
+        nA, nB = c2d.shape
+        flat = np.abs(c2d).ravel()
+        order = np.argsort(flat)[::-1]
+        dom = []
+        for k in order:
+            if flat[k] > dom_thresh:
+                ia, ib = divmod(int(k), nB)
+                dom.append((int(sa[ia]), int(sb[ib])))
+            else:
+                break
+        cand_all = set()
+        for a, b in dom:
+            for ca, cb in _excited_dets(a, b, norb):
+                if ca not in idx_a or cb not in idx_b:
+                    cand_all.add((ca, cb))
+        if cand_all:
+            me = sub.pt2_matrix_elements(str_a, str_b, cand_all, c2d, sa, sb)
+            sigma2 = sum(h * h for h, _ in me.values())
+            e_pt2_sum = sum(h * h / (E - Ea) for h, Ea in me.values()
+                            if abs(E - Ea) > 1e-12)
+        else:
+            sigma2, e_pt2_sum = 0.0, 0.0
+        trajectory.append({
+            "round": -1, "E": float(E), "sigma2": sigma2,
+            "e_pt2": float(e_pt2_sum), "dim": len(str_a) * len(str_b),
+            "shots": int(n_cur),
+        })
+
     if usage is not None:
         usage.append(int(n_cur))
     return float(E) + ecore
+
+
+# --------------------------------------------------------------------------- #
+#  方向 D: 能量-方差外推 (不增大维度降误差) + 本征矢重要性采样 (学习型采样先验)
+# --------------------------------------------------------------------------- #
+def solve_sqd_ev(
+    one_body_tensor: np.ndarray,
+    two_body_tensor: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    bitstring_matrix: np.ndarray,
+    probabilities: Optional[np.ndarray] = None,
+    avg_occupancies: Optional[Tuple[np.ndarray, np.ndarray]] = None,
+    max_strings: Optional[int] = None,
+    n_active_per_round: int = 50,
+    dom_thresh: float = 1e-3,
+    pt2_floor: float = 1e-7,
+    max_rounds: int = 10,
+    degree: int = 1,
+    ecore: float = 0.0,
+    rand_seed: Optional[int] = 0,
+    verbose: bool = False,
+    shots_budget: Optional[int] = None,
+    shots_step: int = 0,
+    energy_tol: Optional[float] = None,
+    return_details: bool = False,
+) -> float:
+    """能量-方差外推 SQD (方向 D): 用子空间扩展轨迹把能量外推到方差零点。
+
+    **动机**: :func:`solve_sqd_active` 的最终子空间能量仍是 FCI 的变分上界
+    (残余误差 ∝ 漏掉 det 的方差)。本函数跑同一 active 流程, 但**记录每轮**
+    ``(E, σ²)`` 轨迹 (``σ² = Σ_{a∉V}|⟨a|H|Ψ⟩|²``, 由 PT2 分子给出), 再用
+    :func:`extrapolate_energy_variance` 拟合 ``E(σ²)`` 并外推到 σ²=0 —— 用
+    扩展趋势修正最终子空间的残余误差, **不增大最终子空间维度**即降误差。
+
+    **适用场景**: 受限子空间 (小 ``max_strings``) 下 SQD 能量离 FCI 尚远,
+    外推给出更接近 FCI 的估计; 全空间 (维度饱和) 时轨迹点方差已近零, 外推
+    退化为直接能量。
+
+    Parameters
+    ----------
+    其余参数与 :func:`solve_sqd_active` 一致 (``ecore`` 在返回/诊断中计入;
+    轨迹内部不含 ecore)。
+    degree : int
+        能量-方差外推多项式次数 (默认 1 = 线性)。
+    return_details : bool
+        ``True`` 返回 ``(E_ev, details_dict)``; ``details_dict`` 含
+        ``E_direct`` (active 直接能量)、``e_inf``、``slope``、``r2``、
+        ``fit_std``、``trajectory`` (每轮 E/σ²/PT2/dim/shots)。
+
+    Returns
+    -------
+    float | tuple
+        外推能量 (含 ``ecore``); ``return_details=True`` 时返回 ``(能量, dict)``。
+    """
+    trajectory: list = []
+    solve_sqd_active(
+        one_body_tensor, two_body_tensor, norb, nelec,
+        bitstring_matrix=bitstring_matrix, probabilities=probabilities,
+        avg_occupancies=avg_occupancies, max_strings=max_strings,
+        n_active_per_round=n_active_per_round, dom_thresh=dom_thresh,
+        pt2_floor=pt2_floor, max_rounds=max_rounds,
+        ecore=0.0,                       # 轨迹 E 不含 ecore, 外推后统一加
+        rand_seed=rand_seed, verbose=verbose,
+        shots_budget=shots_budget, shots_step=shots_step,
+        energy_tol=energy_tol, trajectory=trajectory,
+    )
+    if len(trajectory) < 2:
+        raise ValueError(f"轨迹点不足 (<2), 无法外推: got {len(trajectory)}.")
+    es = np.asarray([t["E"] for t in trajectory], dtype=np.float64)
+    vs = np.asarray([t["sigma2"] for t in trajectory], dtype=np.float64)
+    e_direct = es[-1] + ecore                 # 最后记录的点 = 最终子空间
+    if np.max(vs) < 1e-14:
+        # 子空间饱和 (全空间, 方差≈0): 无残余误差可外推, 退化为直接能量
+        if verbose:
+            print(f"[EV] 子空间饱和 (σ²_max={np.max(vs):.1e}), "
+                  f"退化为直接能量 {e_direct:.8f}")
+        e_ev = e_direct
+        return (e_ev, {"E_direct": e_direct, "e_inf": e_direct, "slope": 0.0,
+                       "r2": 1.0, "fit_std": 0.0, "trajectory": trajectory}) \
+            if return_details else e_ev
+    e_inf, slope, r2, fit_std = extrapolate_energy_variance(es, vs, degree=degree)
+    e_ev = float(e_inf) + ecore
+
+    if verbose:
+        print(f"[EV] {len(trajectory)} 点, r²={r2:.4f}, "
+              f"E_direct={e_direct:.8f}, E_EV={e_ev:.8f}, "
+              f"改善={e_direct - e_ev:+.2e}")
+    if return_details:
+        return e_ev, {
+            "E_direct": float(e_direct), "e_inf": float(e_inf),
+            "slope": slope, "r2": r2, "fit_std": fit_std,
+            "trajectory": trajectory,
+        }
+    return e_ev
+
+
+def eigenvector_importance_sample(
+    c2d: np.ndarray,
+    sa: np.ndarray,
+    sb: np.ndarray,
+    norb: int,
+    n_shots: int,
+    *,
+    rand_seed: Optional[int] = 0,
+    temperature: float = 1.0,
+) -> np.ndarray:
+    """本征矢重要性采样 (方向 D, 学习型采样先验): 按振幅平方 ∝c² 采样 det 位串。
+
+    **思路**: 子空间对角化解出的本征矢 ``|Ψ⟩ = Σ_i c_i |i⟩`` 是体系当前最好
+    的"波函数模型" (数据驱动先验)。按其振幅平方分布 ``p_i ∝ |c_i|²`` 重新
+    采样 ``n_shots`` 个 det 位串 —— 高权重 det 被更多采样, 低权重 det 少量
+    覆盖 —— 相比均匀/随机采样, 同 shots 下配置恢复更聚焦高价值 det, 子空间
+    质量更高 (同维度误差更低)。
+
+    **与 AI 方法衔接**: 这是"学习型采样分布"的最简实现 (从解态学分布)。更强
+    版本可用神经网络/NQS 参数化 ``p_i`` 泛化到未采样 det (见 REVIEW 方向 D
+    展望), 本函数是确定性、可验证的基线。
+
+    Parameters
+    ----------
+    c2d : ndarray, shape (nA, nB)
+        子空间对角化本征矢 (α × β 字符串网格振幅)。
+    sa, sb : ndarray, shape (nA,) / (nB,)
+        对应 α/β 字符串 (整数表示)。
+    norb : int
+        空间轨道数 (位串宽度)。
+    n_shots : int
+        采样 det 数。
+    rand_seed : int | None
+        随机种子。
+    temperature : float
+        分布锐度: ``p_i ∝ |c_i|^(2/temperature)``。``1.0`` = 原始振幅平方;
+        ``<1`` 更锐 (只采主导 det), ``>1`` 更平 (更像均匀)。
+
+    Returns
+    -------
+    ndarray, shape (n_shots, 2*norb)
+        采样位串矩阵 (前 norb 列 α, 后 norb 列 β)。
+    """
+    from .counts import int_to_bitarray
+
+    c2d = np.asarray(c2d)
+    sa = np.asarray(sa)
+    sb = np.asarray(sb)
+    probs = np.abs(c2d) ** (2.0 / temperature)
+    probs = probs.ravel()
+    denom = probs.sum()
+    if denom <= 0:
+        raise ValueError("本征矢振幅全零, 无法采样。")
+    probs = probs / denom
+    rng = np.random.default_rng(rand_seed)
+    idx = rng.choice(probs.size, size=n_shots, replace=True, p=probs)
+    ia, ib = np.divmod(idx, c2d.shape[1])
+    det_a = sa[ia]
+    det_b = sb[ib]
+    bsm = np.zeros((n_shots, 2 * norb), dtype=bool)
+    bsm[:, :norb] = int_to_bitarray(det_a, norb)
+    bsm[:, norb:] = int_to_bitarray(det_b, norb)
+    return bsm

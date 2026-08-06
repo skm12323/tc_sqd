@@ -57,7 +57,7 @@ from .qubit import (
     project_operator_to_subspace,
     solve_qubit,
 )
-from .integrated import solve_sqd
+from .integrated import solve_sqd, solve_sqd_auto
 from .lucj import (
     get_ccsd_amplitudes,
     build_lucj_circuit,
@@ -76,6 +76,8 @@ from .cipsi import (
     solve_sqd_active,
     solve_sqd_adaptive,
     solve_hci,
+    solve_sqd_ev,
+    eigenvector_importance_sample,
 )
 from .basis import (
     natural_orbitals_from_rdm,
@@ -98,6 +100,7 @@ from .noise import (
     apply_t1_bitstrings,
     zero_noise_extrapolate_t1,
     solve_sqd_robust,
+    noise_impact,
 )
 from .predict import (
     gamma_T1,
@@ -107,6 +110,8 @@ from .predict import (
     max_depth_for_accuracy,
     plan_sampling,
     SamplingPlan,
+    recommend_sqd_params,
+    SqdParams,
     calibrate,
 )
 from .hardware import (
@@ -129,6 +134,7 @@ from .diagnostics import (
     energy_convergence,
     sampling_report,
     extrapolate_infinite_samples,
+    extrapolate_energy_variance,
 )
 
 __version__ = "0.1.0"
@@ -169,6 +175,7 @@ __all__ = [
     "solve_qubit",
     # integrated
     "solve_sqd",
+    "solve_sqd_auto",
     # lucj
     "get_ccsd_amplitudes",
     "build_lucj_circuit",
@@ -181,11 +188,14 @@ __all__ = [
     "build_ucj_circuit",
     "ucj_assisted_configurations",
     "solve_ucj_assisted",
-    # cipsi (PT2 筛选生成集扩展: UCJ 种子 -> 近 FCI 精化 + 主动/自适应采样闭环 + HCI)
+    # cipsi (PT2 筛选生成集扩展: UCJ 种子 -> 近 FCI 精化 + 主动/自适应采样闭环 + HCI
+    #        + 能量-方差外推 EV + 本征矢重要性采样)
     "solve_cipsi",
     "solve_sqd_active",
     "solve_sqd_adaptive",
     "solve_hci",
+    "solve_sqd_ev",
+    "eigenvector_importance_sample",
     # basis (基设计: 自然轨道换基 + 自洽迭代, 提升子空间构建效率)
     "natural_orbitals_from_rdm",
     "rotate_to_natural_orbitals",
@@ -205,6 +215,7 @@ __all__ = [
     "apply_t1_bitstrings",
     "zero_noise_extrapolate_t1",
     "solve_sqd_robust",
+    "noise_impact",
     # predict (噪声容限预测器, 独有)
     "gamma_T1",
     "predict_sqd_error",
@@ -213,6 +224,8 @@ __all__ = [
     "max_depth_for_accuracy",
     "plan_sampling",
     "SamplingPlan",
+    "recommend_sqd_params",
+    "SqdParams",
     "calibrate",
     # hardware (腾讯真机一站式: 校准/选比特/真机采样/SQD 后处理)
     "select_qubits",
@@ -225,10 +238,11 @@ __all__ = [
     # sampler (统一采样后端: tc 模拟 / qcloud 真机)
     "sample",
     "BACKENDS",
-    # diagnostics (采样质量诊断报告 + 无限采样外推 A1)
+    # diagnostics (采样质量诊断报告 + 无限采样外推 A1 + 能量-方差外推 D)
     "shannon_entropy",
     "subspace_dimension",
     "energy_convergence",
     "sampling_report",
     "extrapolate_infinite_samples",
+    "extrapolate_energy_variance",
 ]

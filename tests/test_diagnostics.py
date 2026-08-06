@@ -109,3 +109,29 @@ def test_extrapolate_infinite_samples_fit():
         assert False, "单点应报错"
     except ValueError:
         pass
+
+
+def test_extrapolate_energy_variance_synthetic():
+    """D (能量-方差外推): 合成线性 E(σ²) 数据, 外推到 σ²=0 精确恢复 E∞。
+
+    截断 CI 子空间理论: ΔE = E − E_gs ≈ a·σ² (Temple 不等式方向)。合成
+    ``E(σ²) = E∞ + a·σ²`` (方差单调下降, 对应子空间逐步扩展), 拟合应恢复
+    精确的 ``E∞`` 与斜率 ``a`` —— 验证外推的数学正确性。
+    """
+    e_inf_true, a_true = -107.4551556, 0.05
+    variances = np.array([1e-2, 5e-3, 1e-3, 5e-4, 1e-4, 5e-5])
+    energies = e_inf_true + a_true * variances
+    e_inf, a, r2, fit_std = tc_sqd.extrapolate_energy_variance(energies, variances)
+    assert abs(e_inf - e_inf_true) < 1e-9, f"E∞ 未恢复: {e_inf}"
+    assert abs(a - a_true) < 1e-9
+    assert r2 > 0.9999
+    # 二次拟合同样恢复 (noise-free 数据)
+    e_inf2, *_ = tc_sqd.extrapolate_energy_variance(energies, variances, degree=2)
+    assert abs(e_inf2 - e_inf_true) < 1e-9
+    # 输入校验: 点数不足 / 方差为负 / degree 越界
+    for bad in [([1.0], [1.0]), ([1.0, 2.0], [1.0, -1.0])]:
+        try:
+            tc_sqd.extrapolate_energy_variance(*bad)
+            assert False, "非法输入应报错"
+        except ValueError:
+            pass

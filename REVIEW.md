@@ -603,6 +603,87 @@ heat-bath 筛选**（|⟨j|H|i⟩| ≥ `eps_hb`）——更便宜（不求完整
 **PT2 修正补足**（N₂ 拉伸 eps_hb=5e-2 时 dim=3481, E_PT2=-3.9e-5 → E_total 接近 FCI；
 eps_hb=1e-4 时 E_PT2≈-7e-11）。全库 106 测试全过（本小节的 HCI 三项）。
 
+## 方向 D：能量-方差外推 + 本征矢重要性采样（不增大维度降误差，2026-08-07）
+
+**核心理论**：对截断 CI 子空间 V 对角化得的本征矢 |Ψ⟩，**精确能量方差**
+`σ² = ⟨Ψ|H²|Ψ⟩ − E² = Σ_{a∉V} |⟨a|H|Ψ⟩|²`（只含子空间外矩阵元平方和）——
+即 PT2 计算中分子项的平方和，**直接可算**。截断误差 `ΔE = E − E_gs ≈ a·σ²`
+（Temple 不等式方向 + CI 外推文献，大子空间极限成立）。因此对**同一分子不同
+子空间规模**收集 `(E, σ²)` 轨迹，拟合 `E(σ²)` 外推到 σ²→0，用扩展趋势修正
+**最终子空间**的残余误差 —— **不增大最终子空间维度即降误差**（纯经典后处理，
+零额外量子资源）。
+
+**实施**：
+- `solve_sqd_active` 新增 `trajectory` 输出参数：每轮记录 `{round, E, sigma2,
+  e_pt2, dim, shots}`（`sigma2` 为子空间外 PT2 分子平方和，即对生成集的精确
+  方差；最终对角化点也记录）。
+- `diagnostics.extrapolate_energy_variance(E, σ², degree=1)`：多项式最小二乘
+  外推到 σ²=0，返回 `(E∞, 斜率, r², 拟合误差带)`。与 A1 (`1/√S`) 的区别：
+  A1 用 shots 作坐标被证伪（SQD 能量非统计量）；方差是子空间方法的**固有
+  收敛指标**（随扩展单调下降），对 SQD/CIPSI/HCI 轨迹均适用。
+- `cipsi.solve_sqd_ev`：薄封装（active + trajectory + 外推，不重跑）。子空间
+  饱和（σ²_max < 1e-14，全空间）时**退化为直接能量**（无残余可外推）。
+
+**验证**（`tests/test_diagnostics.py` + `tests/test_sqd_active.py`）：
+- 合成 `E(σ²) = E∞ + a·σ²`（方差单调下降）线性/二次拟合并行精确恢复 `E∞`
+  与斜率 `a`（r²>0.9999）——外推数学正确性。
+- N₂/STO-3G 拉伸 active 轨迹：E 单调不增、σ² 单调不增、dim 单调增（变分 +
+  扩展前提）；`solve_sqd_ev` 外推能量落化学精度带内（实测 ~1e-5~1e-6）。
+- **诚实定位**：active 在模拟器上已近 FCI（直接误差 2e-7），EV 轻微过冲到
+  7.7e-6（非变分，可略低于 FCI）——EV 的价值在**受限截断子空间**（真机
+  硬件约束 / 小 max_strings）修正残余误差；饱和子空间退化为直接能量。
+
+**本征矢重要性采样（学习型采样先验，AI 结合点）**：`eigenvector_importance_sample`
+从子空间对角化本征矢振幅平方分布 `p_i ∝ |c_i|^(2/temperature)` 采样 det 位串。
+这是"从解态学分布"的最简实现（数据驱动先验），与 NQS/神经网络参数化采样分布
+的衔接点；`temperature<1` 锐化聚焦主导 det（验证：H₂ 低温采样 ratio 明显高于
+高温）。工程上可作下一轮采样的**改进先验**（替代均匀/随机），确定性、可验证。
+
+## 方向 E：工程自动化（基准 / 噪声评估 / 超参推荐 / 自适应流程，2026-08-07）
+
+**① 性能基准**（`benchmarks/benchmark_sqd.py`）：测量传统/active/ev/cipsi/hci
+× h₂/n₂/lih × shots 网格的**墙钟耗时**（time.perf_counter）与**峰值内存**
+（ru_maxrss, WSL），输出 CSV + Markdown 表。quick 模式（h2/n2 × [500] ×
+traditional/active/ev）实测：
+| 方法 | N₂/STO-3G 500 shots | wall | peak | err vs FCI |
+|---|---|---|---|---|
+| traditional SQD | 79 s | 375 MB | 1.8e-4 |
+| active SQD | 296 s | 377 MB | 7.2e-13 |
+| EV | 537 s | 377 MB | 3.4e-6 |
+H₂ 全空间 = FCI（err 0，~0.3 s）；CIPSI 补全到全空间最慢（N₂ 76-227 s）。
+**洞察**：active/ev 的"效率"体现在**量子 shots 大幅节省**（图 2，~100 shots 达
+化学精度），**经典 wall-time 更高**（多轮对角化 + PT2 选态）——两种口径要分开
+讲。内存峰值三种方法相近（~377 MB，Python/pyscf 常驻）。
+
+**② 噪声影响评估**（`noise.noise_impact`）：对同一无噪声位串池施加逐级 T1
+（γ 0→0.4），跑 SQD 得 `E(γ)`，量化"噪声把结果拖多远"。输出：各 γ 能量/误差、
+**化学精度安全区 `safe_gamma`**（误差 < target 的最大 γ，网格内线性插值）、
+可选真机参数换算 `safe_depth`（最大电路深度）、主导因子与建议文案。误差口径：
+默认对 `E(0)`（纯噪声退化，与截断误差解耦）；传 `e_reference`（如 FCI）则对
+绝对误差。**实测**：N₂/STO-3G active 采样对 T1 近免疫（errors 全 ~1.7e-7，
+safe_gamma=0.4）——recover 纠正 + PT2 抗噪的实证。
+
+**③ 超参自动推荐**（`predict.recommend_sqd_params`）：给定分子（norb, nelec）
++ 硬件（T1_us, t_gate_ns）+ 目标精度，返回 `SqdParams` 结构化推荐：
+- `shots`/`depth`：`plan_sampling` 枚举 (shots, depth) 网格取**最便宜可行**
+  方案（预测误差 < target）；
+- `max_strings`：子空间维度上限启发式 `min(full, max(50, min(250, 25·norb)))`
+  （对角化维度 ≈ n_str² 保持可解）；
+- `n_active_per_round`：`max(10, min(50, max_strings//3))`（选态注入随规模缩放）；
+- `dom_thresh`/`pt2_floor`：库默认；`feasible`/`reason`：无可行组合时明确警告
+  并给改进建议（ZNE / 换基 / 加大 shots）。
+注意：精度模型用 H₄ 拟合的 KS/KT1，跨体系只作数量级起点（建议先 `calibrate`）。
+
+**④ 自适应流程**（`integrated.solve_sqd_auto`）：一键流水线——超参推荐（有
+T1 时）→ 采样（电路/随机位串）→ `solve_sqd_active` B1 自适应停采（energy_tol
+自动判断收敛）→ 轨迹能量-方差外推（饱和保护）。返回 `{energy, E_direct, E_ev,
+shots_used, recommendation, trajectory, converged, n_rounds}`。实测 N₂/STO-3G：
+500 shots 内收敛（shots_used=500），err ~2.4e-6（EV 版）。
+
+**测试**：新增 9 项（EV 合成恢复、N₂ EV 化学精度、轨迹单调、重要性采样聚焦、
+noise_impact 安全区、recommend 结构/上限/过紧、auto 端到端）。全库测试从
+106 → 115（方向 D/E 后）。
+
 ## 汇总图：减误差 / 提速方法与经典 baseline 对比（2026-08-04）
 
 **基准**：N₂/STO-3G 拉伸（强关联，dim=14400），FCI 为精确参考，经典 baseline = 纯采样 SQD。
@@ -635,10 +716,15 @@ eps_hb=1e-4 时 E_PT2≈-7e-11）。全库 106 测试全过（本小节的 HCI �
 
 ## 后续可选改进（非阻塞）
 
-## 后续可选改进（非阻塞）
-
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
 - UCJ 精确对标 ffsim（完整 J + 多参数 orbital rotation，非简化 SVD）
 - 配置恢复 tie-breaking 随机性的统计性测试
 - 多版本 numpy（1.x / 2.x）CI 矩阵，固化兼容性
 - UCJ 精确化（t2→SVD→Û/J，对标 ffsim）；GPU CI 对角化（大体系路线）
+- **方向 D 强化**：把本征矢重要性采样做成 `solve_sqd_distill` 蒸馏闭环
+  （采样→对角化→重要性重采样→再对角化），或与 NQS 结合做泛化先验
+- **方向 D 拓展**：EV 外推与 `solve_hci` 轨迹结合（SHCI 的 ε₁ 扫描做 E(σ²)
+  外推，替代/补充 semistochastic PT2）；外推误差带 (fit_std) 接入
+  `solve_sqd_robust` 的收敛判据
+- **方向 E 强化**：`recommend_sqd_params` 接入真实校准（`calibrate` 拟合的
+  KS/KT1 回填）；`noise_impact` 支持 T2/读出噪声类型与多参数安全区扫描

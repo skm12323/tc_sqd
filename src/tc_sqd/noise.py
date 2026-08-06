@@ -399,3 +399,161 @@ def solve_sqd_robust(
         "total_shots": int(sum(shots_used)),
         "gammas": list(gammas),
     }
+
+
+def noise_impact(
+    h1e,
+    eri,
+    norb: int,
+    nelec,
+    *,
+    bitstring_matrix,
+    probabilities=None,
+    gammas=(0.02, 0.05, 0.1, 0.2, 0.3, 0.4),
+    ecore: float = 0.0,
+    seed: int = 0,
+    e_reference: Optional[float] = None,
+    target: Optional[float] = None,
+    T1_us: Optional[float] = None,
+    t_gate_ns: Optional[float] = None,
+    solver=None,
+    verbose: bool = False,
+    return_details: bool = False,
+) -> dict:
+    """噪声影响评估: 各 T1 强度 γ 下 SQD 能量退化, 自动标注化学精度安全区。
+
+    **用途** (工程可视化/决策): 对同一无噪声位串池, 用 :func:`apply_t1_bitstrings`
+    施加逐级 T1 (γ 从 0 到 0.4), 跑 SQD 得 ``E(γ)``, 量化"噪声把结果拖多远"——
+    直接回答"这个体系/电路能容忍多大噪声 (T1 多短还能达化学精度)"。
+
+    **误差口径**: 默认以 ``E(0)`` (同池无噪声 SQD) 为基准, 误差 = 噪声**纯退化**
+    (与 SQD 截断误差解耦); 传 ``e_reference`` (如 FCI) 则误差 = 对参考的**绝对
+    误差** (含截断 + 噪声)。建议口径见 docstring。
+
+    Parameters
+    ----------
+    h1e, eri, norb, nelec, ecore
+        分子积分 (SQD 输入)。
+    bitstring_matrix : ndarray (S, 2*norb), bool
+        无噪声采样位串池。
+    probabilities : ndarray (S,) | None
+        位串权重 (T1 翻转后近似沿用)。
+    gammas : tuple[float]
+        T1 率网格 (含评估点; 自动并入 γ=0 作为无噪声基线)。
+    seed : int | None
+        T1 翻转 + SQD 内部随机种子 (确定性)。
+    e_reference : float | None
+        绝对误差基准 (如 FCI 能量)。``None`` = 以 E(0) 为基准 (纯噪声退化)。
+    target : float | None
+        精度阈值 (默认化学精度 1.6e-3 Ha, 从 ``predict`` 导入)。
+    T1_us, t_gate_ns : float | None
+        真机参数 (可选中: 把安全 γ 换算成最大电路深度预算, 输出 ``safe_depth``)。
+    solver : callable | None
+        自选 SQD 求解器 ``solver(h1e, eri, norb, nelec, bitstring_matrix=bsm,
+        probabilities=p, ecore=ecore, rand_seed=seed) -> float``。``None`` =
+        ``solve_sqd_active`` (推荐, 含 PT2 补足, 抗噪)。
+    verbose : bool
+        打印每 γ 能量与误差。
+    return_details : bool
+        ``True`` 返回各 γ 的 ``energies``/``errors`` 序列 (绘图用)。
+
+    Returns
+    -------
+    dict
+        ``gammas`` 网格; ``energies`` (含 ecore); ``errors`` (|E(γ)−基准|);
+        ``e0`` 无噪声基线; ``safe_gamma`` (误差 < target 的最大 γ, 网格内插值
+        估计; 无则 ``None``); ``safe_depth`` (若给 T1/t_gate, 最大电路深度);
+        ``dominant`` ("T1" | "ok"); ``recommendation`` 人类可读建议;
+        ``target`` 实际用的阈值。
+    """
+    from .predict import gamma_T1 as _gamma_T1, CHEMICAL_ACCURACY
+
+    if target is None:
+        target = CHEMICAL_ACCURACY
+    if any(g < 0 or g > 1 for g in gammas):
+        raise ValueError("gammas 必须在 [0, 1]。")
+    bsm0 = np.asarray(bitstring_matrix, dtype=bool)
+    probs0 = probabilities
+
+    if solver is None:
+        from .cipsi import solve_sqd_active
+        def _default_solver(h1e, eri, norb, nelec, **kw):
+            return solve_sqd_active(h1e, eri, norb, nelec, **kw)
+        solver = _default_solver
+
+    # γ=0 基线 + 各噪声点
+    grid = [0.0] + [float(g) for g in gammas]
+    energies = []
+    for g in grid:
+        bsm_noisy = bsm0 if g == 0.0 else apply_t1_bitstrings(bsm0, g, seed=seed)
+        e = solver(
+            h1e, eri, norb, nelec,
+            bitstring_matrix=bsm_noisy, probabilities=probs0,
+            ecore=ecore, rand_seed=seed,
+        )
+        energies.append(float(e))
+        if verbose:
+            print(f"[noise_impact] γ={g}: E={e:.6f}")
+    e0 = energies[0]
+    errors = [abs(e - (e0 if e_reference is None else e_reference)) for e in energies]
+
+    # 安全区: 误差 < target 的最大 γ (对 errors vs γ 做线性插值)
+    g_arr = np.asarray(grid)
+    err_arr = np.asarray(errors)
+    safe_gamma = None
+    if err_arr[0] < target:
+        safe_gamma = 0.0
+        for i in range(1, len(g_arr)):
+            if err_arr[i] < target:
+                safe_gamma = float(g_arr[i])
+            else:
+                # 线性插值: target 落在 (g[i-1], g[i]) 之间
+                g0, g1 = float(g_arr[i - 1]), float(g_arr[i])
+                e0_, e1_ = float(err_arr[i - 1]), float(err_arr[i])
+                if e1_ > e0_:
+                    frac = (target - e0_) / (e1_ - e0_)
+                    safe_gamma = g0 + frac * (g1 - g0)
+                break
+    else:
+        safe_gamma = None
+
+    safe_depth = None
+    if safe_gamma is not None and T1_us is not None and t_gate_ns is not None:
+        if safe_gamma < 1.0:
+            from math import log
+            safe_depth = int(-log(1.0 - safe_gamma) * T1_us / (t_gate_ns / 1000.0))
+
+    dominant = "T1" if (safe_gamma is not None and safe_gamma < 0.2) else "ok"
+    if safe_gamma is None:
+        recommendation = (
+            f"γ=0 误差 {errors[0]:.2e} 已 ≥ target {target:.2e}: "
+            f"噪声不是主因, 先减小 SQD 截断误差 (增大 max_strings/换基)。"
+        )
+    elif safe_gamma < 0.05:
+        recommendation = (
+            f"噪声容限极低 (安全 γ≈{safe_gamma:.3f}): 即使小 T1 也显著退化, "
+            f"建议 ZNE 外推 (:func:`zero_noise_extrapolate_t1`) 或压电路深度。"
+        )
+    else:
+        recommendation = (
+            f"化学精度安全区 γ∈[0, {safe_gamma:.3f}] (对应最大深度 "
+            f"{safe_depth if safe_depth is not None else 'N/A'}), "
+            f"超出后噪声主导。"
+        )
+    out = {
+        "gammas": [float(g) for g in grid],
+        "energies": energies,
+        "errors": errors,
+        "e0": float(e0),
+        "safe_gamma": safe_gamma,
+        "safe_depth": safe_depth,
+        "dominant": dominant,
+        "recommendation": recommendation,
+        "target": float(target),
+    }
+    if return_details:
+        return out
+    # 简要版: 只留最关键字段 (供快速检查)
+    return {k: out[k] for k in ("e0", "safe_gamma", "safe_depth",
+                                "dominant", "recommendation", "target")}
+
