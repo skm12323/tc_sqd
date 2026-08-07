@@ -42,20 +42,25 @@ def _collect():
     print(f"N2/cc-pVDZ R=3.0 FCI={e_fci:.6f} full={full}")
 
     if not P["shci"]:
-        for eps in [1e-1, 8e-2, 7.2e-2, 7e-2, 6.95e-2, 6.9e-2,
-                    6.85e-2, 6.8e-2, 6.5e-2, 3e-2]:
+        # SHCI: eps 加密 (敏感区间 7.5e-2..6.5e-2 细扫, 覆盖 324->58564 中间维度)
+        for eps in [1e-1, 9e-2, 8.5e-2, 8e-2, 7.5e-2, 7.3e-2, 7.2e-2, 7.1e-2,
+                    7.05e-2, 7.0e-2, 6.95e-2, 6.92e-2, 6.90e-2, 6.88e-2,
+                    6.86e-2, 6.84e-2, 6.82e-2, 6.80e-2, 6.6e-2, 6.4e-2,
+                    6.0e-2, 4e-2, 2e-2, 1e-2]:
             e_t, e_pt2, dim = tc_sqd.solve_hci(
                 h1e, eri, NCAS, (NELEC // 2, NELEC // 2), eps_hb=eps,
                 max_iter=15, ecore=ecore, return_details=True, verbose=False)
             P["shci"].append((dim, abs(e_t - e_fci)))
             P["hci_ev"].append((dim, abs((e_t - e_pt2) - e_fci)))
-            print(f"SHCI eps={eps:.1e}: dim={dim} "
+            print(f"SHCI eps={eps:.3e}: dim={dim} "
                   f"errSHCI={P['shci'][-1][1]:.2e}", flush=True)
         np.save(NPY, P, allow_pickle=True)
 
     if not P["active_pt2"]:
-        grid = [(4, 60), (8, 90), (15, 120), (30, 200), (60, None),
-                (120, None), (300, None), (800, None)]
+        # SQD: shots x max_strings 加密 (维度 ~2500 -> 63000)
+        grid = [(3, 40), (4, 60), (5, 80), (8, 100), (12, 130), (15, 160),
+                (20, 200), (30, 250), (40, None), (60, None), (80, None),
+                (120, None), (200, None), (400, None), (800, None)]
         for s, ms in grid:
             b = np.random.default_rng(0).random((s, 2 * NCAS)) > 0.5
             p = np.full(s, 1.0 / s)
@@ -91,7 +96,7 @@ def _plot(P):
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    targets = list(np.geomspace(300, 63000, 10))
+    targets = list(np.geomspace(300, 63000, 15))
     shci = _uniform(P["shci"], targets)
     hci_ev = _uniform(P["hci_ev"], targets)
     a_pt2 = _uniform(P["active_pt2"], targets)
@@ -123,7 +128,8 @@ def _plot(P):
     ax.set_title("improved SQD vs SHCI (N2/cc-pVDZ, R=3.0 A)", fontsize=12)
     ax.legend(fontsize=8, loc="upper right")
     ax.set_xlim(300, 80000)
-    ax.set_ylim(1e-5, 0.5)
+    # 下界放到数据最小量级以下 (min ~2e-6), 避免裁剪高维度趋同点
+    ax.set_ylim(2e-7, 0.5)
     ax.grid(True, which="both", alpha=0.3)
 
     out = os.path.join(BASE, "fig_improved_sqd_vs_shci_n2_ccpvdz.png")
@@ -135,4 +141,15 @@ def _plot(P):
 
 
 if __name__ == "__main__":
-    _plot(_collect())
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--plot", action="store_true",
+                    help="只用缓存数据出图 (跳过耗时数据收集)")
+    args = ap.parse_args()
+    if args.plot:
+        if not os.path.exists(NPY):
+            raise SystemExit(f"无缓存数据 {NPY}, 请先不带 --plot 跑一次收集。")
+        P = np.load(NPY, allow_pickle=True).item()
+    else:
+        P = _collect()
+    _plot(P)

@@ -44,3 +44,6 @@ vlog.txt
 .claude/
 # 双 agent 协作内部通道 (不入库)
 DISCUSSION.md
+
+# 画图数据缓存 (生成物, --plot 模式用; 不入库)
+_plot_data_*.npy
