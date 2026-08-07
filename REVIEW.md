@@ -770,6 +770,29 @@ qiskit-addon-sqd + Dice 的 HCI 报告值口径一致。
 
 生成脚本：`examples/plot_improved_sqd_vs_shci_n2.py`（确定性 seed 0，断点缓存）。
 
+## 图 `fig_improved_sqd_vs_shci_n2_ccpvdz.png`：N₂/cc-pVDZ (10e,10o) @ R=3.0（2026-08-07）
+
+**动机**：N₂/STO-3G 全空间太小（14400），HCI 快速收敛（亚 mHa），参考价值有限；
+换更大基组 cc-pVDZ (10e,10o)（全空间 63504，与用户 Desktop `bppp_opt_N2_lowmem.py`
+同活性空间）。**R=2.0 与 3.0 探测**：R=2.0 时 SHCI 在 eps≤7e-2 直接 =FCI、
+SQD shots≥60 直接 =FCI（弱关联无内容）；**R=3.0（近解离强关联）才复现受限误差**。
+
+**关键探测发现——SHCI 维度对 eps_hb 极敏感（阈值悬崖）**：eps 7.0e-2→dim 3481、
+6.9e-2→40401、6.8e-2→57600（0.1e-2 内维度涨 16 倍）；eps 网格须在 7.2e-2..6.5e-2
+**加密**才能抓到中间维度。对比 C₂/STO-3G 的 SHCI 维度连续（144→5041→…→41616），
+N₂/cc-pVDZ 的 heat-bath 选态有尖锐阈值。
+
+**结果**（目标 log 均匀维度匹配；SHCI 4 点 [324, 63504]，improved SQD 5 点
+[3481, 62500]）：
+- **低维度相当**（dim 3481：improved SQD 1.37e-3 vs SHCI 1.38e-3）；
+- **中维度 improved SQD 反超 SHCI**（dim 36100@1.72e-5 vs SHCI 40401@1.53e-4，
+  ~9 倍）——**在第二个体系复现 C₂ 的结论**；
+- 高维度趋同（~2e-6，都逼近 FCI）。
+- 虚线对照：PT2 修正对两方法都有增益（变分层在实线上方）。
+
+生成脚本：`examples/plot_improved_sqd_vs_shci_n2_ccpvdz.py`（确定性 seed 0，
+断点缓存）。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
