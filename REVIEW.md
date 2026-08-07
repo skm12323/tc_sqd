@@ -824,9 +824,11 @@ Dice/pyscf 官方 SHCI 环境（本次配置完成）与库内实现一致性的
 （消除单 seed 涨落）；SHCI 确定性单次。
 
 **结果**（SHCI 6 点 [4, 63504]，improved SQD 8 点 [1600, 51076] mean±std）：
-- **C₂/cc-pVDZ 上 SHCI 中高维度全程优于 improved SQD**（dim 28900：SHCI 5.1e-8
-  vs improved SQD 5.3e-8 相当；dim 37249：2.0e-8 vs 3.8e-8 SHCI 略优）——与
-  C₂/STO-3G 相反，**方法优劣体系依赖**，多 seed 平均消除了之前可能夸大的反超。
+- **存在双交叉**：约 **2.0–3.0×10⁴ 区间 improved SQD 优于 SHCI**（dim 20449：
+  SQD 1.11e-7 vs SHCI 21316: 1.32e-7；dim 24336：SQD 7.25e-8），~3×10⁴ 后 SHCI
+  反超（dim 29584：SHCI 5.1e-8 vs SQD 28900: 5.3e-8）；其余维度 SHCI 占优
+  （高维度 dim 37249：2.0e-8 vs 3.8e-8）。与 C₂/STO-3G 相比反超区间更窄、更靠
+  中维度——**方法优劣体系依赖**，多 seed 平均让结论更可靠。
 - SHCI 全空间误差 0.0（真基态参考下收敛到参考）。
 - improved SQD 低采样（shots=3, dim 1600）误差 0.19±0.27 Ha 异常不稳定（采样
   太少恢复失败），高采样收敛（dim 51076 时 2.0e-8±9.6e-9）。
