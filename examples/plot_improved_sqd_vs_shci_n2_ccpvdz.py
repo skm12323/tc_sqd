@@ -130,6 +130,11 @@ def _plot(P):
     ax.set_xlim(300, 80000)
     # 下界放到数据最小量级以下 (min ~2e-6), 避免裁剪高维度趋同点
     ax.set_ylim(2e-7, 0.5)
+    # 参考口径偏移: 全空间时所有方法解同一哈密顿量 (彼此一致 <uHa),
+    # 与外部 CASCI 参考恒差 ~1.4 uHa (哈密顿量构造路径的数值/约定差异)
+    ax.text(1.5e4, 9e-6,
+            "~1.4 uHa common floor\n(ref. offset: CASCI vs\nour Hamiltonian)",
+            fontsize=7, color="grey", ha="center", va="center")
     ax.grid(True, which="both", alpha=0.3)
 
     out = os.path.join(BASE, "fig_improved_sqd_vs_shci_n2_ccpvdz.png")
