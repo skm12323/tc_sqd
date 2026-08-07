@@ -715,7 +715,7 @@ noise_impact 安全区、recommend 结构/上限/过紧、auto 端到端）。�
 - `HCI variational E_V`（虚线）与 `SHCI E_V+E_PT2`（实线）：**低维度（dim~3481）处虚线误差
   高于实线（E_PT2=-3.9e-5 补足）**——直观展示 PT2 修正价值; 维度增大（eps_hb 减小）两者
   趋同（E_PT2→0）。
-- `traditional SQD`：平滑下降（2209→14161，err 0.042→2.2e-6），但**同维度下误差最高**。
+- `traditional SQD`：覆盖不全时误差最高（4489→13924，err 0.126→1.8e-4）；**右端垂直陡降到 1.3e-9 是"全有或全无"伪影**——N₂/STO-3G 全空间仅 14400（120²），shots≥800 时配置恢复恰好补全全部 120 det → 子空间=全空间 → 直接解 FCI（图上已标注 "full space reached = FCI"）。**任何未达全空间的维度下传统 SQD 都远差于 active/improved SQD/SHCI**。
 - `solve_sqd_active`：维度 8836 即 err 5.3e-7（比 SQD 同维度低 3-4 个量级），14400 时 4.7e-13。
 - `FCI-NO top-K`：**同维度下误差最低**（维度 3969 时 3.2e-6 vs HCI 3481 时 E_V 4.0e-5）——
   确定性 top-K 是选态上限，HCI 的 heat-bath 是近似选择。

@@ -137,6 +137,18 @@ def _plot(P):
     plot("active_pt2", "improved SQD: active + PT2 (E+E_PT2)", "#2ca02c", "^", z=4)
     plot("fci_no", "FCI-NO top-K", "#9467bd", "D", ms=4)
 
+    # 传统 SQD 垂直下降 = 配置恢复恰好补全全空间 (= 直接解 FCI), 标注防误导
+    sqd_arr = np.array(P.get("sqd", []))
+    if sqd_arr.size:
+        d = sqd_arr[np.argsort(sqd_arr[:, 0])]
+        last = d[-1]
+        if float(last[1]) < 1e-6:      # 误差骤降 -> 达全空间
+            ax.annotate("full space reached\n= FCI (recovery\ncompletes all dets)",
+                        xy=(float(last[0]), float(last[1])),
+                        xytext=(float(last[0]) * 1.15, float(last[1]) * 30),
+                        arrowprops=dict(arrowstyle="->", color="grey", lw=0.8),
+                        fontsize=7, color="grey", ha="left")
+
     ax.axhline(0.10, color="grey", ls=":", lw=1.2)
     ax.text(1.2e3, 0.14, "CCSD (single-ref fails at stretch)",
             fontsize=8, color="grey")
@@ -165,5 +177,10 @@ if __name__ == "__main__":
     ap.add_argument("--plot", action="store_true",
                     help="只用缓存数据出图 (跳过数据收集)")
     args = ap.parse_args()
-    P = {} if args.plot else _collect()
+    if args.plot:
+        if not os.path.exists(NPY):
+            raise SystemExit(f"无缓存数据 {NPY}, 请先不带 --plot 跑一次收集。")
+        P = np.load(NPY, allow_pickle=True).item()
+    else:
+        P = _collect()
     _plot(P)
