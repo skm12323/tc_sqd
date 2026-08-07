@@ -836,6 +836,24 @@ Dice/pyscf 官方 SHCI 环境（本次配置完成）与库内实现一致性的
 生成脚本：`examples/plot_improved_sqd_vs_shci_c2_ccpvdz.py`（3 seed mean±std，
 断点缓存）。
 
+## 图 `fig_improved_sqd_vs_shci_n2_1212.png`：N₂/cc-pVDZ (12e,12o)（2026-08-08）
+
+**能力边界验证（重要）**：全空间 **853,776 维**，参考 = 库内全空间对角化（**仅 3.1 分钟**，
+真基态 -108.7686857）。**推翻了此前"12 轨道可能爆内存"的担忧**——受限
+`max_strings` 下 PT2 枚举完全可控（单点 23-56s、内存 0.6GB）。库内 SQD 在
+12 轨道活性空间可达受限 9000 维到无限制 51 万维。
+
+**数据**（SHCI 单次 + SQD 3 seed mean±std）：
+- SHCI：dim 144→831,744，err 3.65e-3→**1.82e-10**（eps 5e-1→1e-3，维度跳跃大）
+- SQD：dim 9,025→509,796，err 1.15e-3→**6.02e-7**（单调下降）
+- 整体趋势：SHCI 在类似维度下误差更低（需更小维度达同精度）。
+
+**耗时 ~5.7 小时**（后台），主要瓶颈 = 无限制大维度 SQD 点（shots=200/500 各
+~1 小时，12 轨道无限制 active 扩张到大维度对角化 + PT2 枚举）。
+
+生成脚本：`examples/plot_improved_sqd_vs_shci_n2_1212.py`（3 seed，断点缓存；
+积分/参考存 `_n2_1212_ints.npz`）。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
