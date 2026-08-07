@@ -749,6 +749,27 @@ qiskit-addon-sqd + Dice 的 HCI 报告值口径一致。
 
 生成脚本：`examples/plot_improved_sqd_vs_shci.py`（确定性 seed 0，断点缓存）。
 
+## 图 `fig_improved_sqd_vs_shci_n2.png`：improved SQD vs SHCI（N₂/STO-3G，2026-08-07）
+
+**与 C₂ 图同构**（同脚本逻辑换体系 N₂/STO-3G 拉伸，全空间 14400）。SHCI 用库内
+`solve_hci`——与 pyhci/Dice 原生 SHCI 算法一致（Holmes 2016/Sharma 2017）。
+**pyhci 获取失败结论**：换节点后 Windows 侧 GitHub 已通，但 pyhci 仓库不存在
+（`gkclpt`/`sharma-lab`/`GKCLAB`/`pyhci` 全 `Repository not found`）；实际可用
+接口是 `pyscf/shciscf`（对接 Dice），但需编译 C++（gcc/cmake/boost），WSL
+工具链全缺。故用库内 `solve_hci` 作为 pyhci/Dice 等价实现。
+
+**结果**（取点均匀，目标 log 维度 1200→14000 共 11 档；SHCI 5 点
+[64, 12544]，improved SQD 6 点 [2500, 14161]）：
+- **N₂ 上两条曲线非常接近，SHCI 略优或相当，无 C₂ 那种交叉**：
+  dim~2500-3500 时 SHCI 8.4e-7 vs improved SQD 1.8e-5（SHCI 低 20 倍）；
+  dim≥6000 两者都 ~5-9e-9（SHCI 略低）。
+- 与 C₂ 图互补：**小全空间（N₂ 14400）下两者快速趋同、SHCI 确定性选态略优；
+  大全空间强关联（C₂ 44100）下 SHCI 有 PT2 补不足的平台、improved SQD 高维度
+  反超**——improved SQD 的价值在"强关联 + 受限子空间"场景更显著。
+- 虚线对照：PT2 修正对两者都带来增益（变分层在实线上方）。
+
+生成脚本：`examples/plot_improved_sqd_vs_shci_n2.py`（确定性 seed 0，断点缓存）。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
