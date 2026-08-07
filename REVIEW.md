@@ -808,6 +808,32 @@ N₂/cc-pVDZ 的 heat-bath 选态有尖锐阈值。
 生成脚本：`examples/plot_improved_sqd_vs_shci_n2_ccpvdz.py`（确定性 seed 0，
 断点缓存）。
 
+## 图 `fig_improved_sqd_vs_shci_c2_ccpvdz.png`：C₂/cc-pVDZ (10e,10o)（2026-08-07）
+
+**CASCI 参考跳根发现（重要）**：C₂/cc-pVDZ 近简并，CASCI 与 direct_spin1.kernel
+（davidson）收敛到虚高 **9.3 mHa** 的第二根（-75.550874）；库内 eigsh(SA) 找到
+**真基态 -75.560163**（eigsh(k=2) 明确两根差 9.289 mHa）。因此本图参考改用**库内
+全空间对角化（真基态）**，规避参考陷阱。
+
+**三方对账（Dice 交叉验证）**：真基态 -75.5601627525 下，Dice SHCI (eps=1e-4)
+偏差 +0.003 mHa、solve_hci 偏差 0.000 mHa、全空间对角化一致——**三方一致到 µHa
+级**，同时确认 CASCI 确实跳根（Dice 和库都到真基态而 CASCI 没有）。这也是
+Dice/pyscf 官方 SHCI 环境（本次配置完成）与库内实现一致性的第二个实证。
+
+**多 seed 取平均（按用户建议）**：improved SQD 每点 3 seed 取 mean±std 画误差带
+（消除单 seed 涨落）；SHCI 确定性单次。
+
+**结果**（SHCI 6 点 [4, 63504]，improved SQD 8 点 [1600, 51076] mean±std）：
+- **C₂/cc-pVDZ 上 SHCI 中高维度全程优于 improved SQD**（dim 28900：SHCI 5.1e-8
+  vs improved SQD 5.3e-8 相当；dim 37249：2.0e-8 vs 3.8e-8 SHCI 略优）——与
+  C₂/STO-3G 相反，**方法优劣体系依赖**，多 seed 平均消除了之前可能夸大的反超。
+- SHCI 全空间误差 0.0（真基态参考下收敛到参考）。
+- improved SQD 低采样（shots=3, dim 1600）误差 0.19±0.27 Ha 异常不稳定（采样
+  太少恢复失败），高采样收敛（dim 51076 时 2.0e-8±9.6e-9）。
+
+生成脚本：`examples/plot_improved_sqd_vs_shci_c2_ccpvdz.py`（3 seed mean±std，
+断点缓存）。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
