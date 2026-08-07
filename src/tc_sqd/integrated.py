@@ -289,7 +289,7 @@ def solve_sqd(
 
 
 # --------------------------------------------------------------------------- #
-#  自动 SQD 流程 (方向 E): 超参推荐 -> 采样 -> 自适应收敛 -> 能量-方差外推
+#  自动 SQD 流程 (方向 E): 超参推荐 -> 采样 -> 自适应收敛 -> PT2 能量修正
 # --------------------------------------------------------------------------- #
 def solve_sqd_auto(
     h1e: np.ndarray,
@@ -313,7 +313,7 @@ def solve_sqd_auto(
     verbose: bool = False,
     return_details: bool = False,
 ) -> Union[float, dict]:
-    """自动 SQD 流程: 超参推荐 → 采样 → 自适应收敛 → (可选) 能量-方差外推。
+    """自动 SQD 流程: 超参推荐 → 采样 → 自适应收敛 → (可选) PT2 能量修正。
 
     把"推荐 + 执行 + 收敛判断 + 精度提升"串成一条流水线 (工程自动化入口):
       1. **超参推荐**: 给真机参数 (``T1_us``/``t_gate_ns``) 时用
@@ -323,7 +323,8 @@ def solve_sqd_auto(
          (经典自举)。
       3. **自适应收敛**: :func:`solve_sqd_active` 的 B1 预算闭环 (增量采样 +
          ``energy_tol`` 停采), 自动判断收敛并记录轨迹。
-      4. **能量-方差外推**: 默认用轨迹做 ``E(σ²)→0`` 外推 (方向 D), 修正残余
+      4. **PT2 能量修正**: 默认用轨迹末点的 Epstein-Nesbet 修正 ``E+E_PT2``
+         (方向 D, SHCI 式, 行为良好; σ² 线性外推实测过冲, 不启用)。修正残余
          截断误差 (不增大维度)。
 
     Parameters
@@ -348,7 +349,8 @@ def solve_sqd_auto(
     n_active_per_round : int | None
         每轮 PT2 选态注入数 (覆盖推荐)。
     extrapolate_ev : bool
-        ``True`` 用轨迹做能量-方差外推 (方向 D, 默认)。
+        ``True`` (默认) 用轨迹末点做 PT2 能量修正 ``E+E_PT2`` (方向 D, 行为
+        良好); ``False`` 返回 active 直接能量。
     seed : int | None
         随机种子。
     verbose : bool
@@ -359,13 +361,12 @@ def solve_sqd_auto(
     Returns
     -------
     float | dict
-        ``return_details=False``: 能量 (外推版若启用, 否则 active 直接能量; 含
-        ``ecore``)。``return_details=True``: ``{"energy", "E_direct", "E_ev",
+        ``return_details=False``: 能量 (PT2 修正版若启用, 否则 active 直接能量;
+        含 ``ecore``)。``return_details=True``: ``{"energy", "E_direct", "E_ev",
         "shots_used", "recommendation" (SqdParams | None), "trajectory",
         "converged", "n_rounds"}``。
     """
     from .cipsi import solve_sqd_active
-    from .diagnostics import extrapolate_energy_variance
     from .predict import recommend_sqd_params, CHEMICAL_ACCURACY
 
     if target is None:
@@ -417,16 +418,12 @@ def solve_sqd_auto(
     )
     shots_used = int(usage[0]) if usage else int(shots)
 
-    # 4) 能量-方差外推 (方向 D, 用已有轨迹, 不重跑)
+    # 4) 能量修正 (方向 D, 用已有轨迹, 不重跑): 默认 PT2 (E+E_PT2, 行为良好)。
+    #    σ² 线性外推实测会过冲到 FCI 之下, 故不再作为默认 (见 solve_sqd_ev)。
     e_ev = None
-    if extrapolate_ev and len(traj) >= 2:
-        es = np.asarray([t["E"] for t in traj], dtype=np.float64)
-        vs = np.asarray([t["sigma2"] for t in traj], dtype=np.float64)
-        if np.max(vs) >= 1e-14:      # 子空间未饱和才外推
-            e_inf, *_ = extrapolate_energy_variance(es, vs, degree=1)
-            e_ev = float(e_inf) + ecore
-        else:
-            e_ev = float(es[-1]) + ecore
+    if extrapolate_ev and len(traj) >= 1:
+        last = traj[-1]
+        e_ev = float(last["E"] + last["e_pt2"]) + ecore
     energy = e_ev if e_ev is not None else float(e_direct)
 
     # 收敛判定: 末两轮能量变化 < energy_tol 且无 PT2 新 det

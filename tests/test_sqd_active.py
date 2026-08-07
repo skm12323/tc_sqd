@@ -188,10 +188,11 @@ def test_sqd_active_trajectory_monotone():
 
 
 def test_solve_sqd_ev_n2_reaches_chemical_accuracy():
-    """D: solve_sqd_ev 外推能量达化学精度 (EV 修正后非变分, 允许略低)。
+    """D: solve_sqd_ev 修正能量达化学精度且优于直接 (默认 PT2 修正)。
 
-    N2/STO-3G 拉伸低采样下, 能量-方差外推估计须落在化学精度带内 (实测
-    |err| ~ 1e-5, 远优于 1.6e-3 阈值)。
+    默认 correction="pt2" (E+E_PT2, SHCI 式, 行为良好): 实测受限子空间下
+    直接 err 4.3e-4 -> PT2 修正 6.2e-5 (改善且不劣化)。σ² 线性外推 (correction=
+    "ev") 保留为诊断模式 (可非变分过冲, 仅断言可运行 + 化学精度带)。
     """
     data = _n2_stretch_data()
     h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
@@ -200,16 +201,34 @@ def test_solve_sqd_ev_n2_reaches_chemical_accuracy():
     bsm = (np.random.default_rng(0).random((n_samples, 2 * norb)) > 0.5)
     probs = np.full(n_samples, 1.0 / n_samples)
 
-    e_ev, det = tc_sqd.solve_sqd_ev(
+    # 默认修正 = PT2 (E+E_PT2, 行为良好)
+    e_corr, det = tc_sqd.solve_sqd_ev(
         h1e, eri, norb, nelec, bitstring_matrix=bsm, probabilities=probs,
         n_active_per_round=50, max_rounds=10, rand_seed=0,
         return_details=True,
     )
-    assert abs(e_ev - e_fci) < 1.6e-3, f"EV 外推未达化学精度: {abs(e_ev - e_fci):.2e}"
-    assert det["r2"] > 0.9, f"EV 外推拟合质量差: r2={det['r2']:.4f}"
+    assert det["correction"] == "pt2"
+    assert "E_PT2" in det and det["E_PT2"] != 0.0
+    assert abs(e_corr - e_fci) < 1.6e-3, f"PT2 修正未达化学精度: {abs(e_corr - e_fci):.2e}"
+    assert abs(e_corr - e_fci) <= abs(det["E_direct"] - e_fci) + 1e-12, (
+        f"PT2 修正未优于直接: corr={abs(e_corr - e_fci):.2e} "
+        f"direct={abs(det['E_direct'] - e_fci):.2e}")
     assert len(det["trajectory"]) >= 2
-    # EV 估计是修正量: 与直接能量同侧 (非变分, 允许略低), 但不得离谱
-    assert abs(e_ev - det["E_direct"]) < 1e-2
+    # σ² 外推为诊断模式 (允许非变分, 但须可运行且达化学精度带)
+    e_ev, det_ev = tc_sqd.solve_sqd_ev(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm, probabilities=probs,
+        n_active_per_round=50, max_rounds=10, rand_seed=0,
+        correction="ev", return_details=True,
+    )
+    assert det_ev["correction"] == "ev" and det_ev["r2"] > 0.9
+    assert abs(e_ev - e_fci) < 1.6e-3, f"σ² 外推未达化学精度带: {abs(e_ev - e_fci):.2e}"
+    # 非法 correction 报错
+    try:
+        tc_sqd.solve_sqd_ev(h1e, eri, norb, nelec, bitstring_matrix=bsm,
+                            probabilities=probs, correction="bad")
+        assert False, "非法 correction 应报错"
+    except ValueError:
+        pass
 
 
 def test_eigenvector_importance_sample_concentrates_dominant():

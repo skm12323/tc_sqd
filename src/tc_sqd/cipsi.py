@@ -975,6 +975,7 @@ def solve_sqd_ev(
     dom_thresh: float = 1e-3,
     pt2_floor: float = 1e-7,
     max_rounds: int = 10,
+    correction: str = "pt2",
     degree: int = 1,
     ecore: float = 0.0,
     rand_seed: Optional[int] = 0,
@@ -984,34 +985,44 @@ def solve_sqd_ev(
     energy_tol: Optional[float] = None,
     return_details: bool = False,
 ) -> float:
-    """能量-方差外推 SQD (方向 D): 用子空间扩展轨迹把能量外推到方差零点。
+    """改进 SQD (方向 D): active 采样 + 基于方差的能量修正, 不增大维度降误差。
 
-    **动机**: :func:`solve_sqd_active` 的最终子空间能量仍是 FCI 的变分上界
-    (残余误差 ∝ 漏掉 det 的方差)。本函数跑同一 active 流程, 但**记录每轮**
-    ``(E, σ²)`` 轨迹 (``σ² = Σ_{a∉V}|⟨a|H|Ψ⟩|²``, 由 PT2 分子给出), 再用
-    :func:`extrapolate_energy_variance` 拟合 ``E(σ²)`` 并外推到 σ²=0 —— 用
-    扩展趋势修正最终子空间的残余误差, **不增大最终子空间维度**即降误差。
+    **两种修正 (都只用 PT2 分子 Σ|⟨a|H|Ψ⟩|² = 精确方差, 纯经典后处理)**:
+      - ``correction="pt2"`` (**默认, 推荐**): ``E + E_PT2``, 其中
+        ``E_PT2 = Σ_a |⟨a|H|Ψ⟩|²/(E−E_a)`` (Epstein-Nesbet)。这是 SHCI/CIPSI
+        的标准修正, **行为良好**——N₂/STO-3G 受限子空间直接 err 4.3e-4 →
+        6.2e-5; C₂ 直接 err 7.9e-3 (超化学精度) → **5.0e-4** (达化学精度)。
+      - ``correction="ev"`` (**诊断用**): 用轨迹 ``(E, σ²)`` 线性外推到 σ²=0
+        (:func:`extrapolate_energy_variance`)。**注意: 实测会过冲到 FCI 之下**
+        (N₂ −5.8e-4, C₂ −1.7e-2), 不推荐作为默认——保留作方差标度诊断。
 
-    **适用场景**: 受限子空间 (小 ``max_strings``) 下 SQD 能量离 FCI 尚远,
-    外推给出更接近 FCI 的估计; 全空间 (维度饱和) 时轨迹点方差已近零, 外推
-    退化为直接能量。
+    **动机**: :func:`solve_sqd_active` 的最终子空间能量是 FCI 的变分上界
+    (残余误差 ∝ 漏掉 det 的方差)。PT2/σ² 修正都用已算的候选矩阵元估计漏掉
+    的关联, **不增大最终子空间维度**即降误差。饱和子空间 (全空间, σ²≈0)
+    时修正自然趋零。
 
     Parameters
     ----------
     其余参数与 :func:`solve_sqd_active` 一致 (``ecore`` 在返回/诊断中计入;
     轨迹内部不含 ecore)。
+    correction : {"pt2", "ev"}
+        修正方式 (见上)。``"pt2"`` = E+E_PT2 (推荐); ``"ev"`` = σ² 线性外推
+        (诊断, 可能过冲)。
     degree : int
-        能量-方差外推多项式次数 (默认 1 = 线性)。
+        ``correction="ev"`` 时外推多项式次数 (默认 1 = 线性)。
     return_details : bool
-        ``True`` 返回 ``(E_ev, details_dict)``; ``details_dict`` 含
-        ``E_direct`` (active 直接能量)、``e_inf``、``slope``、``r2``、
-        ``fit_std``、``trajectory`` (每轮 E/σ²/PT2/dim/shots)。
+        ``True`` 返回 ``(能量, details_dict)``; ``details_dict`` 含
+        ``E_direct`` (active 直接能量)、``correction``、``E_PT2`` (pt2 模式)、
+        ``e_inf``/``slope``/``r2``/``fit_std`` (ev 模式)、``trajectory``
+        (每轮 E/σ²/PT2/dim/shots)。
 
     Returns
     -------
     float | tuple
-        外推能量 (含 ``ecore``); ``return_details=True`` 时返回 ``(能量, dict)``。
+        修正后能量 (含 ``ecore``); ``return_details=True`` 时返回 ``(能量, dict)``。
     """
+    if correction not in ("pt2", "ev"):
+        raise ValueError(f"correction 须为 'pt2' 或 'ev', got {correction!r}.")
     trajectory: list = []
     solve_sqd_active(
         one_body_tensor, two_body_tensor, norb, nelec,
@@ -1019,39 +1030,52 @@ def solve_sqd_ev(
         avg_occupancies=avg_occupancies, max_strings=max_strings,
         n_active_per_round=n_active_per_round, dom_thresh=dom_thresh,
         pt2_floor=pt2_floor, max_rounds=max_rounds,
-        ecore=0.0,                       # 轨迹 E 不含 ecore, 外推后统一加
+        ecore=0.0,                       # 轨迹 E 不含 ecore, 修正后统一加
         rand_seed=rand_seed, verbose=verbose,
         shots_budget=shots_budget, shots_step=shots_step,
         energy_tol=energy_tol, trajectory=trajectory,
     )
     if len(trajectory) < 2:
-        raise ValueError(f"轨迹点不足 (<2), 无法外推: got {len(trajectory)}.")
-    es = np.asarray([t["E"] for t in trajectory], dtype=np.float64)
-    vs = np.asarray([t["sigma2"] for t in trajectory], dtype=np.float64)
-    e_direct = es[-1] + ecore                 # 最后记录的点 = 最终子空间
-    if np.max(vs) < 1e-14:
-        # 子空间饱和 (全空间, 方差≈0): 无残余误差可外推, 退化为直接能量
-        if verbose:
-            print(f"[EV] 子空间饱和 (σ²_max={np.max(vs):.1e}), "
-                  f"退化为直接能量 {e_direct:.8f}")
-        e_ev = e_direct
-        return (e_ev, {"E_direct": e_direct, "e_inf": e_direct, "slope": 0.0,
-                       "r2": 1.0, "fit_std": 0.0, "trajectory": trajectory}) \
-            if return_details else e_ev
-    e_inf, slope, r2, fit_std = extrapolate_energy_variance(es, vs, degree=degree)
-    e_ev = float(e_inf) + ecore
+        raise ValueError(f"轨迹点不足 (<2), 无法修正: got {len(trajectory)}.")
+    last = trajectory[-1]
+    E = float(last["E"])
+    e_direct = E + ecore                 # active 直接能量 (最终子空间)
+    dim = int(last["dim"])
 
-    if verbose:
-        print(f"[EV] {len(trajectory)} 点, r²={r2:.4f}, "
-              f"E_direct={e_direct:.8f}, E_EV={e_ev:.8f}, "
-              f"改善={e_direct - e_ev:+.2e}")
-    if return_details:
-        return e_ev, {
-            "E_direct": float(e_direct), "e_inf": float(e_inf),
-            "slope": slope, "r2": r2, "fit_std": fit_std,
+    if correction == "pt2":
+        # E + E_PT2 (Epstein-Nesbet, 行为良好)
+        e_pt2 = float(last["e_pt2"])
+        e_corr = E + e_pt2 + ecore
+        details = {
+            "E_direct": e_direct, "correction": "pt2", "E_PT2": e_pt2,
+            "dim": dim, "trajectory": trajectory,
+        }
+        if verbose:
+            print(f"[EV:pt2] dim={dim} E_direct={e_direct:.8f} "
+                  f"E_PT2={e_pt2:.2e} E_corr={e_corr:.8f}")
+    else:
+        # σ² 线性外推 (诊断; 实测会过冲到 FCI 之下)
+        es = np.asarray([t["E"] for t in trajectory], dtype=np.float64)
+        vs = np.asarray([t["sigma2"] for t in trajectory], dtype=np.float64)
+        if np.max(vs) < 1e-14:
+            # 子空间饱和: 无残余可外推, 退化为直接能量
+            e_corr = e_direct
+            e_inf, slope, r2, fit_std = e_direct, 0.0, 1.0, 0.0
+        else:
+            e_inf, slope, r2, fit_std = extrapolate_energy_variance(
+                es, vs, degree=degree)
+            e_corr = float(e_inf) + ecore
+        details = {
+            "E_direct": e_direct, "correction": "ev", "e_inf": float(e_inf),
+            "slope": slope, "r2": r2, "fit_std": fit_std, "dim": dim,
             "trajectory": trajectory,
         }
-    return e_ev
+        if verbose:
+            print(f"[EV:ev] dim={dim} r²={r2:.4f} E_direct={e_direct:.8f} "
+                  f"E_ev={e_corr:.8f} (非变分, 可能过冲)")
+    if return_details:
+        return e_corr, details
+    return e_corr
 
 
 def eigenvector_importance_sample(
