@@ -723,6 +723,32 @@ noise_impact 安全区、recommend 结构/上限/过紧、auto 端到端）。�
 - **结论**：SHCI 的 PT2 修正让"小变分空间 + 外推修正"达到高精度; active 是"同子空间规模下
   误差最低"的采样方法; FCI-NO top-K 提供选态方法的理论上限标度。
 
+## 图 `fig_improved_sqd_vs_shci.png`：improved SQD vs SHCI 专对照（2026-08-07）
+
+**体系**：C₂/STO-3G（强关联，全空间 44100，FCI 参考可得）——比 N₂ 全空间 14400
+大三倍，维度覆盖范围更宽。**对标澄清**：qiskit-addon-sqd **本身不含 HCI**（用
+配置恢复 + `kernel_fixed_space` 简单 CI）；其集成的经典强关联求解器是**外部
+Dice/pyhci**，即 **SHCI**。故本图 `SHCI E_V+E_PT2`（`solve_hci`）与
+qiskit-addon-sqd + Dice 的 HCI 报告值口径一致。
+
+**取点均匀**：预定义 log 均匀目标维度（600→43000，12 档），对每方法取最近点，
+去重后保代表性点；两条曲线维度覆盖——SHCI **7 点** [144, 41616]（eps_hb
+1e-1→1e-3，含 144/5041/7056/9025/17424/31684/41616），improved SQD **7 点**
+[2500, 43264]（shots×max_strings 组合，含 2500/6084/10609/14884/18769/30625/
+43264）。维度 log 均匀、无堆叠重复点。
+
+**结果**（误差 vs 维度，log-log）：
+- **交叉点 ≈ dim 15000**：低维度 SHCI 误差更低（如 dim~5000：SHCI 2.3e-6 vs
+  improved SQD 1.3e-5）；**高维度 improved SQD 反超**（dim~30000：improved SQD
+  1.9e-9 vs SHCI 7.8e-9；dim~43000：improved SQD 6.6e-10）——improved SQD 收敛
+  更平滑单调，SHCI 在 5000~17000 有一截 PT2 补不足的平台（~2.3e-6）。
+- 虚线对照：两者变分层（`solve_sqd_active` 直接 / `HCI E_V`）都在各自 PT2 修正
+  实线上方——**PT2 修正对两条方法都带来增益**（SHCI 修正幅度在低维度最大）。
+- improved SQD 在 C₂ 上优势明显：采样恢复 + PT2 注入在 shots=4 即达 dim 2500，
+  且修正后误差随维度单调下降到 6.6e-10。
+
+生成脚本：`examples/plot_improved_sqd_vs_shci.py`（确定性 seed 0，断点缓存）。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
