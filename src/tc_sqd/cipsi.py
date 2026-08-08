@@ -512,6 +512,7 @@ def solve_sqd_adaptive(
     ecore: float = 0.0,
     rand_seed: Optional[int] = 0,
     verbose: bool = False,
+    rounds_out: Optional[list] = None,
 ) -> float:
     """自适应 SQD: 自洽换基表示层 (方向①) + 受限 PT2 选态选择层 (方向②) 叠加。
 
@@ -580,6 +581,7 @@ def solve_sqd_adaptive(
 
     sub = _Subspace(h1e, eri, norb, nelec)
     e_prev = np.inf
+    best_E = np.inf                       # 各轮 ③ 能量的 min (每轮自洽: B_r sub + B_r dets)
     n_rounds_done = 0
 
     for r in range(max_rounds):
@@ -639,6 +641,7 @@ def solve_sqd_adaptive(
         # ③ 最终对角化 (当前基)
         E, c2d, sa, sb = sub.diag(str_a, str_b)
         dim_now = len(sa) * len(sb)
+        best_E = min(best_E, E)           # 每轮 E 自洽 (B_r sub + B_r dets), 取 min 作变分上界
 
         # ④ 表示层: 解态 1-RDM → 自然轨道换基
         st = SCIState(amplitudes=c2d, ci_strs_a=np.asarray(sa),
@@ -654,15 +657,20 @@ def solve_sqd_adaptive(
                   f"dim={dim_now} |c2|max={float(np.abs(c2d).max() ** 2):.4f}")
 
         n_rounds_done = r + 1
+        if rounds_out is not None:
+            rounds_out.append(float(E))           # 各轮 ③ 自洽能量 (B_r sub + B_r dets)
         if r > 0 and abs(E - e_prev) < energy_tol:
             break
         e_prev = E
 
-    E, c2d, sa, sb = sub.diag(str_a, str_b)
+    # 返回各轮 ③ 能量的 min (每轮自洽: B_r sub + B_r dets)。**不**在循环后再做
+    # sub.diag —— 末轮 ④ 已把 sub 重建到 B_{last+1}, 而 str_a 仍是 B_last 的,
+    # 那会是混合基对角化 (与 solve_sqd_natural_orbitals F2 同类 bug), 能量不自洽
+    # (实测返回值比真正最优轮差 ~2.6e-7, 正是 REVIEW 报的"adaptive 略逊 active"根因)。
     if verbose:
-        print(f"[adaptive] 收敛 @ round {n_rounds_done}: E={E + ecore:.8f} "
-              f"dim={len(sa) * len(sb)}")
-    return float(E) + ecore
+        print(f"[adaptive] 收敛 @ round {n_rounds_done}: best_E={best_E + ecore:.8f} "
+              f"(各轮 ③ 自洽能量取 min, 变分上界)")
+    return float(best_E) + ecore
 
 
 # --------------------------------------------------------------------------- #

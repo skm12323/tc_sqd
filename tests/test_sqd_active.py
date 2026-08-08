@@ -95,6 +95,32 @@ def test_sqd_active_subspace_limited():
     assert err_lim < 1.6e-3, f"受限主动采样未达化学精度: {err_lim:.2e}"
 
 
+def test_solve_sqd_adaptive_returns_min_per_round_energy():
+    """④: solve_sqd_adaptive 返回 min(各轮 ③ 自洽能量), 非末轮混合基 diag。
+
+    旧版末轮 ④ 把 sub 重建到 B_{last+1}, 但 str_a 仍是 B_last 的 → 循环后 sub.diag
+    是**混合基**对角化 (与 solve_sqd_natural_orbitals F2 同类 bug), 返回不自洽的能量。
+    修复: 返回 min(各轮 E_r) (每轮自洽 B_r sub + B_r dets)。用 rounds_out 取各轮能量,
+    断言返回值 == min(rounds_out) —— buggy 版返回混合基值, 必 ≠ min(rounds_out)。
+    """
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    e_fci = direct_spin1.kernel(d.h1e, d.eri, d.norb, d.nelec, conv_tol=1e-12)[0]
+    bsm = np.random.default_rng(0).random((15, 2 * d.norb)) > 0.5
+    rounds = []
+    e_ada = tc_sqd.solve_sqd_adaptive(
+        d.h1e, d.eri, d.norb, d.nelec,
+        bitstring_matrix=bsm, max_rounds=4, n_active_per_round=15,
+        rand_seed=0, ecore=0.0, rounds_out=rounds)
+    assert len(rounds) >= 2, f"应跑 ≥2 轮 (才有 min 意义), got {len(rounds)}"
+    # 契约: 返回值 = min(各轮 ③ 能量)
+    assert abs(e_ada - min(rounds)) < 1e-12, (
+        f"返回值应 = min(各轮能量): {e_ada} vs min({rounds})={min(rounds)}")
+    # 变分上界 (各轮自洽 → min 仍 ≥ FCI)
+    assert e_ada >= e_fci - 1e-10, (
+        f"adaptive 违反变分: {e_ada:.10f} < FCI {e_fci:.10f}")
+
+
 def test_sqd_adaptive_reaches_chemical_accuracy():
     """组合版 (换基表示层 + PT2 选择层) 稳定达化学精度。
 

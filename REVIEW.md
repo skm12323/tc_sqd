@@ -967,6 +967,29 @@ single 卡在 +4.5e-8) 经蒸馏**恢复到 FCI**。这正是 C₂ 式"3/8 覆�
 需 N₂ 拉伸慢测试。NQS 衔接 (Part 2 B1): 把"按 |c|² 采"升级为神经网络 ``p_θ(det)`` 泛化
 到未采 det, 是本闭环的深度学习版。
 
+## 方向④：solve_sqd_adaptive 末轮混合基对角化 bug 修复（2026-08-08）
+
+**根因定位** (与方向② "组合版略逊 active" 的 REVIEW 旧结论相关): solve_sqd_adaptive
+每轮 ④ 把 ``sub`` 重建到新基 ``B_{last+1}`` (NO 旋转后), 但 ``str_a/str_b`` 仍是
+``B_last`` 的 (① 在换基前 recover)。循环后的 ``sub.diag(str_a, str_b)`` 因此是**混合基
+对角化** (``B_{last+1}`` 的 H 作用在 ``B_last`` 的 det 上) —— 非合法子空间对角化,
+返回值不自洽。与 :func:`solve_sqd_natural_orbitals` 的 F2 同类 (energy/积分差一轮)。
+
+**实证 (LiH/STO-3G 未饱和, 4 轮)**: 旧版返回 ``−8.8745313921``, 而 ``min(各轮 ③ 自洽能量)
+= −8.8745316494`` —— 旧版**比真正最优轮差 2.57e-7** (报高, 即更差)。这正是 REVIEW
+方向② "adaptive 略逊 active (mean 1.9e-6 vs 4e-7)" 的根因: 不是方法本质不行, 是返回了
+**次优**的混合基能量。
+
+**修复**: 跟踪 ``best_E = min(各轮 ③ E_r)`` (每轮 ③ 自洽: ``B_r`` sub + ``B_r`` dets),
+循环后**不再** ``sub.diag``, 直接返回 ``best_E``。新增 ``rounds_out`` 出参 (各轮 ③ 能量,
+诊断/测试用)。契约测试 ``test_solve_sqd_adaptive_returns_min_per_round_energy`` 锁定
+``返回值 == min(rounds_out)``, revert 验证牙齿 (buggy 版差 2.57e-7 → 测试失败)。
+
+**含义**: adaptive 现为**正确的 OO-CI (轨道优化) + active 采样**: 每轮 NO 换基使波函数
+更稀疏 + active PT2 选态, 返回真正最优轮 (变分上界)。旧 REVIEW "adaptive 略逊 active,
+保留为框架不声称优于" 的措辞**已过时** —— 那是 bug 产物; 修复后 adaptive 应与 active
+相当或更优 (多了 NO 换基的稀疏化收益)。完整 N₂ 拉伸对照验证留作慢测试。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
