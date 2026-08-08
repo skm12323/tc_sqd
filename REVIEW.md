@@ -854,6 +854,17 @@ Dice/pyscf 官方 SHCI 环境（本次配置完成）与库内实现一致性的
 生成脚本：`examples/plot_improved_sqd_vs_shci_n2_1212.py`（3 seed，断点缓存；
 积分/参考存 `_n2_1212_ints.npz`）。
 
+**Dice 交叉验证（N₂ 12,12，2026-08-08）**：
+- Dice SHCI 收敛到 **E=-108.768185**（eps→1e-6 后 0.502 mHa 平台不再下降），与库参考
+  -108.768686 差 ~0.5 mHa。
+- **三方诊断**：库 eigsh 全空间 -108.768686（183s）、pyscf direct_spin1 -108.768584
+  （差 0.102 mHa）、Dice -108.768185（差 ~0.5 mHa）——**85 万维 FCI 的收敛/参考口径
+  差异 ~0.1-0.5 mHa**，非单一真值可比。
+- **无法画 Dice 完整曲线**：shciscf 无变分空间维度 API（mc 仅 nroots/printbestdeterminants，
+  输出文件维度格式不可靠）→ 图上以蓝色文字标注 Dice 收敛平台。
+- 对比小规模（C₂/cc-pVDZ 10o）：Dice 一致到 +0.003 mHa——**大规模 FCI 参考口径
+  差异随体系规模放大**（此前 N₂ 10o 仅 1.4 µHa）。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端

@@ -123,6 +123,13 @@ def _plot(P):
     plot(hci_ev, "HCI variational E_V", "#8c564b", "v", ls=":", z=1)
     plot(shci, "SHCI E_V+E_PT2 (solve_hci)", "#8c564b", "v", z=3)
 
+    # Dice 交叉验证标注: shciscf 无变分空间维度 API, 无法画完整曲线;
+    # Dice 收敛到 E=-108.768185 (eps->1e-6 平台), 与库参考差 ~0.5 mHa
+    # (853,776 维 FCI 参考口径/收敛差异; 小规模 C2/cc-pVDZ 曾一致到 0.003 mHa)。
+    ax.text(7e3, 1.5e-4,
+            "Dice SHCI (cross-check):\nE -> -108.768185\n(~0.5 mHa above ref.:\n853k-dim FCI precision)",
+            fontsize=7, color="blue", ha="left", va="top")
+
     ax.axvline(853776, color="grey", ls="--", lw=0.8)
     ax.text(880000, 3e-3, "full space\n853776", fontsize=7, color="grey")
     ax.axhline(CHEM, color="red", ls="--", lw=1.0, alpha=0.7)
