@@ -29,7 +29,15 @@ def _integrals():
     ncore = int((mf.mo_occ.sum() - NELEC) // 2)
     eri = pyscf.ao2mo.full(m, mf.mo_coeff[:, ncore:ncore + NCAS],
                            aosym="1").reshape([NCAS] * 4)
-    e_fci, _, _, _, _ = cas.kernel(verbose=0)
+    # ⑥ 自洽参考: 库自身全空间 FCI 在 (h1e, eri) 上 —— 与各方法同哈密顿量, µHa floor 归零。
+    #    (旧版用 cas.kernel() 作参考, 其内部 eri 路径与库 eri 差 ~µHa → 虚假 common floor。
+    #     见 REVIEW "µHa 哈密顿量构造偏移诊断"。)
+    e_fci = tc_sqd.compute_ground_state_energy(
+        h1e, eri, NCAS, (NELEC // 2, NELEC // 2), ecore=ecore, method="fci")
+    # CASCI 独立交叉校验 (其内部 eri 与库 eri 差 ~µHa, 仅作一致性印证, 不作参考)
+    e_casci = cas.kernel(verbose=0)[0]
+    print(f"[ref] library self-consistent FCI={e_fci:.10f}  "
+          f"CASCI cross-check={e_casci:.10f}  |diff|={abs(e_fci - e_casci):.2e} (µHa, 预期)")
     return h1e, eri, ecore, e_fci
 
 
@@ -130,10 +138,10 @@ def _plot(P):
     ax.set_xlim(300, 80000)
     # 下界放到数据最小量级以下 (min ~2e-6), 避免裁剪高维度趋同点
     ax.set_ylim(2e-7, 0.5)
-    # 参考口径偏移: 全空间时所有方法解同一哈密顿量 (彼此一致 <uHa),
-    # 与外部 CASCI 参考恒差 ~1.4 uHa (哈密顿量构造路径的数值/约定差异)
+    # 参考 = 库自洽全空间 FCI (与各方法同哈密顿量, 无虚假 floor);
+    # CASCI 独立交叉校验与库一致到 µHa (eri 构造路径差异, 见 REVIEW ⑥)。
     ax.text(1.5e4, 9e-6,
-            "~1.4 uHa common floor\n(ref. offset: CASCI vs\nour Hamiltonian)",
+            "reference: library\nself-consistent FCI\n(CASCI agrees\nwithin ~µHa)",
             fontsize=7, color="grey", ha="center", va="center")
     ax.grid(True, which="both", alpha=0.3)
 

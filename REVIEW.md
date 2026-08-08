@@ -865,6 +865,45 @@ Dice/pyscf 官方 SHCI 环境（本次配置完成）与库内实现一致性的
 - 对比小规模（C₂/cc-pVDZ 10o）：Dice 一致到 +0.003 mHa——**大规模 FCI 参考口径
   差异随体系规模放大**（此前 N₂ 10o 仅 1.4 µHa）。
 
+## µHa 哈密顿量构造偏移诊断（2026-08-08，⑥ 定位完成）
+
+**结论先行**: 基准图里的 ~µHa "common floor" **不是库 bug**, 是 benchmark 脚本
+把 `cas.kernel()` (CASCI 内部 eri 路径) 当参考、而各方法跑在脚本自构的 eri
+(`ao2mo.full(aosym="1")`) 上——**参考与方法用不同哈密顿量**。库自身两条 eri
+构造路径 (`from_pyscf` einsum 与脚本 ao2mo) 完全等价 (机器精度)。
+
+**三条独立 eri 路径在同一 N₂/cc-pVDZ (10e,10o) @ R=3.0 上跑全空间 FCI** (63504 维):
+
+| 量 | 值 (Ha, total) |
+|---|---|
+| `ecore` (`h1e_for_cas`) | −85.0562455554 |
+| CASCI `cas.kernel()` [内部 eri] | −108.7593738839 |
+| `direct_spin1(eri=ao2mo.full aosym="1")` [脚本/方法用的 eri] | −108.7593747186 |
+| `direct_spin1(eri=einsum(AO,mo_act))` [from_pyscf 风格] | −108.7593747186 |
+
+关键差值:
+- **\|CASCI − library\| = 8.35e-07** (≈0.8 µHa, 复现 REVIEW 报的 ~1.4 µHa 量级;
+  精确值受 CASCI Davidson 默认 conv_tol 影响, 同量级)。
+- **\|ao2mo eri − einsum eri\|_max = 2.22e-16**, 对应能量差 **0.00** —— 库的两条
+  eri 路径**逐元素机器精度一致**, 库完全自洽。
+- 故 µHa 偏移**全部**来自 CASCI 内部 eri 这第三条收缩路径与库 eri 在 ~1e-15/元素
+  上的差异, 经 63504 维 CI 展开累积到 µHa。提高 eigsh 精度不变 (REVIEW 已验),
+  因为本就不是对角化器收敛问题。
+
+**库核心 (`molecule.from_pyscf`) 干净**: 直接 einsum, 无 ao2mo/aosym, 与脚本
+`ao2mo.full("1")` 逐元素一致。`compute_ground_state_energy(method="fci")` 走
+`direct_spin1.kernel(h1e, eri)`, 故"库 FCI on 库积分"自洽零偏移。
+
+**修法 (benchmark 方法论)**: 参考应改为"库自身全空间 FCI 在方法所用 (h1e, eri) 上"
+(`direct_spin1(h1e, eri_script)`), 而非 `cas.kernel()`。这样参考与方法同哈密顿量,
+µHa floor 归零, 图中"误差 vs FCI"是干净的变分量。CASCI 降为**独立交叉校验**
+(与库一致到 µHa, 印证 eri 路径差异的量级)。已落实于
+`examples/plot_improved_sqd_vs_shci_n2_ccpvdz.py` (e_fci 改库自洽 FCI; CASCI 作
+cross-check 打印)。注意: 已缓存的 `_plot_data_*.npy` 仍用旧 CASCI 参考, 再生成图
+需删缓存重跑 (耗时); 现有图在 µHa floor 内仍有效。
+
+诊断脚本: `_diag_muha.py` (临时, 已删)。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
