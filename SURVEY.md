@@ -380,6 +380,41 @@ H 二体部分，硬件可编译的"近似 H 演化"）。收敛论证：E_V 误
 子空间质量由参数采样覆盖主导配置决定。与方向①②统一为"表示层（换基）+ 生成层（UCJ
 多样初猜）+ 选择层（PT2 选态）"。详见 REVIEW 方向③。
 
+## 8. 近期进展速览（2026-08-07/08）
+
+### 8.1 方向 D：能量-方差修正（PT2）+ 本征矢重要性采样
+- **PT2 修正（E+E_PT2，SHCI 式）是行为良好的降误差手段**（`solve_sqd_ev` correction="pt2"）；
+  **σ² 线性外推实测过冲**（N₂/C₂ 均落 FCI 之下，只作诊断不作默认）。
+- `eigenvector_importance_sample`：按本征矢振幅平方 ∝c² 采样（学习型采样先验）。
+- 详见 REVIEW 方向 D。
+
+### 8.2 方向 E：工程自动化
+- `noise_impact`（噪声安全区）、`recommend_sqd_params`（超参推荐）、
+  `solve_sqd_auto`（一键自适应流程）、`benchmarks/benchmark_sqd.py`（时间/内存）。
+- 详见 REVIEW 方向 E。
+
+### 8.3 多体系 SQD vs SHCI 对照（误差-维度）
+用目标 log 均匀维度取点 + improved SQD 多 seed mean±std，4 个体系揭示
+**方法优劣体系依赖**：
+| 体系 | 全空间 | 结论 |
+|---|---|---|
+| C₂/STO-3G | 44100 | improved SQD 高维度反超 SHCI（交叉 ~dim 15000）|
+| N₂/cc-pVDZ (10o) | 63504 | improved SQD 中高维度反超 ~90 倍 |
+| C₂/cc-pVDZ (10o) | 63504 | **双交叉**：2-3×10⁴ 区间 SQD 优，其余 SHCI 优 |
+| N₂/cc-pVDZ (12o) | 853776 | SHCI 全程优于 SQD（库内方法 12 轨道可行）|
+
+### 8.4 参考口径发现（重要）
+- **CASCI 近简并跳根**（C₂/cc-pVDZ 虚高 9.3 mHa）→ 强关联体系参考须用库全空间
+  对角化取真基态。
+- **85 万维 FCI 收敛/参考口径差异 ~0.1-0.5 mHa**（库 eigsh / pyscf davidson /
+  Dice 三方），随体系规模放大（10o 时仅 µHa 级）。
+
+### 8.5 环境与其他
+- **Dice/pyscf SHCI 环境配好**（WSL），与库内 `solve_hci` 数值等价（小规模
+  一致到 µHa 级）。
+- 另一 agent 落地：`solve_sci_csf`（S² 投影）、`solve_sqd_distill`（自蒸馏）、
+  `extrapolate_ev_pt2`、`solve_sqd_adaptive` 修复。详见 REVIEW 方向①-A/②/③-A/④。
+
 ---
 
 *本文随仓库演进更新。数值见 `REVIEW.md`，使用见 `README.md`。*
