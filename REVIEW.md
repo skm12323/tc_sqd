@@ -937,6 +937,36 @@ cross-check 打印)。注意: 已缓存的 `_plot_data_*.npy` 仍用旧 CASCI �
 ``E_PT2``) 是 SHCI 的效率杠杆, 降估计方差与枚举成本。属效率优化 (非精度), 留作大体系
 路线 (Part 2 C1/C2) 的配套。
 
+## 方向②：solve_sqd_distill 自蒸馏重采样闭环（2026-08-08）
+
+**交付**: `cipsi.solve_sqd_distill(...)` + `solve_sqd_active` 新增 `state_out` 出参 (取出
+最终本征矢供重采样)。库 TODO "把本征矢重要性采样做成 solve_sqd_distill 蒸馏闭环" 落地。
+
+**算法**: EM 式量子-经典反馈。每轮 ① `solve_sqd_active` 对角化 → ② 取本征矢
+``|Ψ⟩=Σ c_i|i⟩`` → ③ 按 ``p_i ∝ |c_i|^(2/T)`` 重要性重采 n_samples det
+(:func:`eigenvector_importance_sample`, F1 已修 α/β 布局) → ④ 喂回 active。温度退火
+``temperature_schedule`` (高→低): 高温探索、低温锐化。``keep_pool=True`` (默认) 保留
+原始电路采样 + 蒸馏聚焦; 返回各轮 min 能量。
+
+**实证 (LiH/STO-3G, max_strings=15, 4 轮蒸馏 vs 单次 active)**:
+
+| n_shots | seed | single err | distill err | 改善 |
+|---|---|---|---|---|
+| 10 | 0 | +3.6e-15 (=FCI) | +3.6e-15 | 0 (已 FCI) |
+| 10 | 1 | +3.6e-15 (=FCI) | +3.6e-15 | 0 (已 FCI) |
+| 10 | 2 | **+4.5e-08** | **+3.6e-15 (=FCI)** | **+4.5e-08** |
+| 20 | 2 | **+4.5e-08** | **+3.6e-15 (=FCI)** | **+4.5e-08** |
+
+**关键结论**: 多数 seed 下 active 已饱和到 FCI (无事可补); 但**坏初始采样** (seed=2,
+single 卡在 +4.5e-8) 经蒸馏**恢复到 FCI**。这正是 C₂ 式"3/8 覆盖失败"的解药 —— 蒸馏
+从解态重导采样分布, 把单次 active 错过的高权重 det 找回来。distill **不劣于** single
+(round 0 即单次, best_E 取 min), 且在覆盖失败时**显著修复**。
+
+**边界**: LiH 太小多数情况已 FCI; distill 的显著收益在**更大/强相关体系** (N₂/C₂ 拉伸)
+的低采样覆盖失败场景, 那里 single active 偶发卡住 (REVIEW 方向② C₂ 3/8)。完整收益验证
+需 N₂ 拉伸慢测试。NQS 衔接 (Part 2 B1): 把"按 |c|² 采"升级为神经网络 ``p_θ(det)`` 泛化
+到未采 det, 是本闭环的深度学习版。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端

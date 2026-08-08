@@ -322,6 +322,37 @@ def test_solve_sqd_ev_evpt2_correction_runs():
         pass
 
 
+def test_solve_sqd_distill_runs_and_no_worse_than_single():
+    """②: solve_sqd_distill 自蒸馏闭环可运行, 且 best_E ≤ 单次 active。
+
+    round 0 即"单次 solve_sqd_active on 初始 bsm", 而 distill 的 best_E 取各轮 min,
+    故 distill 必不劣于单次。温度退火 (高→低) 的实际改善是经验性的 (依赖体系/采样),
+    此处仅锁定"不劣化"下界 + 闭环可运行 + 输入校验。
+    """
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    rng = np.random.default_rng(0)
+    bsm = rng.random((15, 2 * d.norb)) > 0.5
+    kw = dict(max_strings=12, n_active_per_round=15, rand_seed=0)
+    e_single = tc_sqd.solve_sqd_distill(
+        d.h1e, d.eri, d.norb, d.nelec, ecore=d.ecore,
+        bitstring_matrix=bsm, n_rounds=1, **kw)
+    e_distill = tc_sqd.solve_sqd_distill(
+        d.h1e, d.eri, d.norb, d.nelec, ecore=d.ecore,
+        bitstring_matrix=bsm, n_rounds=3, n_samples=15, **kw)
+    assert np.isfinite(e_distill)
+    assert e_distill <= e_single + 1e-12, (
+        f"distill 应不劣于单次 (round 0 = 单次): {e_distill} vs {e_single}")
+    # temperature_schedule 长度校验 (须 = n_rounds-1)
+    try:
+        tc_sqd.solve_sqd_distill(
+            d.h1e, d.eri, d.norb, d.nelec, ecore=d.ecore,
+            bitstring_matrix=bsm, n_rounds=3, temperature_schedule=[0.5, 0.5, 0.5])
+        assert False, "schedule 长度 != n_rounds-1 应报错"
+    except ValueError:
+        pass
+
+
 def test_solve_sqd_auto_end_to_end():
     """E: solve_sqd_auto 一键流程 —— 推荐 + 自适应收敛 + EV 外推。
 

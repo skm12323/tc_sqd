@@ -37,7 +37,7 @@ from .fermion import bitstring_matrix_to_ci_strs, SCIState
 from .diagnostics import extrapolate_energy_variance, extrapolate_ev_pt2
 
 __all__ = ["solve_cipsi", "solve_sqd_active", "solve_sqd_adaptive", "solve_hci",
-           "solve_sqd_ev", "eigenvector_importance_sample"]
+           "solve_sqd_ev", "solve_sqd_distill", "eigenvector_importance_sample"]
 
 
 # --------------------------------------------------------------------------- #
@@ -692,6 +692,8 @@ def solve_sqd_active(
     usage: Optional[list] = None,
     # ---- 能量-方差外推轨迹 (方向 D) ----
     trajectory: Optional[list] = None,
+    # ---- 自蒸馏 (方向②): 取出最终本征矢供重采样 ----
+    state_out: Optional[list] = None,
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
 
@@ -953,6 +955,8 @@ def solve_sqd_active(
             "shots": int(n_cur),
         })
 
+    if state_out is not None:
+        state_out.append((np.asarray(c2d), np.asarray(sa), np.asarray(sb)))
     if usage is not None:
         usage.append(int(n_cur))
     return float(E) + ecore
@@ -1114,6 +1118,145 @@ def solve_sqd_ev(
     if return_details:
         return e_corr, details
     return e_corr
+
+
+def solve_sqd_distill(
+    one_body_tensor: np.ndarray,
+    two_body_tensor: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    bitstring_matrix: np.ndarray,
+    probabilities: Optional[np.ndarray] = None,
+    n_rounds: int = 3,
+    n_samples: Optional[int] = None,
+    temperature_schedule: Optional[Sequence[float]] = None,
+    max_strings: Optional[int] = None,
+    n_active_per_round: int = 50,
+    ecore: float = 0.0,
+    rand_seed: Optional[int] = 0,
+    keep_pool: bool = True,
+    verbose: bool = False,
+) -> float:
+    """自蒸馏 SQD 闭环 (方向②): solve → 按 |c|^(2/T) 重采 → recover → solve。
+
+    **思路 (库 TODO "solve_sqd_distill 蒸馏闭环" 落地)**: 子空间对角化的本征矢
+    ``|Ψ⟩ = Σ_i c_i |i⟩`` 是体系当前最好的"波函数模型"。每轮用它驱动一次**重要性
+    重采样** (:func:`eigenvector_importance_sample`, 按 ``p_i ∝ |c_i|^(2/T)`` 采 det),
+    再喂回 :func:`solve_sqd_active`。这是 **EM 式量子-经典反馈**: E 步用当前波函数
+    采, M 步重对角化。同 shots 下子空间对**主导 det 流形**覆盖更密 → 变分下界更低;
+    或同精度省 shots。抗噪: 噪声 det 的 ``|c|²`` 自然小, 重采时淘汰 (自清洗)。
+
+    **温度退火** ``temperature_schedule`` (高→低): 高温 ``T>1`` (``|c|^(2/T)`` 更平)
+    保持探索, 低温 ``T<1`` (更锐) 聚焦主导 det。默认 ``[1.5]*(n_rounds-2) + [0.5]``
+    (长度 ``n_rounds-1``, 最后一轮不重采; 前几轮探索, 倒数第二轮锐化)。
+
+    Parameters
+    ----------
+    one_body_tensor, two_body_tensor, norb, nelec, ecore
+        分子积分 (闭壳层单 h1e) + 电子数 + core 偏移。
+    bitstring_matrix : ndarray (S, 2*norb)
+        初始采样位串 (电路 shot 或随机种子)。第 0 轮的采样池。
+    probabilities : ndarray | None
+        初始概率 (第 0 轮); 省略均匀。后续轮重采位串用均匀 (来自 |c|²)。
+    n_rounds : int
+        solve→重采 循环次数 (≥1)。``n_rounds=1`` 退化为单次 :func:`solve_sqd_active`。
+    n_samples : int | None
+        每轮重采的 det 数; ``None`` = 用 ``bitstring_matrix`` 行数。
+    temperature_schedule : Sequence[float] | None
+        长度 ``n_rounds-1`` 的温度列表 (最后一轮不重采); ``None`` = 默认退火。
+    max_strings, n_active_per_round
+        透传 :func:`solve_sqd_active`。
+    rand_seed : int | None
+        第 0 轮配置恢复种子; 后续轮自动 +1 (避免重复采样序列)。
+    keep_pool : bool
+        ``True`` (默认): 每轮采样池 = ``vstack(初始 bsm, 重采 bsm)`` (不丢失原始
+        电路覆盖, 仅聚焦增强); ``False``: 池 = 重采 bsm (纯蒸馏聚焦, 替换)。
+    verbose : bool
+        打印每轮能量 / 稀疏度。
+
+    Returns
+    -------
+    float
+        所有轮中**最低**的 active 能量 (含 ``ecore``)。变分保证 best_E 单调不增于
+        各轮, 但因每轮采样池变化, 取 min 最稳。
+
+    Notes
+    -----
+    - 依赖 :func:`eigenvector_importance_sample` (已修 F1 α/β 半区布局), 开壳层
+      (na≠nb) 安全。
+    - 与 :func:`solve_sqd_active` 的关系: 后者是单次"采样↔PT2 选态"闭环; 本函数
+      在其外再套一层"解态驱动的采样分布更新"。可叠加 (内部仍跑 active)。
+    - NQS 衔接 (research): 把"按 |c|² 采"升级为神经网络参数化 ``p_θ(det)`` 泛化到
+      未采 det, 是本闭环的深度学习版 (见 REVIEW Part 2 B1)。
+    """
+    if one_body_tensor.ndim == 3:
+        if not np.allclose(one_body_tensor[0], one_body_tensor[1]):
+            raise ValueError(
+                "solve_sqd_distill 不支持自旋分辨 h1e; 请传闭壳层 (norb, norb)。"
+            )
+        h1e = np.asarray(one_body_tensor[0])
+    else:
+        h1e = np.asarray(one_body_tensor)
+    eri = np.asarray(two_body_tensor)
+
+    bsm0 = np.asarray(bitstring_matrix, dtype=bool)
+    if bsm0.ndim != 2 or bsm0.shape[1] != 2 * norb:
+        raise ValueError(
+            f"bitstring_matrix must have shape (S, 2*norb={2*norb}), got {bsm0.shape}."
+        )
+    if n_rounds < 1:
+        raise ValueError(f"n_rounds must be >= 1, got {n_rounds}.")
+    if n_samples is None:
+        n_samples = bsm0.shape[0]
+    if n_samples < 1:
+        raise ValueError(f"n_samples must be >= 1, got {n_samples}.")
+    if temperature_schedule is None:
+        # 长度 n_rounds-1 (最后一轮不重采); 前 n_rounds-2 轮高温探索, 倒数第二轮 0.5 锐化
+        temperature_schedule = ([1.5] * max(n_rounds - 2, 0) + [0.5]) if n_rounds >= 2 else []
+    # 最后一轮不重采 → schedule 长度应为 n_rounds-1
+    if len(temperature_schedule) != max(n_rounds - 1, 0):
+        raise ValueError(
+            f"temperature_schedule 长度须为 n_rounds-1={max(n_rounds-1,0)}, "
+            f"got {len(temperature_schedule)}。"
+        )
+
+    pool = bsm0
+    pool_probs = (probabilities if probabilities is not None
+                  else np.full(bsm0.shape[0], 1.0 / bsm0.shape[0]))
+    best_E = np.inf
+    cur_seed = rand_seed
+
+    for r in range(n_rounds):
+        state_out: list = []
+        E = solve_sqd_active(
+            h1e, eri, norb, nelec,
+            bitstring_matrix=pool, probabilities=pool_probs,
+            max_strings=max_strings, n_active_per_round=n_active_per_round,
+            ecore=ecore, rand_seed=cur_seed, state_out=state_out,
+        )
+        c2d, sa, sb = state_out[0]
+        if E < best_E:
+            best_E = E
+        if verbose:
+            pmax = float(np.abs(np.asarray(c2d)).max() ** 2)
+            print(f"[distill r{r+1}/{n_rounds}] E={E:.8f} pool={pool.shape[0]} "
+                  f"|c|max²={pmax:.4f}")
+        if r == n_rounds - 1:
+            break
+        # 解态驱动重要性重采 (温度退火)
+        T = temperature_schedule[r]
+        new_bsm = eigenvector_importance_sample(
+            c2d, sa, sb, norb, n_samples, rand_seed=cur_seed, temperature=T)
+        if keep_pool:
+            pool = np.vstack([bsm0, new_bsm])
+            pool_probs = np.full(pool.shape[0], 1.0 / pool.shape[0])
+        else:
+            pool = new_bsm
+            pool_probs = np.full(n_samples, 1.0 / n_samples)
+        cur_seed = (cur_seed or 0) + 1
+
+    return float(best_E)
 
 
 def eigenvector_importance_sample(

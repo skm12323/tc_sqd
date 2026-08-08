@@ -77,6 +77,7 @@ from .cipsi import (
     solve_sqd_adaptive,
     solve_hci,
     solve_sqd_ev,
+    solve_sqd_distill,
     eigenvector_importance_sample,
 )
 from .basis import (
@@ -196,6 +197,7 @@ __all__ = [
     "solve_sqd_adaptive",
     "solve_hci",
     "solve_sqd_ev",
+    "solve_sqd_distill",
     "eigenvector_importance_sample",
     # basis (基设计: 自然轨道换基 + 自洽迭代, 提升子空间构建效率)
     "natural_orbitals_from_rdm",
