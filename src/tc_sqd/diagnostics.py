@@ -15,7 +15,7 @@ import numpy as np
 
 __all__ = ["shannon_entropy", "subspace_dimension", "energy_convergence",
            "sampling_report", "extrapolate_infinite_samples",
-           "extrapolate_energy_variance"]
+           "extrapolate_energy_variance", "extrapolate_ev_pt2"]
 
 
 def shannon_entropy(probs: np.ndarray) -> float:
@@ -272,3 +272,62 @@ def extrapolate_energy_variance(
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
     a = float(coef[-2]) if degree >= 1 else 0.0
     return e_inf, a, r2, fit_std
+
+
+def extrapolate_ev_pt2(
+    energies,
+    e_pt2,
+    degree: int = 1,
+) -> Tuple[float, float, float, float]:
+    """E_V vs E_PT2 两点外推 (SHCI 标准, 方向③): 拟合 ``E_V(E_PT2)``, 外推到 E_PT2→0。
+
+    **与 :func:`extrapolate_energy_variance` 的关键区别 (x 轴选择)**:
+    - 后者用**方差 σ² = Σ|⟨a|H|Ψ⟩|²** 作 x 轴; 实测在近收敛的 active 轨迹上会
+      **过冲到 FCI 之下** (N₂ −5.8e-4, C₂ −1.7e-2, 见 REVIEW 方向 D), 不可作默认。
+    - 本函数用 **Epstein-Nesbet PT2 = Σ|⟨a|H|Ψ⟩|²/(E−E_a)** 作 x 轴 —— 带能量分母
+      加权, 物理上更接近"漏掉的关联能"。SHCI 社区 (Holmes 2016 / Sharma 2017) 的
+      标准外推即 ``E_V`` vs ``E_PT2`` 线性外推, 经验上**不过冲**, 比 σ² 线性更稳。
+
+    **用法**: 收集同一分子不同子空间规模的 ``(E_V, E_PT2)`` —— 可来自 :func:`solve_sqd_active`
+    的 ``trajectory`` 各轮 (子空间逐轮扩展, E_PT2 单调趋零), 或两次不同 ``max_strings``
+    跑出的两点。拟合 ``E_V = E∞ + α·E_PT2``, 外推 ``E_PT2=0`` → ``E∞``。
+
+    Parameters
+    ----------
+    energies : array-like, shape (K,)
+        各规模的**变分**能量 ``E_V`` (子空间对角化值, 不含 PT2 修正)。
+    e_pt2 : array-like, shape (K,)
+        对应 Epstein-Nesbet PT2 (trajectory 的 ``e_pt2`` 字段)。**可正可负**
+        (基态通常 <0, 因 ``E−E_a<0``), 本函数**不**要求非负 (区别于方差版)。
+    degree : int
+        拟合次数 (默认 1 = 线性)。数据噪声大时可升 2, 但点数须 > degree。
+
+    Returns
+    -------
+    (e_inf, alpha, r2, fit_std) : (float, float, float, float)
+        ``e_inf`` 外推能量; ``alpha`` 首项系数 (degree=1 即斜率); ``r2`` 拟合优度;
+        ``fit_std`` 残差标准差 (误差带参考)。
+
+    Notes
+    -----
+    - 至少 2 个点, 建议 ≥3 且 ``E_PT2`` 跨度足够 (外推更稳)。
+    - ``E_PT2`` 应**单调趋零** (子空间扩展); 不单调时拟合仍执行但 ``r2`` 偏低。
+    """
+    y = np.asarray(energies, dtype=np.float64)
+    x = np.asarray(e_pt2, dtype=np.float64)
+    if y.ndim != 1 or len(y) < 2:
+        raise ValueError(f"至少需要 2 个 (E_PT2, E_V) 点, got {len(y)}.")
+    if len(y) != len(x):
+        raise ValueError(f"energies 与 e_pt2 长度不一致: {len(y)} vs {len(x)}.")
+    if degree < 1 or degree >= len(y):
+        raise ValueError(f"degree={degree} 需满足 1 ≤ degree < 点数={len(y)}.")
+    # 不要求 x 非负 (E_PT2 可正可负)。多项式 LSQ: E_V = Σ c_p · E_PT2^p, 外推 E_PT2=0 -> c_0
+    coef = np.polyfit(x, y, deg=degree)
+    e_inf = float(coef[-1])
+    resid = y - np.polyval(coef, x)
+    fit_std = float(np.sqrt(np.mean(resid**2)))
+    ss_res = float(np.sum(resid**2))
+    ss_tot = float(np.sum((y - y.mean())**2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else 1.0
+    alpha = float(coef[-2]) if degree >= 1 else 0.0
+    return e_inf, alpha, r2, fit_std

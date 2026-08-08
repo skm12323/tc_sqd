@@ -34,7 +34,7 @@ from scipy.sparse.linalg import eigsh, LinearOperator
 
 from .configuration_recovery import recover_configurations
 from .fermion import bitstring_matrix_to_ci_strs, SCIState
-from .diagnostics import extrapolate_energy_variance
+from .diagnostics import extrapolate_energy_variance, extrapolate_ev_pt2
 
 __all__ = ["solve_cipsi", "solve_sqd_active", "solve_sqd_adaptive", "solve_hci",
            "solve_sqd_ev", "eigenvector_importance_sample"]
@@ -985,13 +985,18 @@ def solve_sqd_ev(
     energy_tol: Optional[float] = None,
     return_details: bool = False,
 ) -> float:
-    """改进 SQD (方向 D): active 采样 + 基于方差的能量修正, 不增大维度降误差。
+    """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
 
-    **两种修正 (都只用 PT2 分子 Σ|⟨a|H|Ψ⟩|² = 精确方差, 纯经典后处理)**:
+    **三种修正 (都用 PT2 分子 Σ|⟨a|H|Ψ⟩|² = 精确方差, 纯经典后处理)**:
       - ``correction="pt2"`` (**默认, 推荐**): ``E + E_PT2``, 其中
-        ``E_PT2 = Σ_a |⟨a|H|Ψ⟩|²/(E−E_a)`` (Epstein-Nesbet)。这是 SHCI/CIPSI
-        的标准修正, **行为良好**——N₂/STO-3G 受限子空间直接 err 4.3e-4 →
-        6.2e-5; C₂ 直接 err 7.9e-3 (超化学精度) → **5.0e-4** (达化学精度)。
+        ``E_PT2 = Σ_a |⟨a|H|Ψ⟩|²/(E−E_a)`` (Epstein-Nesbet)。SHCI/CIPSI 标准修正,
+        **行为良好**——N₂/STO-3G 受限子空间直接 err 4.3e-4 → 6.2e-5; C₂ 直接
+        err 7.9e-3 (超化学精度) → **5.0e-4** (达化学精度)。
+      - ``correction="evpt2"`` (**方向③, 备选**): ``E_V`` vs ``E_PT2`` 两点外推
+        (:func:`extrapolate_ev_pt2`, SHCI 社区 Holmes 2016/Sharma 2017 标准)。
+        用轨迹各轮 ``(E_V, E_PT2)`` 拟合线性外推到 ``E_PT2→0``。x 轴是带能量分母
+        加权的 ``E_PT2`` (物理上更接近漏掉的关联能), 经验**不过冲**——优于 σ² 线性。
+        需轨迹 ≥2 个 ``E_PT2`` 非零点; 子空间饱和 (``E_PT2≈0``) 时退化为直接能量。
       - ``correction="ev"`` (**诊断用**): 用轨迹 ``(E, σ²)`` 线性外推到 σ²=0
         (:func:`extrapolate_energy_variance`)。**注意: 实测会过冲到 FCI 之下**
         (N₂ −5.8e-4, C₂ −1.7e-2), 不推荐作为默认——保留作方差标度诊断。
@@ -1005,15 +1010,15 @@ def solve_sqd_ev(
     ----------
     其余参数与 :func:`solve_sqd_active` 一致 (``ecore`` 在返回/诊断中计入;
     轨迹内部不含 ecore)。
-    correction : {"pt2", "ev"}
-        修正方式 (见上)。``"pt2"`` = E+E_PT2 (推荐); ``"ev"`` = σ² 线性外推
-        (诊断, 可能过冲)。
+    correction : {"pt2", "evpt2", "ev"}
+        修正方式 (见上)。``"pt2"`` = E+E_PT2 (推荐); ``"evpt2"`` = E_V vs E_PT2
+        两点外推 (方向③, 不过冲); ``"ev"`` = σ² 线性外推 (诊断, 可能过冲)。
     degree : int
-        ``correction="ev"`` 时外推多项式次数 (默认 1 = 线性)。
+        ``correction="evpt2"`` / ``"ev"`` 时外推多项式次数 (默认 1 = 线性)。
     return_details : bool
         ``True`` 返回 ``(能量, details_dict)``; ``details_dict`` 含
         ``E_direct`` (active 直接能量)、``correction``、``E_PT2`` (pt2 模式)、
-        ``e_inf``/``slope``/``r2``/``fit_std`` (ev 模式)、``trajectory``
+        ``e_inf``/``alpha``(evpt2) 或 ``slope``(ev)/``r2``/``fit_std``、``trajectory``
         (每轮 E/σ²/PT2/dim/shots)。
 
     Returns
@@ -1021,8 +1026,8 @@ def solve_sqd_ev(
     float | tuple
         修正后能量 (含 ``ecore``); ``return_details=True`` 时返回 ``(能量, dict)``。
     """
-    if correction not in ("pt2", "ev"):
-        raise ValueError(f"correction 须为 'pt2' 或 'ev', got {correction!r}.")
+    if correction not in ("pt2", "ev", "evpt2"):
+        raise ValueError(f"correction 须为 'pt2' / 'ev' / 'evpt2', got {correction!r}.")
     trajectory: list = []
     solve_sqd_active(
         one_body_tensor, two_body_tensor, norb, nelec,
@@ -1053,7 +1058,7 @@ def solve_sqd_ev(
         if verbose:
             print(f"[EV:pt2] dim={dim} E_direct={e_direct:.8f} "
                   f"E_PT2={e_pt2:.2e} E_corr={e_corr:.8f}")
-    else:
+    elif correction == "ev":
         # σ² 线性外推 (诊断; 实测会过冲到 FCI 之下)
         es = np.asarray([t["E"] for t in trajectory], dtype=np.float64)
         vs = np.asarray([t["sigma2"] for t in trajectory], dtype=np.float64)
@@ -1073,6 +1078,39 @@ def solve_sqd_ev(
         if verbose:
             print(f"[EV:ev] dim={dim} r²={r2:.4f} E_direct={e_direct:.8f} "
                   f"E_ev={e_corr:.8f} (非变分, 可能过冲)")
+    else:
+        # E_V vs E_PT2 两点外推 (SHCI 标准, 方向③; 经验不过冲, 优于 σ² 线性)。
+        # 用轨迹各轮 (E_V 变分能量, E_PT2 Epstein-Nesbet) 外推到 E_PT2→0。
+        # **稳健性护栏**: solve_sqd_active 的 within-run 轨迹常退化 (受限时 round 间
+        # E_PT2 重复, 或子空间饱和后 E_PT2≈0) —— 互异点 <2 时拟合病态 (alpha 爆炸),
+        # 此时退化为 pt2 单点修正 (evpt2 永不劣于 pt2)。需稳健两点外推请用两次不同
+        # max_strings 跑 solve_sqd_active, 再喂 :func:`extrapolate_ev_pt2`。
+        es = np.asarray([t["E"] for t in trajectory], dtype=np.float64)
+        pts = np.asarray([t["e_pt2"] for t in trajectory], dtype=np.float64)
+        n_distinct = len(np.unique(np.round(pts, decimals=14)))
+        if n_distinct < 2 or np.max(np.abs(pts)) < 1e-14:
+            # 轨迹退化: 退化为 pt2 单点修正 (E + E_PT2)
+            e_pt2_val = float(last["e_pt2"])
+            e_corr = E + e_pt2_val + ecore
+            details = {
+                "E_direct": e_direct, "correction": "evpt2", "fallback": "pt2",
+                "E_PT2": e_pt2_val, "dim": dim, "trajectory": trajectory,
+                "note": "轨迹 E_PT2 互异点 <2 (受限/饱和), 外推病态, 退化为 pt2",
+            }
+            if verbose:
+                print(f"[EV:evpt2→pt2 fallback] dim={dim} E_direct={e_direct:.8f} "
+                      f"E_PT2={e_pt2_val:.2e} E_corr={e_corr:.8f}")
+        else:
+            e_inf, alpha, r2, fit_std = extrapolate_ev_pt2(es, pts, degree=degree)
+            e_corr = float(e_inf) + ecore
+            details = {
+                "E_direct": e_direct, "correction": "evpt2", "fallback": None,
+                "e_inf": float(e_inf), "alpha": alpha, "r2": r2,
+                "fit_std": fit_std, "dim": dim, "trajectory": trajectory,
+            }
+            if verbose:
+                print(f"[EV:evpt2] dim={dim} r²={r2:.4f} E_direct={e_direct:.8f} "
+                      f"E_evpt2={e_corr:.8f}")
     if return_details:
         return e_corr, details
     return e_corr

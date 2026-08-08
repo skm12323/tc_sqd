@@ -135,3 +135,32 @@ def test_extrapolate_energy_variance_synthetic():
             assert False, "非法输入应报错"
         except ValueError:
             pass
+
+
+def test_extrapolate_ev_pt2_recovers_intercept():
+    """③: E_V vs E_PT2 两点外推恢复线性关系的截距 (E_PT2→0)。"""
+    e_inf_true, alpha_true = -10.0, 0.5
+    # 基态 E_PT2 通常 <0 (E−E_a<0), 单调趋零
+    e_pt2 = np.array([-1e-2, -3e-3, -1e-3, -3e-4])
+    e_v = e_inf_true + alpha_true * e_pt2
+    e_inf, alpha, r2, _ = tc_sqd.extrapolate_ev_pt2(e_v, e_pt2)
+    assert abs(e_inf - e_inf_true) < 1e-9, f"截距恢复错: {e_inf} vs {e_inf_true}"
+    assert abs(alpha - alpha_true) < 1e-9
+    assert r2 > 0.9999
+    # E_PT2 可正可负 (不要求非负 —— 与方差版的关键区别)
+    e_pt2_mix = np.array([2e-3, -1e-3, -3e-4])
+    e_v_mix = e_inf_true + alpha_true * e_pt2_mix
+    e_inf2, _, r2_2, _ = tc_sqd.extrapolate_ev_pt2(e_v_mix, e_pt2_mix)
+    assert abs(e_inf2 - e_inf_true) < 1e-9
+    assert r2_2 > 0.9999
+    # 输入校验: 点数不足 / degree 越界 (degree >= 点数)
+    try:
+        tc_sqd.extrapolate_ev_pt2([1.0], [1.0])
+        assert False, "点数不足应报错"
+    except ValueError:
+        pass
+    try:
+        tc_sqd.extrapolate_ev_pt2([1.0, 2.0], [1.0, 2.0], degree=2)  # 2 点 degree=2 → 越界
+        assert False, "degree >= 点数应报错"
+    except ValueError:
+        pass

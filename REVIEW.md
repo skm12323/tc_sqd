@@ -904,6 +904,39 @@ cross-check 打印)。注意: 已缓存的 `_plot_data_*.npy` 仍用旧 CASCI �
 
 诊断脚本: `_diag_muha.py` (临时, 已删)。
 
+## 方向③-A：(E_V, E_PT2) 两点外推 + 轨迹外推脆弱性发现（2026-08-08）
+
+**交付**: `diagnostics.extrapolate_ev_pt2(energies, e_pt2, degree=1)` —— SHCI 标准
+(Holmes 2016 / Sharma 2017) 的 ``E_V`` vs ``E_PT2`` 线性外推工具; ``solve_sqd_ev``
+新增 ``correction="evpt2"`` 模式。与 ``correction="ev"`` (σ² 线性) 的区别: x 轴用
+带能量分母加权的 ``E_PT2`` (物理上更接近漏掉的关联能), 可正可负 (基态通常 <0)。
+
+**关键实证发现 (轨迹外推脆弱性)**: 直接用 ``solve_sqd_active`` 的 within-run
+``trajectory`` 做外推**不可靠** —— 轨迹常**退化**:
+- **受限时** (小 ``max_strings``): round 间子空间不扩展, ``E_PT2`` 逐轮重复
+  (LiH max_strings=8: 三轮 E_PT2 全 = −5.53e-4), 线性拟合病态, ``alpha`` 爆炸
+  (实测 7130), 外推到 ``E_PT2→0`` 给出垃圾值 (err +3.9 Ha)。
+- **饱和时** (大 ``max_strings``): ``E_PT2`` 一两轮即归零, 外推退化为饱和 ``E_V`` (= FCI)。
+- ``evpt2`` 与 ``ev`` 在退化轨迹上**给出相同垃圾值** (σ² 与 E_PT2 仿射相关 → 同拟合)。
+
+**护栏 (落地)**: ``evpt2`` 模式检测轨迹 ``E_PT2`` 互异点数, **<2 则自动退化为 ``pt2``
+单点修正** (``details["fallback"]=="pt2"``), 故 evpt2 **永不劣于 pt2**。退化为 pt2 时
+``e_evpt2 == e_pt2`` (测试锁定)。
+
+**结论**:
+- ``pt2`` (``E + E_PT2`` 单点 Epstein-Nesbet) 仍是**稳健推荐**默认 (N₂ 4.3e-4→6.2e-5,
+  C₂→5.0e-4, 行为良好)。
+- ``evpt2`` 仅在**非退化轨迹** (多个互异 ``E_PT2`` 点) 时给出真正的两点外推; 否则安全
+  退化为 pt2。
+- **稳健两点外推的正道**: 用**两次不同 ``max_strings``** 跑 ``solve_sqd_active`` 得两个
+  well-separated ``(E_V, E_PT2)``, 喂 ``extrapolate_ev_pt2`` —— 而非 within-run 轨迹
+  (其 round 间不独立)。这是 SHCI 社区的标准做法, 也是本工具的设计用途。
+
+**未做 (方向③-B, 效率件)**: 半随机 PT2。当前 ``E_PT2`` 确定性枚举主导 det 的 S+D 连接,
+大体系 (12,12 = 85 万维, 基准 5.7 h) 下枚举成本高。半随机 (近场确定性 + 远场抽样估
+``E_PT2``) 是 SHCI 的效率杠杆, 降估计方差与枚举成本。属效率优化 (非精度), 留作大体系
+路线 (Part 2 C1/C2) 的配套。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端

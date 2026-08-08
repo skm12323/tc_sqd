@@ -135,6 +135,7 @@ from .diagnostics import (
     sampling_report,
     extrapolate_infinite_samples,
     extrapolate_energy_variance,
+    extrapolate_ev_pt2,
 )
 
 __version__ = "0.1.0"
@@ -245,4 +246,5 @@ __all__ = [
     "sampling_report",
     "extrapolate_infinite_samples",
     "extrapolate_energy_variance",
+    "extrapolate_ev_pt2",
 ]

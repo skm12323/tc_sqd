@@ -290,6 +290,38 @@ def test_eigenvector_importance_sample_open_shell_layout():
         f"β 半区被互换: 期望 {int(sb[0]):b}, 得到 {int(rb[0]):b}")
 
 
+def test_solve_sqd_ev_evpt2_correction_runs():
+    """③: solve_sqd_ev(correction='evpt2') — 退化轨迹自动退化为 pt2 (永不劣于 pt2)。
+
+    LiH/STO-3G + max_strings=8 → solve_sqd_active 轨迹 round 间 E_PT2 重复 (互异点
+    <2), 线性外推病态。evpt2 模式应**退化为 pt2 单点修正**, 返回值与 correction='pt2'
+    完全一致。完整"非退化轨迹两点外推"验证需 N₂ 拉伸慢测试 (见 REVIEW 方向③)。
+    """
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    rng = np.random.default_rng(0)
+    bsm = rng.random((20, 2 * d.norb)) > 0.5
+    kw = dict(max_strings=8, n_active_per_round=10, max_rounds=5, rand_seed=0)
+    e_evpt2, det = tc_sqd.solve_sqd_ev(
+        d.h1e, d.eri, d.norb, d.nelec, ecore=d.ecore,
+        bitstring_matrix=bsm, correction="evpt2", return_details=True, **kw)
+    assert det["correction"] == "evpt2"
+    assert det.get("fallback") == "pt2", "退化轨迹 (互异点<2) 应退化为 pt2"
+    assert np.isfinite(e_evpt2)
+    # 退化时 evpt2 == pt2 单点修正
+    e_pt2 = tc_sqd.solve_sqd_ev(
+        d.h1e, d.eri, d.norb, d.nelec, ecore=d.ecore,
+        bitstring_matrix=bsm, correction="pt2", **kw)
+    assert abs(e_evpt2 - e_pt2) < 1e-12, f"fallback 应等于 pt2: {e_evpt2} vs {e_pt2}"
+    # 非法 correction 仍报错
+    try:
+        tc_sqd.solve_sqd_ev(d.h1e, d.eri, d.norb, d.nelec, ecore=d.ecore,
+                            bitstring_matrix=bsm, correction="bogus")
+        assert False, "非法 correction 应报错"
+    except ValueError:
+        pass
+
+
 def test_solve_sqd_auto_end_to_end():
     """E: solve_sqd_auto 一键流程 —— 推荐 + 自适应收敛 + EV 外推。
 
