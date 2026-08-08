@@ -990,6 +990,34 @@ single 卡在 +4.5e-8) 经蒸馏**恢复到 FCI**。这正是 C₂ 式"3/8 覆�
 保留为框架不声称优于" 的措辞**已过时** —— 那是 bug 产物; 修复后 adaptive 应与 active
 相当或更优 (多了 NO 换基的稀疏化收益)。完整 N₂ 拉伸对照验证留作慢测试。
 
+## 方向①-A：solve_sci_csf 自旋适配对角化（S² 投影, 2026-08-08）
+
+**交付**: `fermion.solve_sci_csf(ci_strings, h1e, eri, norb, nelec, *, spin_sq, spin_tol=1e-3)`
+—— 在 det 子空间内构建 **S² 矩阵** (第 i 列 = `spin_op.contract_ss(basis_i)`), eigh 后取
+S²≈`spin_sq` 的本征空间 P, 把 H 投影到该自旋空间再对角化。与"在 CSF 基对角化"等价
+(子空间完备时即精确自旋适配), 复用现有 det/contract 基建, 无需 det→CSF 展开表 (路线 B)。
+
+**算法**: ① S² 矩阵 (O(dim) 次 contract_ss) → ② eigh(S²) 取目标自旋本征空间 →
+③ H_proj = PᵀHP 对角化 → ④ 基态回 det 基。成本: 两次 O(dim³) eigh, 适合 dim ≲ 2000。
+
+**验证** (H₂/CH/LiH, 均 H₂ 尺度快速):
+- H₂ 全空间: singlet (S²=0) = FCI (1e-8), S² 精确 0; triplet (S²=2) 目标亦可达且高于 singlet。
+- **CH/STO-3G (4,3)**: M_S=1/2 sector 同时含 doublet (S=1/2) 与 quartet (S=3/2);
+  STO-3G 最小基下 **quartet 比 doublet 低 12.8 mHa** (直接 FCI 给 quartet)。CSF 投影
+  **精确选择任一自旋**: quartet (S²=3.75) 能量 = FCI (1e-8), doublet (S²=0.75) 是其上的
+  自旋纯上界——这是自旋适配价值的直接展示 (det 基 plain 对角化无法做到)。
+- LiH 随机恢复的部分 (自旋混合) 子空间: CSF 投影后 S² 精确 = 0 (消污染); 不可达自旋
+  (S²=12, 4 电子最大 S=2) raise。
+
+**附带修复 (防 segfault)**: 字符串电子数与 nelec 不符时, pyscf `contract_ss`/`contract_2e`
+的 C 层会越界读 → **core dump** (实测: 3 电子字符串 + nelec=(4,3))。`solve_sci_csf` 加
+输入一致性校验 (popcount vs nelec), 不符 → ValueError。既有 `solve_sci` 同路径, 风险相同,
+未加 (保持范围, 留作后续)。
+
+**后续 (路线 B, 未做)**: 完整 CSF 基 (det→CSF 展开表, pyscf CSF 机器), 维度减半、
+准简并根治更彻底; 与 `solve_sqd_active` 的 spin-targeted 采样闭环结合。路线 A 已覆盖
+"自旋纯"核心收益, 路线 B 是效率/彻底性增强。
+
 ## 后续可选改进（非阻塞）
 
 - 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端

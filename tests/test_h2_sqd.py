@@ -794,6 +794,85 @@ def test_sqd_batch_probs_preserved():
     assert np.isfinite(r.energy)
 
 
+def test_solve_sci_csf_h2_singlet():
+    """①: solve_sci_csf H2 全空间单重态 = FCI 且 S²=0; 三重态目标亦可达。"""
+    from pyscf.fci import direct_spin1
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    ci_a = cistring.make_strings(range(d.norb), 1)
+    ci_b = cistring.make_strings(range(d.norb), 1)
+    res = tc_sqd.solve_sci_csf(
+        (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec, spin_sq=0.0)
+    e_fci = direct_spin1.kernel(d.h1e, d.eri, d.norb, d.nelec, conv_tol=1e-12)[0]
+    assert abs(res.energy - e_fci) < 1e-8, \
+        f"singlet 能量 ≠ FCI: {res.energy} vs {e_fci}"
+    assert abs(res.spin_square - 0.0) < 1e-8, f"S² 应=0: {res.spin_square}"
+    # 三重态目标同样可达 (S²=2, S=1)
+    res_t = tc_sqd.solve_sci_csf(
+        (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec, spin_sq=2.0)
+    assert abs(res_t.spin_square - 2.0) < 1e-6, f"三重态 S² 应=2: {res_t.spin_square}"
+    assert res_t.energy > res.energy, "H2 三重态应高于单重态"
+
+
+def test_solve_sci_csf_ch_doublet_and_quartet():
+    """①: solve_sci_csf CH 开壳层 (4,3) 可精确选择双重态 / 四重态, S² 各自精确。
+
+    CH/STO-3G 的 M_S=1/2 sector 同时含 doublet (S=1/2) 与 quartet (S=3/2);
+    STO-3G 最小基下 quartet 更低 (直接 FCI 给 quartet)。CSF 投影可精确选任一自旋:
+    quartet (S²=3.75) 能量 = FCI; doublet (S²=0.75) 是其上的自旋纯上界。
+    """
+    from pyscf.fci import direct_spin1
+    mol = gto.M(atom="C 0 0 0; H 0 0 1.0", basis="sto-3g", spin=1, verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    na, nb = d.nelec
+    ci_a = cistring.make_strings(range(d.norb), na)
+    ci_b = cistring.make_strings(range(d.norb), nb)
+    r_d = tc_sqd.solve_sci_csf(
+        (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec, spin_sq=0.75)
+    r_q = tc_sqd.solve_sci_csf(
+        (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec, spin_sq=3.75)
+    assert abs(r_d.spin_square - 0.75) < 1e-6, \
+        f"双重态 S² 应=0.75: {r_d.spin_square}"
+    assert abs(r_q.spin_square - 3.75) < 1e-6, \
+        f"四重态 S² 应=3.75: {r_q.spin_square}"
+    e_fci = direct_spin1.kernel(d.h1e, d.eri, d.norb, d.nelec, conv_tol=1e-12)[0]
+    assert abs(r_q.energy - e_fci) < 1e-8, \
+        f"quartet (M_S=1/2 最低) 应 = FCI: {r_q.energy} vs {e_fci}"
+    assert r_d.energy > r_q.energy, "CH/STO-3G quartet 低于 doublet (测试基准)"
+    # 输入一致性校验: 字符串电子数与 nelec 不符 → ValueError (防 segfault)
+    try:
+        tc_sqd.solve_sci_csf(
+            (cistring.make_strings(range(d.norb), 3),  # 3 电子, 与 (4,3) 不符
+             cistring.make_strings(range(d.norb), nb)),
+            d.h1e, d.eri, d.norb, d.nelec, spin_sq=0.75)
+        assert False, "字符串/nelec 不一致应报错 (防 segfault)"
+    except ValueError:
+        pass
+
+
+def test_solve_sci_csf_spin_purity_and_validation():
+    """①: 部分 (自旋混合) det 子空间经 CSF 投影 S² 精确 = 目标; 不可达自旋 raise。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    bsm = np.random.default_rng(0).random((20, 2 * d.norb)) > 0.5
+    rec, _ = tc_sqd.recover_configurations(
+        bsm, np.full(20, 1.0 / 20),
+        (np.full(d.norb, 0.5), np.full(d.norb, 0.5)),
+        d.nelec[0], d.nelec[1], rand_seed=0)
+    ci_a, ci_b = tc_sqd.bitstring_matrix_to_ci_strs(rec)
+    res = tc_sqd.solve_sci_csf(
+        (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec, spin_sq=0.0)
+    assert abs(res.spin_square - 0.0) < 1e-8, \
+        f"CSF 应纯 singlet, got S²={res.spin_square}"
+    # 4 电子最大 S=2 (S²=6); S=3 (S²=12) 永远不可达 → raise
+    try:
+        tc_sqd.solve_sci_csf(
+            (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec, spin_sq=12.0)
+        assert False, "不可达自旋应报错"
+    except ValueError:
+        pass
+
+
 if __name__ == "__main__":
     test_counts()
     test_fermion_sqd()
@@ -804,4 +883,7 @@ if __name__ == "__main__":
     test_state_io_and_open_shell()
     test_pauli_y_and_validation()
     test_third_review_fixes()
+    test_solve_sci_csf_h2_singlet()
+    test_solve_sci_csf_ch_doublet_and_quartet()
+    test_solve_sci_csf_spin_purity_and_validation()
     print("All tests passed!")

@@ -29,6 +29,7 @@ __all__ = [
     "build_ci_matrix",
     "solve_sci",
     "solve_sci_batch",
+    "solve_sci_csf",
     "solve_fermion",
     "diagonalize_fermionic_hamiltonian",
     "optimize_orbitals",
@@ -800,6 +801,145 @@ def solve_sci_batch(
                       norb, nelec, spin_sq=spin_sq, **kwargs)
         )
     return results
+
+
+def solve_sci_csf(
+    ci_strings: Tuple[np.ndarray, np.ndarray],
+    one_body_tensor: np.ndarray,
+    two_body_tensor: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    spin_sq: float,
+    spin_tol: float = 1e-3,
+    verbose: bool = False,
+) -> SCIResult:
+    """自旋适配 (CSF 式, 路线 A: S² 投影) 子空间对角化。
+
+    **动机 (方向①)**: det 基的子空间对角化会把不同自旋的态混在一起 (自旋污染);
+    C₂ 式准简并 (基态 singlet vs 第二根 triplet) 下易跳根或混入错误自旋分量。CSF 是
+    S² 本征态, 构造即自旋纯。本函数在 det 子空间内构建 **S² 矩阵**, 投影到目标自旋
+    本征空间后再对角化 H —— 与"在 CSF 基对角化"等价 (子空间完备时即精确自旋适配),
+    但复用现有 det / contract 基建, 无需 det→CSF 展开表。
+
+    **算法**:
+      1. S² 矩阵: 第 i 列 = ``spin_op.contract_ss(basis_i)`` (O(dim) 次调用)。
+      2. ``eigh(S²)`` → 取 S²≈``spin_sq`` 的本征空间 P (列 = 自旋本征矢)。
+      3. H 投影: ``H_proj = Pᵀ H P`` (n_spin × n_spin), ``eigh`` 对角化。
+      4. 基态回到 det 基 (``c_det = P @ c_proj[:,0]``)。
+
+    Parameters
+    ----------
+    ci_strings : tuple (ci_strs_a, ci_strs_b)
+    one_body_tensor, two_body_tensor, norb, nelec
+        同 :func:`solve_sci`。
+    spin_sq : float
+        **目标 S² 本征值** (0.0=singlet, 0.75=doublet, 2.0=triplet, ...)。
+    spin_tol : float
+        S² 匹配容差 (本征值偏差 < tol 的本征空间入选)。
+    verbose : bool
+
+    Returns
+    -------
+    SCIResult
+        ``spin_square`` 应 ≈ ``spin_sq`` (构造即自旋纯)。
+
+    Notes
+    -----
+    - 成本: S² 矩阵构建 O(dim) 次 ``contract_ss`` + 两次 O(dim³) ``eigh`` (S² 与 H_proj)。
+      适合 dim ≲ 2000 的子空间; 大子空间用现有 :func:`solve_sci` + eigsh。
+    - 子空间不含目标自旋时 raise (与 ``solve_sci`` 的 ``spin_sq`` 分支一致)。
+    - 对 M_S 混合的 det 子空间 (α/β 不同占据组合), 投影同时消除 S² 与 M_S 污染。
+    """
+    ci_strs_a, ci_strs_b = ci_strings
+    # h1e prep (与 solve_sci 一致): direct_spin1 需单个 (norb, norb)
+    if one_body_tensor.ndim == 3:
+        if not np.allclose(one_body_tensor[0], one_body_tensor[1]):
+            raise ValueError(
+                "Spin-resolved one-body integrals are not supported; "
+                "pass a single (norb, norb) closed-shell h1e."
+            )
+        h1e = np.asarray(one_body_tensor[0])
+    else:
+        h1e = np.asarray(one_body_tensor)
+    eri = np.asarray(two_body_tensor)
+
+    ci_a = np.asarray(ci_strs_a, dtype=np.int64)
+    ci_b = np.asarray(ci_strs_b, dtype=np.int64)
+    na, nb = len(ci_a), len(ci_b)
+    dim = na * nb
+
+    # 输入一致性校验 (防 pyscf C 层 segfault): 字符串电子数须与 nelec 匹配。
+    # (实测: 字符串 3 电子 + nelec=(4,3) 时 contract_ss 越界读 → core dump,
+    #  而非 Python 异常。)
+    na_e, nb_e = nelec
+    for s in ci_a:
+        if bin(int(s)).count("1") != na_e:
+            raise ValueError(
+                f"ci_strs_a 含 {bin(int(s)).count('1')} 电子, 与 nelec[0]={na_e} 不符。"
+            )
+    for s in ci_b:
+        if bin(int(s)).count("1") != nb_e:
+            raise ValueError(
+                f"ci_strs_b 含 {bin(int(s)).count('1')} 电子, 与 nelec[1]={nb_e} 不符。"
+            )
+
+    # ---- 1) S² 矩阵 (第 i 列 = S²|basis_i⟩) ----
+    S2 = np.zeros((dim, dim), dtype=np.float64)
+    for i in range(dim):
+        ia, ib = divmod(i, nb)
+        vec = np.zeros((na, nb), dtype=np.float64)
+        vec[ia, ib] = 1.0
+        civec = selected_ci._as_SCIvector(vec.ravel(), (ci_a, ci_b))
+        S2[:, i] = np.asarray(spin_op.contract_ss(civec, norb, nelec)).ravel()
+    S2 = 0.5 * (S2 + S2.T)                       # 数值对称化 (理论 Hermitian)
+
+    # ---- 2) 目标自旋本征空间 ----
+    s2_evals, s2_evecs = np.linalg.eigh(S2)
+    keep = np.abs(s2_evals - spin_sq) < spin_tol
+    if not np.any(keep):
+        raise ValueError(
+            f"子空间无 S²≈{spin_sq} (tol {spin_tol}) 的自旋本征空间; "
+            f"S² 谱={np.round(s2_evals, 4)}"
+        )
+    P = s2_evecs[:, keep]                        # (dim, n_spin)
+
+    # ---- 3) H 矩阵 (复用 solve_sci 基态分支的 contract_2e 路径) ----
+    from pyscf import ao2mo as _ao2mo
+    from pyscf.fci import direct_spin1
+    h2e = direct_spin1.absorb_h1e(h1e, eri, norb, nelec, 0.5)
+    h2e = _ao2mo.restore(1, h2e, norb)
+    link = selected_ci._all_linkstr_index((ci_a, ci_b), norb, nelec)
+    myci = selected_ci.SCI()
+
+    def _hop(v):
+        v = np.ascontiguousarray(v, dtype=np.float64)
+        hv = myci.contract_2e(
+            h2e, selected_ci._as_SCIvector(v, (ci_a, ci_b)),
+            norb, nelec, link).reshape(-1)
+        return np.ascontiguousarray(hv, dtype=np.float64)
+
+    H = np.zeros((dim, dim), dtype=np.float64)
+    for col in range(dim):
+        e_col = np.zeros(dim)
+        e_col[col] = 1.0
+        H[:, col] = _hop(e_col)
+
+    # ---- 4) 投影到目标自旋空间 + 对角化 ----
+    H_proj = P.T @ H @ P                         # (n_spin, n_spin)
+    e_vals, c_proj = np.linalg.eigh(H_proj)
+    c_det = (P @ c_proj[:, 0]).reshape(na, nb)   # 基态回到 det 基
+
+    civec = selected_ci._as_SCIvector(c_det, (ci_a, ci_b))
+    s2_final = float(selected_ci.spin_square(civec, norb, nelec)[0])
+    state = SCIState(amplitudes=civec, ci_strs_a=ci_a, ci_strs_b=ci_b,
+                     norb=norb, nelec=nelec)
+    occ_a, occ_b = state.orbital_occupancies()
+    if verbose:
+        print(f"[CSF] dim={dim} -> spin-adapted dim={P.shape[1]} "
+              f"E={e_vals[0]:.8f} S²={s2_final:.6f}")
+    return SCIResult(energy=float(e_vals[0]), sci_state=state,
+                     avg_orb_occupancies=(occ_a, occ_b), spin_square=s2_final)
 
 
 # --------------------------------------------------------------------------- #
