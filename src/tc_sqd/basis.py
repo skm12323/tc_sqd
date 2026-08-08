@@ -446,6 +446,18 @@ def solve_sqd_natural_orbitals(
             break
         energy_prev = result.energy
 
+    # 末轮换基后, 在**最终基** (h1e_cur/eri_cur) 下再做一次对角化, 使返回的
+    # ``energy`` 与 ``h1e``/``eri`` 严格同基。否则 ``energy`` 是换基前 B_k 的、
+    # 积分是换基后 B_{k+1} 的, 差一轮 NO 旋转——与 docstring "最终基下 SQD 电子
+    # 能量" 不符; 拿返回积分再跑 solve_sci 会得略不同的能量。收敛时两者数值相近。
+    rec, _ = recover_configurations(
+        bsm, probs, (occ_a, occ_b), na, nb, rand_seed=rand_seed
+    )
+    ci_a, ci_b = bitstring_matrix_to_ci_strs(rec)
+    result = solve_sci(
+        (ci_a, ci_b), h1e_cur, eri_cur, norb, nelec, **solve_sci_kwargs
+    )
+
     return NaturalOrbitalResult(
         energy=float(result.energy),
         h1e=h1e_cur,

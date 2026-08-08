@@ -266,6 +266,30 @@ def test_eigenvector_importance_sample_concentrates_dominant():
         f"锐化未更聚焦主导 det: cold={ratio_cold:.3f} hot={ratio_hot:.3f}")
 
 
+def test_eigenvector_importance_sample_open_shell_layout():
+    """F1 回归: 输出必须遵循库 [β|α] 布局 (左 β 右 α)。
+
+    旧实现把 det_a(α) 放左半、det_b(β) 放右半, 与库约定相反; 闭壳层
+    (sa=sb) 因 bitstring_matrix_to_ci_strs 合并 α/β 而不可见, 故 ``..._concentrates``
+    测试漏检。这里用 det_a ≠ det_b 的开壳层情形: 把全权重放在一个 (α, β) det 上,
+    采样后喂回 ``bitstring_matrix_to_ci_strs(open_shell=True)`` 必须精确还原。
+    """
+    norb = 3
+    # 两组互不相同的 α/β 字符串 (占据模式不同), 全权重放在 (sa[1], sb[0])
+    sa = np.asarray([0b001, 0b110])   # α: {orb0} 与 {orb1,orb2}
+    sb = np.asarray([0b011, 0b100])   # β: {orb0,orb1} 与 {orb2}
+    c2d = np.zeros((2, 2))
+    c2d[1, 0] = 1.0                   # 100% 在 (α=sa[1]=0b110, β=sb[0]=0b011)
+    bsm = tc_sqd.eigenvector_importance_sample(
+        c2d, sa, sb, norb, 50, rand_seed=0, temperature=1.0)
+    ra, rb = tc_sqd.bitstring_matrix_to_ci_strs(bsm, open_shell=True)
+    assert len(ra) == 1 and len(rb) == 1, "全权重单 det 应只采到一个位串"
+    assert int(ra[0]) == int(sa[1]), (
+        f"α 半区被互换: 期望 {int(sa[1]):b}, 得到 {int(ra[0]):b}")
+    assert int(rb[0]) == int(sb[0]), (
+        f"β 半区被互换: 期望 {int(sb[0]):b}, 得到 {int(rb[0]):b}")
+
+
 def test_solve_sqd_auto_end_to_end():
     """E: solve_sqd_auto 一键流程 —— 推荐 + 自适应收敛 + EV 外推。
 

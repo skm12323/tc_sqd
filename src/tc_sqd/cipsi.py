@@ -1119,7 +1119,9 @@ def eigenvector_importance_sample(
     Returns
     -------
     ndarray, shape (n_shots, 2*norb)
-        采样位串矩阵 (前 norb 列 α, 后 norb 列 β)。
+        采样位串矩阵, 遵循库统一布局 ``[β_{n-1}..β_0 | α_{n-1}..α_0]``
+        (左 norb 列 β = ``det_b``, 右 norb 列 α = ``det_a``)。开壳层消费者
+        直接喂 ``bitstring_matrix_to_ci_strs(open_shell=True)`` 可还原 (α, β)。
     """
     from .counts import int_to_bitarray
 
@@ -1137,7 +1139,10 @@ def eigenvector_importance_sample(
     ia, ib = np.divmod(idx, c2d.shape[1])
     det_a = sa[ia]
     det_b = sb[ib]
+    # 库比特串布局 [β_{n-1}..β_0 | α_{n-1}..α_0] (左 β 右 α, 见 counts.py /
+    # fermion._det_to_bitstring / integrated carryover)。det_a=α → 右半,
+    # det_b=β → 左半; int_to_bitarray 半内顺序 [orb_{n-1}..orb_0] 与约定一致。
     bsm = np.zeros((n_shots, 2 * norb), dtype=bool)
-    bsm[:, :norb] = int_to_bitarray(det_a, norb)
-    bsm[:, norb:] = int_to_bitarray(det_b, norb)
+    bsm[:, :norb] = int_to_bitarray(det_b, norb)
+    bsm[:, norb:] = int_to_bitarray(det_a, norb)
     return bsm

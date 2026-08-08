@@ -187,3 +187,36 @@ def test_rdm1_from_sci_result():
     dm1_fci = direct_spin1.make_rdm1(c_mo, norb, nelec)
     assert abs(np.trace(dm1) - (nelec[0] + nelec[1])) < 1e-6  # S+D 态电子数守恒
     assert abs(np.trace(dm1_fci) - (nelec[0] + nelec[1])) < 1e-6
+
+
+def test_solve_sqd_natural_orbitals_energy_matches_returned_integrals():
+    """F2 回归: NaturalOrbitalResult.energy 必须与 .h1e/.eri 同基。
+
+    旧实现末轮 ``solve_sci`` 在换基前 B_k 做, 但 ``h1e``/``eri`` 是换基后 B_{k+1}
+    的 (差一轮 NO 旋转), 与 docstring "最终基下 SQD 电子能量" 不符。修复后在最终基
+    再对角化一次, 使 energy↔积分严格同基。
+
+    **牙齿条件**: 必须在**子空间未饱和** (k 字符串 < C(norb,na)) 时才测得出——饱和时
+    能量 = FCI (基无关), off-by-one 恒零。故用 LiH/STO-3G (norb=6) + **少 shots**
+    (n_samples=10 → dim≈25, 真子集), 实测 off-by-one ~8e-8。tolerance 1e-8 把
+    修复版 (~1e-12, 同一求解的重算) 与 buggy 版 (~8e-8) 干净分开。
+    """
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    norb, nelec = d.norb, d.nelec
+    n_samples = 10                               # 少 shots → 未饱和子空间
+    rng = np.random.default_rng(0)
+    bsm = (rng.random((n_samples, 2 * norb)) > 0.5)
+    res = tc_sqd.solve_sqd_natural_orbitals(
+        d.h1e, d.eri, norb, nelec, ecore=d.ecore,
+        bitstring_matrix=bsm, max_basis_iters=2, rand_seed=0)
+    # 复现末轮: 返回的 occ + 同一 bsm → recover → solve_sci 在返回的积分上
+    occ_a = np.clip(np.asarray(res.occ, dtype=np.float64) / 2.0, 0.0, 1.0)
+    rec, _ = tc_sqd.recover_configurations(
+        bsm, np.full(n_samples, 1.0 / n_samples), (occ_a, occ_a.copy()),
+        nelec[0], nelec[1], rand_seed=0)
+    ci_a, ci_b = tc_sqd.bitstring_matrix_to_ci_strs(rec)
+    r2 = tc_sqd.solve_sci((ci_a, ci_b), res.h1e, res.eri, norb, nelec)
+    assert abs(r2.energy - res.energy) < 1e-8, (
+        f"energy 与返回积分不同基 (差一轮 NO 旋转): res.energy={res.energy:.10f} "
+        f"但 solve_sci(res.h1e, res.eri)={r2.energy:.10f} (gap={abs(r2.energy-res.energy):.2e})")
