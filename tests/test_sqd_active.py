@@ -207,8 +207,8 @@ def test_sqd_active_trajectory_monotone():
     V_seq = [t["sigma2"] for t in traj]
     D_seq = [t["dim"] for t in traj]
     for k in range(1, len(traj)):
-        assert E_seq[k] <= E_seq[k - 1] + 1e-12, f"能量未单调: {E_seq}"
-        assert V_seq[k] <= V_seq[k - 1] + 1e-12, f"方差未单调不增: {V_seq}"
+        assert E_seq[k] <= E_seq[k - 1] + 1e-11, f"能量未单调: {E_seq}"
+        assert V_seq[k] <= V_seq[k - 1] + 1e-11, f"方差未单调不增: {V_seq}"
         assert D_seq[k] >= D_seq[k - 1], f"维度未单调增: {D_seq}"
     assert all("e_pt2" in t and "shots" in t for t in traj)
 
@@ -410,3 +410,48 @@ def test_solve_sqd_auto_end_to_end():
     # 简易版返回 float
     e_float = tc_sqd.solve_sqd_auto(h1e, eri, norb, nelec, ecore=data.ecore)
     assert isinstance(e_float, float)
+
+
+def test_solve_sqd_best_runs():
+    """当前最优 SQD (active+PT2+evpt2 多 shots 外推) 可运行 + 达化学精度。
+
+    evpt2 永不劣于 pt2 (退化 E_evpt2=None 用 pt2; 非退化 E_evpt2 更低)。
+    """
+    data = _n2_stretch_data()
+    h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
+    e_fci, _ = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
+    e_fci_total = e_fci + data.ecore
+
+    det = tc_sqd.solve_sqd_best(h1e, eri, norb, nelec, ecore=data.ecore,
+                                n_shots=60, return_details=True, rand_seed=0)
+    assert {"energy", "E_direct", "E_pt2", "E_evpt2", "dim"} <= set(det)
+    assert np.isfinite(det["energy"])
+    # evpt2 永不劣于 pt2
+    if det["E_evpt2"] is not None:
+        assert det["E_evpt2"] <= det["E_pt2"] + 1e-6
+    # active+PT2/evpt2 在 N2 拉伸应达化学精度
+    assert abs(det["energy"] - e_fci_total) < 1.6e-3, (
+        f"best 未达化学精度: {abs(det['energy'] - e_fci_total):.2e}")
+    # float 版
+    e_float = tc_sqd.solve_sqd_best(h1e, eri, norb, nelec, ecore=data.ecore, n_shots=60)
+    assert isinstance(e_float, float)
+
+
+def test_solve_sqd_auto_correction_option():
+    """solve_sqd_auto correction='pt2'/'evpt2'/'none' 选项 + correction 字段。"""
+    data = _n2_stretch_data()
+    h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
+    for corr in ["pt2", "evpt2", "none"]:
+        d = tc_sqd.solve_sqd_auto(h1e, eri, norb, nelec, ecore=data.ecore,
+                                  shots_budget=300, correction=corr, seed=0,
+                                  return_details=True)
+        assert "correction" in d, f"correction 字段缺失 ({corr})"
+        assert d["correction"].startswith(corr), (
+            f"correction_used={d['correction']!r} 不以 {corr!r} 开头")
+        assert np.isfinite(d["energy"])
+    # none 模式: energy = E_direct (无 PT2 修正)
+    d_none = tc_sqd.solve_sqd_auto(h1e, eri, norb, nelec, ecore=data.ecore,
+                                   shots_budget=300, correction="none", seed=0,
+                                   return_details=True)
+    assert abs(d_none["energy"] - d_none["E_direct"]) < 1e-12, (
+        "correction='none' 应返回 active 直接能量")

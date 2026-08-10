@@ -33,7 +33,7 @@ from .fermion import (
     _int_to_bits,
 )
 
-__all__ = ["solve_sqd", "solve_sqd_auto"]
+__all__ = ["solve_sqd", "solve_sqd_auto", "solve_sqd_best", "solve_sqd_improved"]
 
 
 def solve_sqd(
@@ -309,6 +309,7 @@ def solve_sqd_auto(
     max_strings: Optional[int] = None,
     n_active_per_round: Optional[int] = None,
     extrapolate_ev: bool = True,
+    correction: Optional[str] = None,
     seed: Optional[int] = 0,
     verbose: bool = False,
     return_details: bool = False,
@@ -418,12 +419,32 @@ def solve_sqd_auto(
     )
     shots_used = int(usage[0]) if usage else int(shots)
 
-    # 4) 能量修正 (方向 D, 用已有轨迹, 不重跑): 默认 PT2 (E+E_PT2, 行为良好)。
-    #    σ² 线性外推实测会过冲到 FCI 之下, 故不再作为默认 (见 solve_sqd_ev)。
+    # 4) 能量修正 (方向 D/③, 用已有轨迹, 不重跑): correction 选 pt2 / evpt2 / none。
+    #    extrapolate_ev (旧 bool, 向后兼容): True→"pt2", False→"none"。
+    #    evpt2 = within-run trajectory 多点外推 (互异点<2 退化 pt2; 稳健正道用
+    #    :func:`solve_sqd_best` 多 shots 外推, 近收敛体系实测 30×)。
+    from .diagnostics import extrapolate_ev_pt2
+    if correction is None:
+        correction = "pt2" if extrapolate_ev else "none"
+    if correction not in ("pt2", "evpt2", "none"):
+        raise ValueError(f"correction 须为 'pt2'/'evpt2'/'none', got {correction!r}.")
     e_ev = None
-    if extrapolate_ev and len(traj) >= 1:
+    corr_used = correction
+    if len(traj) >= 1:
         last = traj[-1]
-        e_ev = float(last["E"] + last["e_pt2"]) + ecore
+        if correction == "pt2":
+            e_ev = float(last["E"] + last["e_pt2"]) + ecore
+        elif correction == "evpt2":
+            es = np.asarray([t["E"] for t in traj], dtype=np.float64)
+            pts = np.asarray([t["e_pt2"] for t in traj], dtype=np.float64)
+            n_distinct = len(np.unique(np.round(pts, decimals=14)))
+            if n_distinct < 2 or np.max(np.abs(pts)) < 1e-14:
+                e_ev = float(last["E"] + last["e_pt2"]) + ecore
+                corr_used = "evpt2→pt2(fallback)"
+            else:
+                e_inf, _alpha, _r2, _std = extrapolate_ev_pt2(es, pts, degree=1)
+                e_ev = float(e_inf) + ecore
+                corr_used = "evpt2"
     energy = e_ev if e_ev is not None else float(e_direct)
 
     # 收敛判定: 末两轮能量变化 < energy_tol 且无 PT2 新 det
@@ -441,6 +462,7 @@ def solve_sqd_auto(
         return energy
     return {
         "energy": float(energy),
+        "correction": corr_used,
         "E_direct": float(e_direct),
         "E_ev": e_ev,
         "shots_used": shots_used,
@@ -450,3 +472,159 @@ def solve_sqd_auto(
         "converged": bool(converged),
         "n_rounds": len(traj),
     }
+
+
+# --------------------------------------------------------------------------- #
+#  当前最优 SQD (2026-08-10 跨体系实测最优配置; benchmark/测试用)
+# --------------------------------------------------------------------------- #
+def solve_sqd_best(
+    h1e: np.ndarray,
+    eri: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    ecore: float = 0.0,
+    bitstring_matrix: Optional[np.ndarray] = None,
+    probabilities: Optional[np.ndarray] = None,
+    n_shots: Optional[int] = None,
+    max_strings: Optional[int] = None,
+    n_active_per_round: int = 30,
+    evpt2: bool = True,
+    evpt2_scales: Tuple[float, ...] = (0.5, 1.0, 2.0),
+    degree: int = 1,
+    rand_seed: Optional[int] = 0,
+    return_details: bool = False,
+    verbose: bool = False,
+) -> Union[float, dict]:
+    """当前最优 SQD 配置 (2026-08-10 跨体系实测最优; benchmark/测试用)。
+
+    基于 L1/L2 在 n2_ccpvdz + 12,12 的实测, 封装**当前已知最优** SQD 组合:
+
+    - **active** (采样↔PT2 选态双闭环, AS-SQD) + **PT2 修正** (普适基线, 所有体系行为良好);
+    - **evpt2 多 shots 外推** (近收敛精修; N₂/cc-pVDZ 10o R=3.0 实测改进 30×): 用
+      ``evpt2_scales`` 个不同 shots 各跑一次 active, 取各 trajectory 末轮
+      ``(E_V, e_pt2)``, :func:`extrapolate_ev_pt2` 外推 ``E_PT2→0``;
+    - **不用** distill / adaptive / UCJ (L1/L2 实测在所测体系无增益或有害)。
+
+    与 :func:`solve_sqd_auto` 的区别: ``auto`` 用 within-run trajectory (B1 预算闭环
+    各轮) 做 evpt2, 受限/饱和时常退化; 本函数用**多次独立 active** (不同 shots) 喂外推,
+    是 REVIEW「L1 改进方法」实证的稳健多点外推正道 (近收敛体系收益最大)。
+
+    Parameters
+    ----------
+    n_shots : int | None
+        基准 shots (baseline active 的采样数); ``None`` = ``bitstring_matrix`` 行数或 60。
+    evpt2_scales : tuple[float]
+        evpt2 外推的 shots 缩放 (各 shots = n_shots × scale); 默认 (0.5, 1.0, 2.0) 三点。
+        互异 ``e_pt2`` 点 <2 时退化为 baseline PT2 (evpt2 永不劣于 pt2)。
+    degree : int
+        evpt2 外推多项式次数 (默认 1 = 线性)。
+
+    Returns
+    -------
+    float | dict
+        ``return_details=False``: 最优能量 (evpt2 外推版若启用且非退化, 否则 PT2; 含 ``ecore``)。
+        ``return_details=True``: ``{"energy", "E_direct", "E_pt2", "E_evpt2", "dim",
+        "evpt2"(alpha/r2/fit_std/n_pts/dims) | None}``。
+    """
+    from .cipsi import solve_sqd_active
+    from .diagnostics import extrapolate_ev_pt2
+
+    if n_shots is None:
+        n_shots = bitstring_matrix.shape[0] if bitstring_matrix is not None else 60
+
+    if bitstring_matrix is None:
+        bsm0 = np.random.default_rng(rand_seed).random((int(n_shots), 2 * norb)) > 0.5
+        probs0 = np.full(int(n_shots), 1.0 / int(n_shots))
+    else:
+        bsm0 = np.asarray(bitstring_matrix, dtype=bool)
+        probs0 = (probabilities if probabilities is not None
+                  else np.full(bsm0.shape[0], 1.0 / bsm0.shape[0]))
+
+    def _run(bsm, probs):
+        traj: list = []
+        E = solve_sqd_active(
+            h1e, eri, norb, nelec, ecore=ecore, bitstring_matrix=bsm,
+            probabilities=probs, max_strings=max_strings,
+            n_active_per_round=n_active_per_round, rand_seed=rand_seed,
+            trajectory=traj, verbose=verbose)
+        return E, (traj[-1] if traj else None)
+
+    # baseline (n_shots): active 变分 + PT2
+    e_direct, last = _run(bsm0, probs0)
+    e_pt2 = (float(last["E"] + last["e_pt2"]) + ecore) if last is not None else float(e_direct)
+    out: dict = {"E_direct": float(e_direct), "E_pt2": e_pt2,
+                 "dim": (last["dim"] if last is not None else None)}
+
+    energy = e_pt2
+    if evpt2:
+        Es, pts, dims = [], [], []
+        for sc in evpt2_scales:
+            s = max(int(round(n_shots * float(sc))), 4)
+            bsm = np.random.default_rng(rand_seed).random((s, 2 * norb)) > 0.5
+            _, lr = _run(bsm, np.full(s, 1.0 / s))
+            if lr is None:
+                continue
+            Es.append(lr["E"]); pts.append(lr["e_pt2"]); dims.append(lr["dim"])
+        n_distinct = len(set(round(float(p), 14) for p in pts))
+        if len(Es) >= 2 and n_distinct >= 2:
+            e_inf, alpha, r2, fit_std = extrapolate_ev_pt2(
+                np.asarray(Es), np.asarray(pts), degree=degree)
+            e_evpt2 = float(e_inf) + ecore
+            out["E_evpt2"] = e_evpt2
+            out["evpt2"] = {"alpha": alpha, "r2": r2, "fit_std": fit_std,
+                            "n_pts": len(Es), "dims": dims}
+            energy = e_evpt2
+        else:
+            out["E_evpt2"] = None  # 退化: 用 baseline PT2
+            out["evpt2"] = None
+    else:
+        out["E_evpt2"] = None
+        out["evpt2"] = None
+
+    if verbose:
+        print(f"[best] E_direct={e_direct:.8f} E_pt2={e_pt2:.8f} "
+              f"E_evpt2={out.get('E_evpt2')} dim={out['dim']}")
+    out["energy"] = energy
+    return energy if not return_details else out
+
+
+def solve_sqd_improved(
+    h1e: np.ndarray,
+    eri: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    *,
+    ecore: float = 0.0,
+    bitstring_matrix: Optional[np.ndarray] = None,
+    probabilities: Optional[np.ndarray] = None,
+    max_strings: Optional[int] = None,
+    n_active_per_round: int = 30,
+    rand_seed: Optional[int] = 0,
+    return_details: bool = False,
+    verbose: bool = False,
+    **kwargs,
+) -> Union[float, dict]:
+    """Improved SQD = active (采样↔PT2 选态, AS-SQD) + PT2 修正 (E+E_PT2)。
+
+    图 / SURVEY / REVIEW 中 **"improved SQD"** 的显式入口 —— 此前散在
+    :func:`solve_sqd_ev` 的 ``correction="pt2"`` 选项, 无独立函数。本函数固定 PT2 修正
+    (Epstein-Nesbet, SHCI 式, **普适行为良好**, 所有体系实测有效)。
+
+    与相关入口的区别:
+    - :func:`solve_sqd_active`: 仅 active 变分 (无 PT2), 是本函数的"基";
+    - 本函数: active + PT2 修正 (improved SQD);
+    - :func:`solve_sqd_best`: 在本函数基础上加 **evpt2 多 shots 外推** (近收敛精修,
+      N₂/cc-pVDZ 10o 实测 30×), 是当前最优配置。
+
+    Parameters 与 :func:`solve_sqd_active` 一致 (``ecore``/``bitstring_matrix``/
+    ``max_strings``/``n_active_per_round``/``rand_seed`` 等); ``return_details=True``
+    返回 ``(energy, details)`` (含 ``E_direct``/``E_PT2``/``dim``/``trajectory``)。
+    """
+    from .cipsi import solve_sqd_ev
+    kwargs.pop("correction", None)  # improved SQD 固定 PT2; 要 evpt2 用 solve_sqd_best
+    return solve_sqd_ev(
+        h1e, eri, norb, nelec, ecore=ecore, bitstring_matrix=bitstring_matrix,
+        probabilities=probabilities, max_strings=max_strings,
+        n_active_per_round=n_active_per_round, rand_seed=rand_seed,
+        correction="pt2", return_details=return_details, verbose=verbose, **kwargs)

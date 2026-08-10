@@ -58,7 +58,7 @@ from .qubit import (
     project_operator_to_subspace,
     solve_qubit,
 )
-from .integrated import solve_sqd, solve_sqd_auto
+from .integrated import solve_sqd, solve_sqd_auto, solve_sqd_best, solve_sqd_improved
 from .lucj import (
     get_ccsd_amplitudes,
     build_lucj_circuit,
@@ -180,6 +180,8 @@ __all__ = [
     # integrated
     "solve_sqd",
     "solve_sqd_auto",
+    "solve_sqd_best",
+    "solve_sqd_improved",
     # lucj
     "get_ccsd_amplitudes",
     "build_lucj_circuit",

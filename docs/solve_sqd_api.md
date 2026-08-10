@@ -8,6 +8,23 @@
 > - `solve_sqd`（本模块）＝ 端到端，接受**电路或位串**、可选迭代，返回 `SCIResult`（含状态/占据）；
 > - `compute_ground_state_energy`（`tc_sqd.fermion`）＝ 积分→能量，接受**外部采样的位串**，返回 `float`。
 > 快速拿一个能量数字用后者；要状态/迭代/从电路出发用前者。
+>
+> **SQD 入口总览**（本文档详述 `solve_sqd`；其余入口见各模块 docstring + `REVIEW.md`）:
+>
+> | 入口 | 内容 | 定位 |
+> |---|---|---|
+> | `solve_sqd` | 端到端 single/iterative（本文档） | 基础/教学 |
+> | `solve_sqd_active` | 采样↔PT2 选态双闭环（AS-SQD） | improved/best 的基 |
+> | `solve_sqd_improved` | active + PT2 修正（E+E_PT2） | **improved SQD 显式入口** |
+> | `solve_sqd_best` | active + PT2 + **evpt2 多 shots 外推** | **当前最优**（近收敛精修，N₂/cc-pVDZ 10o 实测 30×）|
+> | `solve_sqd_auto` | 一键流水线（推荐+采样+收敛+`correction`=pt2/evpt2/none） | 工程自动化 |
+> | `solve_sqd_ev` | active + `correction`(pt2/evpt2/ev) | improved/best 的底层 |
+> | `distill` / `adaptive` / `natural_orbitals` / `robust` | 专题改进 | L1/L2 实测有适用边界，见 REVIEW |
+>
+> **能量修正层级**：变分（`active`）→ +PT2（`improved`，普适行为良好）→ +evpt2 外推
+> （`best`，近收敛精修）。`correction` 选项：`pt2`=E+E_PT2（推荐默认）、`evpt2`=E_V vs E_PT2
+> 多点外推（互异点<2 退化 pt2，永不劣于 pt2）、`none`=变分直接。**L1/L2 实测**：evpt2 近收敛
+> 体系改进 30×；distill/adaptive/UCJ 在所测体系无增益或有害（详见 REVIEW「L1/L2 改进实验」）。
 
 ---
 

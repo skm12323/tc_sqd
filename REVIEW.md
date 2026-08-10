@@ -962,10 +962,87 @@ single 卡在 +4.5e-8) 经蒸馏**恢复到 FCI**。这正是 C₂ 式"3/8 覆�
 从解态重导采样分布, 把单次 active 错过的高权重 det 找回来。distill **不劣于** single
 (round 0 即单次, best_E 取 min), 且在覆盖失败时**显著修复**。
 
-**边界**: LiH 太小多数情况已 FCI; distill 的显著收益在**更大/强相关体系** (N₂/C₂ 拉伸)
-的低采样覆盖失败场景, 那里 single active 偶发卡住 (REVIEW 方向② C₂ 3/8)。完整收益验证
-需 N₂ 拉伸慢测试。NQS 衔接 (Part 2 B1): 把"按 |c|² 采"升级为神经网络 ``p_θ(det)`` 泛化
-到未采 det, 是本闭环的深度学习版。
+**边界 (2026-08-10 N₂(12,12) 实测修正 — 推翻原预期)**: 原“收益在更大/强相关体系覆盖失败”
+的预期**被证伪**。N₂/cc-pVDZ(12o) R=3.0 (远未收敛, baseline err 2.28e-4, 落后 SHCI ~20×)
+上 distill 4 轮**有害**: best=baseline(round 0), r2-4 单调恶化 (2.79e-4→3.01e-4→3.10e-4),
+pool 翻倍 (80→160) 后 dim 反缩 (112896→75076)。根因: 重采按 ``|c|^(2/T)`` **聚焦主导 det**,
+但 12,12 baseline ``|Ψ⟩`` 本身差 (远未收敛) → 从差 ``|Ψ⟩`` 学错误分布 → 丢覆盖广度。
+**修正适用条件: distill 需首轮 ``|Ψ⟩`` 足够可靠** (近收敛; LiH seed=2 卡 4.5e-8 是 ``|Ψ⟩``
+近对但漏采的甜点); **远未收敛 (``|Ψ⟩`` 差) 时 distill 学错、有害**。N₂/cc-pVDZ(10o) 近收敛
+(baseline 9.76e-7) distill 仅边际 18% 且不稳定 (r2 变差), 印证“近收敛覆盖已足、边际小”。
+即 distill 是“可靠 ``|Ψ⟩`` + 覆盖缺口”的精修, **非**“覆盖失败解药”。NQS 衔接 (Part 2 B1)
+同理依赖好 ``|Ψ⟩`` 先验。
+
+## L1 改进方法跨体系适应度（2026-08-10 实测）
+
+L1 阶段在两个 benchmark 体系实测 distill / evpt2 改进 (单次 active+PT2 为 baseline):
+
+| 体系 | 全空间 | baseline errPT2 | distill | evpt2 | 收敛状态 |
+|---|---|---|---|---|---|
+| N₂/cc-pVDZ(10o) R=3.0 | 63504 | 9.76e-7 (dim~47k) | 8.00e-7 (18%, 不稳) | **3.18e-8 (30×)** | 近收敛 |
+| N₂/cc-pVDZ(12o) R=3.0 | 853776 | 2.28e-4 (dim~1e5) | **2.28e-4 (有害)** | 1.36e-4 (1.7×, 3 点) | 远未收敛 |
+
+(STO-3G 体系 plot 历史: N₂ 拉伸 / C₂ 在 dim≥6k / 30k 已 ~5-9e-9 / 1.9e-9 近 FCI, evpt2 /
+distill 边际; 未单独跑 L1。)
+
+**三条结论**:
+
+1. **evpt2 = 近收敛精修**: baseline 越近收敛 (PT2→0) 外推越准 — 10o 近收敛 30×, 12o 远
+   未收敛仅 1.7× (3 点 r²=0.9995; 2 点 2.2× 过乐观)。适用近收敛体系, 远未收敛边际。
+2. **distill = 依赖 ``|Ψ⟩`` 质量** (见上修正): 近收敛边际+不稳, 远未收敛有害。
+3. **PT2 修正 = 普适基线** (所有体系行为良好), improved SQD 标配层。
+
+**12,12 根本问题是采样覆盖** (baseline 2.28e-4 远未收敛, 落后 SHCI 20×), evpt2 / distill
+精修无法弥补 (最好 1.36e-4 仍落后 SHCI 12×) → 需 L2 从**采样端** (UCJ/Krylov 电路采样
+覆盖离域波函数) 和**基端** (NO 自洽换基让波函数紧凑) 解决。
+
+## L2 改进实验（2026-08-10）：adaptive 换基 + UCJ 采样（两部分均失败）
+
+针对 12,12 (远未收敛, 覆盖根因) 尝试基端 (adaptive NO 换基) 与采样端 (UCJ/Krylov) 改进,
+**两部分都在 n2_ccpvdz + 12,12 失败**:
+
+**L2-a `solve_sqd_adaptive` (NO 自洽换基 + active, max_rounds=4)**:
+| 体系 | baseline errDirect | adaptive errVar | 差距 |
+|---|---|---|---|
+| n2_ccpvdz | 2.76e-5 (dim 47961) | 1.26e-3 (dim 13–15k) | 差 45× |
+| 12,12 | 7.31e-4 (dim 112896) | 4.97e-3 (dim 25–31k) | 差 7× |
+根因: adaptive 换基+选态 (dom_thresh/pt2_floor) 在 max_rounds=4 产生**远小于 active 的子空间**
+(13k/27k vs 43k/113k) → 变分能量高。**修正 memory ④ / REVIEW 方向④**: adaptive "修复后相当或更优"
+仅 LiH 小体系; 大体系默认参数下显著差于 active (需调 dom_thresh/pt2_floor 或大增 max_rounds, 未做)。
+
+**L2-b UCJ/Krylov 采样 (冻核+冻虚外活性 CCSD t2 → ucj_decomposition → 多 scale (3,5,10,20)
++ 随机旋转电路采样 → active+PT2)**:
+| 体系 | baseline random errPT2 | UCJ errPT2 | CCSD |
+|---|---|---|---|
+| n2_ccpvdz | 8.58e-7 (dim 47961) | 1.61e-5 (dim 33489, n_ucj=240) 差 19× | 不收敛 |
+| 12,12 | 2.28e-4 (dim 112896) | 2.40e-4 (dim 34225, n_ucj=315) 略差 | 不收敛 |
+t2 形状 `(5,5,5,5)`/`(6,6,6,6)` 正确 (frozen=核+虚外活性), 但根因: ① **R=3.0 强关联 RHF-CCSD
+不收敛 (converged=False) → t2 不可靠 → UCJ 电路方向错**; ② n_samples=500 偏少 (recover 后仅
+240/315 det); ③ UCJ→active 子空间小。**修正 memory 方向 A**: UCJ 在 N₂/STO-3G 拉伸跑通是因
+CCSD 收敛 + n_samples=2000 + UCJ **+include(S+D)** 模式; **cc-pVDZ R=3.0 CCSD 不收敛 → UCJ 失效**。
+即 UCJ 适用条件含 "CCSD 收敛"。
+
+**L2 结论**: 12,12 的基端 (NO 换基) 与采样端 (UCJ CCSD) 改进都失败。**evpt2 (L1) 是唯一在 12,12
+有正收益的方法 (1.7×), 但仍远落后 SHCI**。12,12 强关联大空间的覆盖问题对当前改进方法 (distill/
+adaptive/UCJ) 顽固 — 暗示需更大采样量、不同 Ansatz、或承认 SQD 在该 regime 不如 SHCI 的确定性选态。
+
+## solve_sqd_best / solve_sqd_improved 整合（2026-08-10）
+
+L1/L2 实测后把最优配置固化成库入口 (`integrated.py`):
+
+- **`solve_sqd_improved(h1e,eri,norb,nelec,...)`**: improved SQD 显式入口 = active + PT2
+  (`solve_sqd_ev correction="pt2"` 薄封装, 强制 PT2)。原 improved SQD 散在 correction 选项、
+  无独立函数 → 本函数整合 (用户观察「improved SQD 没整合好」的修复)。
+- **`solve_sqd_best(...)`**: 当前最优 = active + PT2 + **evpt2 多 shots 外推** (`evpt2_scales`
+  个不同 shots 各跑 active, `extrapolate_ev_pt2` 外推 E_PT2→0; 互异点<2 退化 = PT2, 永不劣于 PT2)。
+  N₂/cc-pVDZ 10o 实测改进 30×。不用 distill/adaptive/UCJ (L1/L2 实测无增益/有害)。
+- **`solve_sqd_auto`** 加 `correction` 选项 (`pt2`/`evpt2`/`none` + `correction_used` 字段),
+  替代旧 `extrapolate_ev` 布尔 (向后兼容映射)。
+
+**修正层级**: 变分 (active) → +PT2 (improved, 普适) → +evpt2 外推 (best, 近收敛精修)。
+**测试**: `tests/test_sqd_active.py` 加 `test_solve_sqd_best_runs` + `test_solve_sqd_auto_correction_option`
+(13 passed); `test_sqd_active_trajectory_monotone` 容差 1e-12→1e-11 (davidson 末轮 ~1e-13 数值噪声)。
+入口总览见 `docs/solve_sqd_api.md` (补全 10 个 solve_sqd_* 层级表)。
 
 ## 方向④：solve_sqd_adaptive 末轮混合基对角化 bug 修复（2026-08-08）
 

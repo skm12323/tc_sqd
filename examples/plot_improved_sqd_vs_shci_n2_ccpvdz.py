@@ -62,7 +62,7 @@ def _collect():
             P["hci_ev"].append((dim, abs((e_t - e_pt2) - e_fci)))
             print(f"SHCI eps={eps:.3e}: dim={dim} "
                   f"errSHCI={P['shci'][-1][1]:.2e}", flush=True)
-        np.save(NPY, P, allow_pickle=True)
+        np.save(NPY, P, allow_pickle=True) 
 
     if not P["active_pt2"]:
         # SQD: shots x max_strings 加密 (维度 ~2500 -> 63000)

@@ -415,6 +415,47 @@ H 二体部分，硬件可编译的"近似 H 演化"）。收敛论证：E_V 误
 - 另一 agent 落地：`solve_sci_csf`（S² 投影）、`solve_sqd_distill`（自蒸馏）、
   `extrapolate_ev_pt2`、`solve_sqd_adaptive` 修复。详见 REVIEW 方向①-A/②/③-A/④。
 
+### 8.6 L1 改进方法跨体系适应度（2026-08-10 实测）
+
+两个 benchmark 体系（N₂/cc-pVDZ 10o/12o, R=3.0）实测 distill / evpt2 改进：
+
+| 改进 | 近收敛（10o, baseline 9.76e-7） | 远未收敛（12o, baseline 2.28e-4） |
+|---|---|---|
+| **evpt2** | 3.18e-8（**30×**） | 1.36e-4（1.7×, 3 点） |
+| **distill** | 8.00e-7（18%, 不稳） | **有害**（best=baseline, r2-4 恶化） |
+
+- **evpt2 = 近收敛精修**（baseline 近收敛 → PT2→0 外推准）；远未收敛边际。
+- **distill 认知修正**：distill **非**“覆盖失败解药”，而**依赖首轮 `|Ψ⟩` 质量** — 12o
+  baseline 远未收敛、`|Ψ⟩` 差 → 按 `|c|²` 重采学错分布 → 覆盖恶化。适用条件是“可靠 `|Ψ⟩`
+  + 覆盖缺口”。
+- **12,12 根本 = 采样覆盖**（精修无法弥补，仍落后 SHCI 12×）→ L2 UCJ/Krylov 采样 + NO 换基。
+- 详见 REVIEW “L1 改进方法跨体系适应度”。
+
+### 8.7 L2 改进实验：adaptive 换基 + UCJ 采样（均失败，2026-08-10）
+
+针对 12,12 覆盖根因尝试**基端**（adaptive NO 换基）与**采样端**（UCJ CCSD t2），两部分都在
+n2_ccpvdz + 12,12 失败：
+- **adaptive**（`solve_sqd_adaptive`）：换基+选态产生**远小于 active 的子空间**（n2_ccpvdz
+  13k vs active 43k、12,12 27k vs 113k）→ 变分能量差 45× / 7×。**修正 memory ④**：adaptive
+  “修复后相当或更优” 仅 LiH 小体系；大体系默认参数下显著差于 active。
+- **UCJ 采样**（冻核+冻虚 CCSD t2 → 多 scale 电路）：R=3.0 强关联 RHF-CCSD **不收敛** → t2 不可靠
+  → UCJ 电路方向错；n_samples=500 偏少。**修正 memory 方向 A**：UCJ 需 CCSD 收敛（N₂/STO-3G 跑通
+  是因 CCSD 收敛 + n_samples=2000 + UCJ+include；cc-pVDZ R=3.0 不收敛 → UCJ 失效）。
+
+**L2 结论**：12,12 覆盖问题对 distill / adaptive / UCJ 都顽固。**evpt2（L1）是唯一正收益**（近收敛
+n2_ccpvdz 30×；12,12 仅 1.7×）。L3 全链基于失败组件无增量，跳过。暗示需更大采样量、不同 Ansatz、
+或承认 SQD 在该 regime 不如 SHCI。详见 REVIEW「L2 改进实验」。
+
+### 8.8 SQD 入口整合（2026-08-10）
+
+L1/L2 实测后把最优配置固化成库入口（`integrated.py`）：
+- `solve_sqd_improved` = active + PT2（**improved SQD 显式入口**，原散在 `solve_sqd_ev correction="pt2"`）；
+- `solve_sqd_best` = active + PT2 + **evpt2 多 shots 外推**（当前最优；近收敛体系实测改进 30×；互异点<2 退化 = PT2，永不劣于 PT2）；
+- `solve_sqd_auto` 加 `correction` 选项（`pt2`/`evpt2`/`none`，含 `correction_used` 字段）。
+
+**修正层级**：变分（active）→ +PT2（improved，普适行为良好）→ +evpt2 外推（best，近收敛精修）。
+入口总览见 `docs/solve_sqd_api.md`（已补全 10 个 solve_sqd_* 入口层级表）。
+
 ---
 
 *本文随仓库演进更新。数值见 `REVIEW.md`，使用见 `README.md`。*

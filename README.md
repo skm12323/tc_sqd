@@ -41,6 +41,18 @@ numpy≥2 / jax 的硬性要求**。
   诚实标注非 ffsim 精确）+ `build_ucj_circuit` Û Givens 电路 + `ucj_subspace_energy`
   确定性 SQD 验证——LiH 误差 简化 LUCJ 7.5e-4 → **~2e-4**
 - **采样诊断**（`diagnostics`）：采样熵 / 子空间维度 / 配置分布 / 能量随 shots 收敛曲线
+- **改进 SQD 工具链**（`cipsi`/`diagnostics`）：`solve_sqd_active`（采样↔PT2 选态双闭环，
+  AS-SQD 思想）、`solve_hci`（库内 SHCI = heat-bath 选态 + PT2）、`solve_sqd_ev`
+  （active + PT2 / evpt2 能量修正）、`solve_sqd_distill`（自蒸馏重采样）、
+  `solve_sqd_adaptive`（自洽 NO 换基 + active）、`extrapolate_ev_pt2`（E_V vs E_PT2 外推）。
+- **整合 SQD 入口**（`integrated`）：`solve_sqd_improved`（= active+PT2 显式入口，improved SQD）、
+  `solve_sqd_best`（+ evpt2 多 shots 外推，**当前最优**，近收敛体系实测改进 30×）、`solve_sqd_auto`
+  （一键流水线，`correction`=pt2/evpt2/none）。**修正层级**：变分（active）→ +PT2（improved，
+  普适）→ +evpt2 外推（best，近收敛精修）。
+  **适应边界（2026-08-10 实测）**：evpt2 = 近收敛精修（N₂/cc-pVDZ 10o 改进 30×、12o 远未
+  收敛仅 1.7×）；distill 依赖首轮 |Ψ⟩ 质量（近收敛边际、远未收敛有害）；PT2 修正普适。
+  adaptive NO 换基在大体系默认参数下差于 active（子空间缩）；UCJ 采样需 CCSD 收敛
+  （强关联 R=3.0 不收敛则失效）。详见 REVIEW「L1/L2 改进实验」
 - **真机一站式**（`hardware`）：腾讯 qcloud 校准加载 / 选最优 qubit 子图 / 真机采样 / SQD 后处理
 - **统一采样后端**（`sampler`）：`sample(circuit, n_samples, backend="tc"/"qcloud")` 一行切换
   模拟器 / 真机，下游 SQD 流水线不变（开发用 tc，交付用真机）
