@@ -534,10 +534,11 @@ L1/L2 实测后把最优配置固化成库入口（`integrated.py`）：
   `eigsh_gpu`（cupyx LinearOperator + eigsh）；`solve_sci(backend="gpu")` 集成。
 - **实测**：σ-vector == 稠密 `build_ci_matrix`（H₂/LiH/N₂ ≤1e-8）；cupy matvec
   比 numpy 快 8×（25ms vs 205ms，dim=14400）；GPU 求解与 CPU/dense 一致（≤1e-13）。
-  ⚠ dim=14400 下 GPU 未超越 pyscf C 核（3ms，启动开销主导）——大维度（10⁵-10⁶）
-  才显 GPU 优势；T 表内存（O(M·na²)）是扩展瓶颈。**架构方向正确**（matrix-free），
-  但"半 GPU"的 numpy/cupy 简单向量化未达 RIKEN 级 Thrust 核性能（~300-500 行
-  RawKernel 是进一步优化点）。
+  ⚠ **大维度标度差于 pyscf C 核**（2026-08-10 实测）：einsum 版是 O(M·na²·nb)
+  立方标度，pyscf C 核 O(nnz) 近线性——dim 10⁴ cupy 小胜（0.72×）、4×10⁴ 落后
+  6.9×、1.6×10⁵ 落后 **50.7×**。"半 GPU"向量化**非 RIKEN 式 matrix-free 的替代**
+  （后者 Thrust 自定义核 O(nnz)，~300-500 行 RawKernel 才是真加速路径）。架构方向
+  正确（matrix-free 绕开逐列构建），当前实现是正确性验证与后续升级的基础。
 
 **剩余可选方向（按性价比排序，未做）**：
 

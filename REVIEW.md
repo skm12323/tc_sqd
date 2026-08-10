@@ -1266,10 +1266,23 @@ contract_2e），后端无关（numpy/cupy）。
 - cupy matvec 正确（diff 5.7e-14），比 numpy 快 **8×**（25ms vs 205ms，dim=14400）。
 - `solve_sci(backend="gpu")` 与 CPU/dense 一致（E diff ≤ 1e-13，S²/RDM 一致）。
 
-**性能评估**：dim=14400 下 GPU（25ms/matvec）**未超越 pyscf C 核 contract_2e**
-（3ms，启动开销主导）——大维度（10⁵-10⁶）才显 GPU 优势。**架构方向正确**
-（matrix-free），但"半 GPU"简单向量化未达 RIKEN 级 Thrust 核性能；T 表内存
-（O(M·na²)）是扩展瓶颈。`build_sparse_hamiltonian` 保留为独立 API。
+**性能评估（大维度实测，2026-08-10）**：einsum 版 cupy matvec **标度差于 pyscf C 核**
+——C 核是 O(nnz) 近线性，我的 T 表 einsum 是 O(M·na²·nb) 立方标度。N₂/cc-pVDZ
+12o 选定子空间实测（pyscf contract_2e 近恒定 ~18-26ms）：
+
+| dim | cupy | pyscf | cupy/pyscf |
+|---|---|---|---|
+| 10⁴ | 18.7ms | 25.8ms | **0.72×（cupy 胜）** |
+| 4×10⁴ | 125ms | 18.2ms | 6.9× |
+| 1.6×10⁵ | 1095ms | 21.6ms | **50.7×** |
+
+**结论**：einsum 批量 matmul 版只在极小维度（~10⁴）靠 GPU 启动/并行小胜，大维度
+因 O(M·na²·nb) 标度**远落后于 pyscf C 核**。"半 GPU"向量化（numpy/cupy einsum）
+**不是 RIKEN 式 matrix-free 的替代**——后者用 Thrust 自定义核做到 O(nnz) GPU
+matvec（~300-500 行 RawKernel，是真正的加速路径）。T 表内存（O(M·na²)）亦限制
+扩展到 na≳700。**架构方向正确（matrix-free 绕开逐列构建）**，但当前实现未达
+C 核性能；`solve_sci(backend="gpu")` 的价值在**正确性验证与后续 RawKernel 升级
+的基础**，非当前性能。`build_sparse_hamiltonian` 保留为独立 API。
 
 **测试**：`tests/test_matrixfree.py` 3 项（σ==稠密 / ops==直接 / GPU==CPU，GPU skip 分支）。
 
