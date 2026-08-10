@@ -1095,18 +1095,120 @@ S²≈`spin_sq` 的本征空间 P, 把 H 投影到该自旋空间再对角化。
 准简并根治更彻底; 与 `solve_sqd_active` 的 spin-targeted 采样闭环结合。路线 A 已覆盖
 "自旋纯"核心收益, 路线 B 是效率/彻底性增强。
 
+## 方向①：CSQD 聚类恢复落地（2026-08-10，commit f75d817）
+
+对 2025-2026 SQD 文献调研后，把 Cluster-Adaptive SQD（arXiv:2603.09346）实现进库。
+
+**实现**（`configuration_recovery.py`）：
+- `_weighted_kmodes`：手写 weighted k-modes（无 sklearn 依赖，纯 numpy；
+  按权重随机初始化 → 汉明距离分配 → 加权众数更新 → 空簇重播种）
+- `_cluster_reference_occupancies`：每簇加权平均占据，按粒子数归一
+- `recover_configurations_clustered(bsm, probs, na, nb, n_clusters=4)`：
+  α/β 半串池各分 K 簇，每样本按其所属簇参考做 `_recover_single`（复用），
+  合并去重与 `recover_configurations` 完全一致
+
+**集成**（`fermion.py` / `integrated.py`）：
+- `diagonalize_fermionic_hamiltonian` / `solve_sqd` 加 `recovery="global"|"clustered"`
+  + `n_clusters` 参数（single + iterative 双分支）
+- `solve_sqd` 迭代循环 occupancy 更新加 NaN/越界防护（退化子空间偶发）
+
+**实测（N₂/cc-pVDZ (10e,10o) @ R=3.0，强关联基准）**：
+
+| 模式 | 测试点 | 结论 |
+|---|---|---|
+| single + 聚类 | 12/12 点 | 误差降 **1.3-2.8×**；0% 噪声时全局恢复坍缩到单行列式而聚类不坍缩（dim 46-144 vs 1）|
+| iterative + 聚类 | 多点半数以上 | **不占优**（occupancy refinement 单模式收敛抵消聚类多模式保留）|
+
+**架构性结论**：CSQD 的价值在"保留多占据模式"，与迭代 SQD 的"occ 单模式精化"
+存在语义张力。**推荐 clustered 配合 `mode="single"`**（已写入两处 docstring）。
+这是"恢复侧"的精度改进；后续可探索"聚类参考 + carryover 迭代"的组合（未做）。
+
+## 方向①-A 强化：自旋 λ 惩罚法（2026-08-10，commit 542ed52）
+
+`solve_sci_csf` 加 `method="penalty"`：H_pen = H + λ(S²-spin_sq)²，直接对角化
+整个 H_pen（不投影、不 raise），把解连续压向目标自旋。动机：投影法对自旋混合
+子空间（无目标自旋本征空间）会 raise，惩罚法提供更稳健的替代（CSQD 论文用法）。
+
+**实测（CH/STO-3G M_S=1/2 sector，混 doublet S²=0.75 / quartet S²=3.75）**：
+
+| λ | S² | E |
+|---|---|---|
+| 0.00 | 3.750（quartet 基态）| -40.9775 |
+| 0.10 | 3.600 | -40.9638 |
+| 1.00 | **0.753**（≈doublet 目标）| -40.9573 |
+
+λ 增大连续把解从 quartet 压向 doublet，不 raise。全空间 H₂ 上惩罚法与投影法
+一致（=FCI，S²=0）。4 个新测试 + 回归全过。
+
+## OBDF one-body downfolding：实现验证后搁置（2026-08-10）
+
+调研 arXiv:2605.08675（OBDF-SQD）后实现：`_obmp2_correction`（t2 收缩广义
+Fock，v_oo = Σ_ikab t_ik^ab ⟨jk‖ab⟩，v_vv = -½ Σ_ijc t_ij^ac ⟨ij‖bc⟩）+
+`from_pyscf(downfolding="obmp2")`（仅改 h1e，eri/ecore 不变）+ 4 个测试。
+
+**验证结论**：
+- ✅ 符号正确（+v 使能量降低，-v 升高）、仅改 h1e、v 对称、量级合理（0.1）
+- ❌ **STO-3G 小基组过校正**：MP2 在 10 轨道空间"吃光"相关能还过头（MP2 total
+  -107.649 < FCI -107.582），OBDF 把 FCI 推到 -108.14（低 0.56 Ha，非物理）
+- ❌ **`from_pyscf` 冻结逻辑限制**：只能冻结"前 n_core 个占据轨道"，无法折叠
+  **虚轨道**（OBDF 的 v_vv 块正是虚-虚修正）；大基组（N₂/cc-pVDZ 28 轨道）
+  上 `n_active=10` 需冻结 18 轨道 > 7 对电子 → 直接报错
+
+**待办**（其他内容接近完成后再续）：重构 `from_pyscf` 支持活性轨道区间
+（如 `(n_core, n_virtual)` 参数），在大基组 + 小活性空间上验证 OBDF 收益；
+完整 OBMP2（BCH 展开、外部振幅筛选、自洽轨道优化）是论文核心贡献，简化版
+收益未证明。
+
+## GPU 后端：实现验证后搁置（2026-08-10）
+
+调研 arXiv:2601.16637（GPU 全驻留 matrix-free 选态对角化，35-39×）后实现：
+- 环境：cupy-cuda12x 14.1.1 + RTX 5080（WSL CUDA 13.1 驱动）就绪
+- `build_sparse_hamiltonian`（**保留，独立 API**）：稀疏 H 构建（COO→CSR，
+  含 ecore），内存友好
+- `solve_sci(backend="gpu")`：稀疏 H → cupyx csr → cupyx eigsh（已撤销）
+
+**实测（N₂/cc-pVDZ 10o，dim=10⁴）时间分解**：
+
+| 环节 | 耗时 | 占比 |
+|---|---|---|
+| 稀疏 H 构建（CPU，O(dim) 次 contract_2e）| 29.4s | 95% |
+| GPU 传输 | 0.93s | 3% |
+| GPU eigsh（cuSPARSE）| 0.56s | 2% |
+| CPU eigsh（隐式 LinearOperator matvec）| **0.42s** | — |
+
+**架构性结论**：GPU eigsh 本身极快且精确（diff ≤ 1e-13），但"显式构建稀疏 H"
+（O(dim) 次 Python 层调用）占 95%，CPU 隐式 matvec 路径（仅 ~30 次迭代）快
+70×。论文的 40× 来自 **matrix-free**（Slater-Condon matvec 直接 GPU 算，
+Thrust 核）；"CPU 构建 + GPU 对角化"的简单方案构建成本主导、无收益。
+
+**待办**（如续）：matrix-free 重写（~300-500 行 cupy 核：单/双激发索引 +
+矩阵元查表 + SpMV），绕开 PySCF contract_2e；或集成 RIKEN `sbd` eigensolver。
+
 ## 后续可选改进（非阻塞）
 
-- 自旋分辨哈密顿量（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
-- UCJ 精确对标 ffsim（完整 J + 多参数 orbital rotation，非简化 SVD）
+按 2026-08-10 调研（SURVEY §8.9）更新，剩余可选方向按性价比排序：
+
+- **自旋分辨哈密顿量**（`h_alpha ≠ h_beta`，UHF 式）——需 spin-orbital SQD 后端
+- **UCJ 精确对标 ffsim**（完整 J + 多参数 orbital rotation，非简化 SVD）
+- **自洽 NO 迭代扩展**（风险 4/5）——`solve_sqd_natural_orbitals` 已是迭代式，
+  剩余仅开壳层支持（spin-resolved 1-RDM）。b62d636 否决的是 adaptive 换基
+  （状态选择收缩），NO 自洽不做收缩，与失败路径不同
+- **ARNN 采样器（AB-SND 路线，arXiv:2508.12724）**（风险 4/5）——Transformer
+  ARNN 生成位串替代量子电路采样。论文只测自旋模型未测分子化学；引入 PyTorch
+  重依赖。观察归档，除非有量子硬件需求
+- **Krylov 广义本征工具**（难度 5/5）——`solve_krylov`（重叠矩阵 S 广义本征 +
+  小本征值正则化）。SKQD 作者自评化学近期不可用；greenfield
+- **OBDF 下折叠续**（搁置中）——需先重构 `from_pyscf` 支持活性轨道区间
+  `(n_core, n_virtual)`，再在大基组 + 小活性空间验证（见上"OBDF 搁置"）
+- **GPU matrix-free 重写**（搁置中）——真加速需 Slater-Condon matvec 直接
+  GPU 化（cupy 核或 RIKEN `sbd`），"CPU 构建 + GPU 对角化"实测无收益
+- **qDRIFT 随机化**——降 Krylov/演化电路深度（中低优先）
+- **>53 轨道支持**——核对 `bitstring_matrix_to_ci_strs` 64-bit 上限
 - 配置恢复 tie-breaking 随机性的统计性测试
 - 多版本 numpy（1.x / 2.x）CI 矩阵，固化兼容性
-- UCJ 精确化（t2→SVD→Û/J，对标 ffsim）；GPU CI 对角化（大体系路线）
-- **方向 D 强化**：把本征矢重要性采样做成 `solve_sqd_distill` 蒸馏闭环
-  （采样→对角化→重要性重采样→再对角化），或与 NQS 结合做泛化先验
-- **方向 D 拓展**：PT2 修正与 `solve_hci`/`solve_cipsi` 统一（active 变分空间 +
-  PT2 修正已与 SHCI 同构；semistochastic PT2 抽样可进一步降 E_PT2 估计误差）；
-  注意 **σ² 线性外推实测过冲（N₂/C₂ 均落 FCI 之下），不作默认**——如需方差
-  标度诊断须先实证其可靠性
+- **方向 D 强化**：本征矢重要性采样与 NQS 结合做泛化先验（已落地 distill 闭环，
+  见 §"solve_sqd_distill"）
+- **方向 D 拓展**：semistochastic PT2 抽样降 E_PT2 估计误差；注意 **σ² 线性
+  外推实测过冲（N₂/C₂ 均落 FCI 之下），不作默认**
 - **方向 E 强化**：`recommend_sqd_params` 接入真实校准（`calibrate` 拟合的
   KS/KT1 回填）；`noise_impact` 支持 T2/读出噪声类型与多参数安全区扫描

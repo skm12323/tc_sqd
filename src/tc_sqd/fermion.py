@@ -30,6 +30,7 @@ __all__ = [
     "bitstring_matrix_to_ci_strs",
     "enlarge_batch_from_transitions",
     "build_ci_matrix",
+    "build_sparse_hamiltonian",
     "solve_sci",
     "solve_sci_batch",
     "solve_sci_csf",
@@ -568,6 +569,86 @@ def build_ci_matrix(
         H[:, i] = np.asarray(hvec).ravel()
 
     H += ecore * np.eye(dim)
+    return H
+
+
+def build_sparse_hamiltonian(
+    ci_strs_a: np.ndarray,
+    ci_strs_b: np.ndarray,
+    h1e: np.ndarray,
+    eri: np.ndarray,
+    norb: int,
+    nelec: Tuple[int, int],
+    ecore: float = 0.0,
+) -> "scipy.sparse.csr_matrix":
+    """Build the subspace Hamiltonian as a sparse matrix (CSR).
+
+    Same Slater-Condon / contract_2e machinery as :func:`build_ci_matrix`, but
+    collects only the non-zero matrix elements (per-column hop of basis
+    vectors), returning a CSR matrix instead of the dense matrix.  This is the
+    storage format the GPU backend consumes, and it also uses far less memory
+    for large subspaces (typical nnz ~ O(dim) for CI).
+
+    Parameters
+    ----------
+    ci_strs_a, ci_strs_b : ndarray
+        CI string arrays (alpha / beta determinants).
+    h1e : ndarray, shape (norb, norb) or (2, norb, norb)
+        One-body integrals (spin-resolved accepted only if alpha==beta).
+    eri : ndarray, shape (norb, norb, norb, norb)
+        Two-body integrals (chemist's notation, spatial).
+    norb : int
+    nelec : tuple(int, int)
+    ecore : float
+        Constant energy offset added to the diagonal.
+
+    Returns
+    -------
+    scipy.sparse.csr_matrix, shape (dim, dim)
+    """
+    from scipy.sparse import coo_matrix
+    from pyscf.fci import direct_spin1
+    from pyscf import ao2mo as _ao2mo
+
+    if h1e.ndim == 3:
+        if not np.allclose(h1e[0], h1e[1]):
+            raise ValueError(
+                "Spin-resolved one-body integrals are not supported; "
+                "pass a single (norb, norb) closed-shell h1e."
+            )
+        h1e_single = np.asarray(h1e[0], dtype=np.float64)
+    else:
+        h1e_single = np.asarray(h1e, dtype=np.float64)
+    eri = np.asarray(eri, dtype=np.float64)
+
+    ci_a = np.asarray(ci_strs_a)
+    ci_b = np.asarray(ci_strs_b)
+    na_len, nb_len = len(ci_a), len(ci_b)
+    dim = na_len * nb_len
+
+    h2e_abs = direct_spin1.absorb_h1e(h1e_single, eri, norb, nelec, 0.5)
+    h2e_abs = _ao2mo.restore(1, h2e_abs, norb)
+    link_index = selected_ci._all_linkstr_index((ci_a, ci_b), norb, nelec)
+    myci = selected_ci.SCI()
+
+    rows, cols, vals = [], [], []
+    for col in range(dim):
+        e_col = np.zeros(dim)
+        e_col[col] = 1.0
+        scivec = selected_ci._as_SCIvector(e_col, (ci_a, ci_b))
+        hcol = np.asarray(
+            myci.contract_2e(h2e_abs, scivec, norb, nelec, link_index)
+        ).ravel()
+        nz = np.nonzero(hcol)[0]
+        rows.extend(nz)
+        cols.extend([col] * len(nz))
+        vals.extend(hcol[nz])
+
+    H = coo_matrix((vals, (rows, cols)), shape=(dim, dim)).tocsr()
+    if ecore != 0.0:
+        H = H + ecore * __import__(
+            "scipy.sparse", fromlist=["identity"]
+        ).identity(dim, format="csr")
     return H
 
 

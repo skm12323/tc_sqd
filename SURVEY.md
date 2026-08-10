@@ -456,6 +456,76 @@ L1/L2 实测后把最优配置固化成库入口（`integrated.py`）：
 **修正层级**：变分（active）→ +PT2（improved，普适行为良好）→ +evpt2 外推（best，近收敛精修）。
 入口总览见 `docs/solve_sqd_api.md`（已补全 10 个 solve_sqd_* 入口层级表）。
 
+### 8.9 前沿调研与改进方向评估（2026-08-10）
+
+对 SQD 2025-2026 文献（arXiv/SciPost/qiskit 生态）做了系统性调研，结合本库实测，
+形成改进方向的评估与取舍记录。**核心调研发现**：
+
+| 方向 | 来源 | 数值收益 | tc_sqd 现状 |
+|---|---|---|---|
+| **CSQD 聚类恢复** | arXiv:2603.09346 | N₂ 拉伸 -16 mHa；[2Fe-2S] -58 mHa | **已落地**（`recover_configurations_clustered`）|
+| **自旋 λ 惩罚法** | 同上（附带）| 混合自旋子空间连续选态 | **已落地**（`solve_sci_csf method="penalty"`）|
+| AS-SQD 主动选态 | arXiv:2603.13536 | 16-qubit 噪声实测显著优于 SQD | 已有（`solve_sqd_active`，EN 选态等价）|
+| OBDF 下折叠 | arXiv:2605.08675 | H₆/cc-pVDZ 小活性空间优于 CAS-SQD | **搁置**（见下）|
+| AB-SND 神经网络采样 | arXiv:2508.12724 | 2D-EAM 自旋玻璃系统性改善 | 未做（风险高）|
+| SKQD Krylov | arXiv:2501.09702 | SIAM 85 qubit 相对 DMRG ~10⁻⁵ | 未做（化学近期不可用）|
+| GPU 全驻留对角化 | arXiv:2601.16637 | 35-39× 单节点（Thrust matrix-free）| **搁置**（见下）|
+| qDRIFT 随机化 | ACS 2025 | 降 Krylov 电路深度 | 未做（中低优先）|
+
+**已落地方向（2026-08-10，实测验证）**：
+
+- **CSQD 聚类恢复**（commit f75d817）：α/β 半串池 weighted k-modes 聚类，每簇
+  独立参考占据做恢复。N₂/cc-pVDZ (10e,10o) 强关联基准 **12/12 测试点占优**，
+  误差降 1.3-2.8×，子空间维度提升 5-10×。**关键实测结论**：`mode="single"`
+  下聚类全面胜出（无噪声时全局恢复坍缩到单行列式，聚类不坍缩）；但
+  `mode="iterative"` 下 occupancy refinement（单模式收敛）与聚类多模式保留
+  存在**语义张力**，iterative 下聚类不占优——已写入 docstring，推荐
+  clustered 配合 single 使用。
+- **自旋 λ 惩罚法**（commit 542ed52）：`solve_sci_csf` 加 `method="penalty"`，
+  H + λ(S²-spin_sq)² 连续压向目标自旋，**不 raise**（投影法对自旋混合子空间
+  会 raise）。CH/STO-3G M_S=1/2 sector（混 doublet/quartet）实测 λ 从 0→1
+  把 S² 从 3.75 连续压到 0.75。
+
+**搁置方向（2026-08-10，实测结论记录）**：
+
+- **OBDF one-body downfolding**（arXiv:2605.08675）：实现 `_obmp2_correction`
+  （t2 收缩广义 Fock，v_oo/v_vv 两块）+ `from_pyscf(downfolding="obmp2")`，
+  验证：+v 符号正确、仅改 h1e（eri/ecore 不变）、矩阵对称。**但**：
+  ① STO-3G 小基组 MP2 过校正（能量落 FCI 之下 0.5 Ha——基组无足够外部相关
+  空间）；② `from_pyscf` 的"冻结前 n_core 个占据轨道"逻辑**无法折叠虚轨道**
+  （OBDF 需要活性空间 = 部分占据 + 部分虚轨道，v_vv 块即虚-虚修正），大基组
+  上 `n_active` 受限。完整 OBMP2（BCH 展开、外部振幅筛选、自洽轨道优化）是
+  论文核心贡献，简化版收益未证明。**待办**：重构 `from_pyscf` 支持活性轨道
+  区间（如 `(n_core, n_virtual)`）后再续。
+- **GPU 后端**（arXiv:2601.16637 的 matrix-free 路线）：环境就绪（cupy-cuda12x
+  14.1.1 + RTX 5080），实现 `build_sparse_hamiltonian`（保留，独立 API）+
+  `solve_sci(backend="gpu")` 分支。**实测**：GPU eigsh 本身极快（dim=10⁴ 时
+  0.56s，cuSPARSE SpMV），结果与 CPU 完全一致（diff ≤ 1e-13）；但"显式构建
+  稀疏 H"（O(dim) 次 Python 层 contract_2e）**占 95% 耗时**（29s/31s），
+  CPU 隐式 LinearOperator matvec 路径仅 0.42s——GPU 总路径慢 70×。
+  **架构性结论**：论文的 40× 来自 matrix-free（Slater-Condon matvec 直接
+  在 GPU 算，Thrust 核），"CPU 构建 + GPU 对角化"的简单方案构建成本主导、
+  无收益。**待办**：真加速需 matrix-free 重写（RIKEN 级工程，~300-500 行
+  cupy 核），搁置。
+
+**剩余可选方向（按性价比排序，未做）**：
+
+1. **自洽 NO 迭代扩展**——`solve_sqd_natural_orbitals` 已是迭代式（max_basis_iters=4），
+   剩余仅开壳层支持（spin-resolved 1-RDM）。风险 4/5（b62d636 已否决 adaptive
+   换基，但 NO 自洽不做状态选择收缩，与失败路径不同）。
+2. **ARNN 采样器（AB-SND 路线）**——Transformer ARNN 生成位串替代量子电路采样。
+   论文只测自旋模型未测分子化学；引入 PyTorch 重依赖。风险 4/5。
+3. **Krylov 广义本征工具**——`solve_krylov`（重叠矩阵 S 的广义本征问题 + 小
+   本征值正则化）。SKQD 作者自评化学近期不可用；greenfield。
+4. **qDRIFT 随机化**——降 Krylov/演化电路深度。中低优先。
+5. **>53 轨道支持**——核对 `bitstring_matrix_to_ci_strs` 是否受 64-bit 限制
+   （qiskit v0.12.0 已解除）。
+
+**与 2026-08-04 调研（§7）的衔接**：§7 的"基设计 + 自适应采样 + 拟 Krylov 理论化"
+结论不变；本次调研新增了恢复侧（CSQD）、后处理侧（自旋惩罚）、预处理侧（OBDF）、
+规模侧（GPU）四个维度的评估，其中**恢复侧与后处理侧已落地**，预处理侧与规模侧
+因架构限制搁置。
+
 ---
 
 *本文随仓库演进更新。数值见 `REVIEW.md`，使用见 `README.md`。*
