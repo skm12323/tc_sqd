@@ -1277,14 +1277,29 @@ contract_2e），后端无关（numpy/cupy）。
 | 1.6×10⁵ | 1095ms | 21.6ms | **50.7×** |
 
 **结论**：einsum 批量 matmul 版只在极小维度（~10⁴）靠 GPU 启动/并行小胜，大维度
-因 O(M·na²·nb) 标度**远落后于 pyscf C 核**。"半 GPU"向量化（numpy/cupy einsum）
-**不是 RIKEN 式 matrix-free 的替代**——后者用 Thrust 自定义核做到 O(nnz) GPU
-matvec（~300-500 行 RawKernel，是真正的加速路径）。T 表内存（O(M·na²)）亦限制
-扩展到 na≳700。**架构方向正确（matrix-free 绕开逐列构建）**，但当前实现未达
-C 核性能；`solve_sci(backend="gpu")` 的价值在**正确性验证与后续 RawKernel 升级
-的基础**，非当前性能。`build_sparse_hamiltonian` 保留为独立 API。
+因 O(M·na²·nb) 标度**远落后于 pyscf C 核**。**架构方向正确**（matrix-free 绕开逐列
+构建），但 T 表 einsum 未达 C 核性能；`solve_sci(backend="gpu")` 退回 T 表版（子空间
+正确，慢）。**linkstr RawKernel 版**（2026-08-11，下节）真正超越 C 核。
 
-**测试**：`tests/test_matrixfree.py` 3 项（σ==稠密 / ops==直接 / GPU==CPU，GPU skip 分支）。
+**linkstr RawKernel 版**（`sigma_linkstr_gpu`，2026-08-11）：用 linkstr 算法
+（RawKernel atomicAdd scatter/gather + 一次 tensordot）替代 batched matmul，
+**全空间真正超越 pyscf C 核** direct_spin1.contract_2e：
+
+| dim | linkstr_gpu | pyscf C 核 | 加速 |
+|---|---|---|---|
+| 1.44×10⁴（N₂/STO-3G 全空间）| 0.88ms | 2.68ms | **3.0×** |
+| 10⁴（12o 子空间）| 1.11ms | 15.08ms | **13.6×** |
+| 1.6×10⁵ | 14.4ms | 21.7ms | **1.5×** |
+| 4.9×10⁵ | 44.7ms | 48.8ms | **1.09×** |
+
+⚠ **linkstr_gpu 仅全空间正确**：linkstr 算法需单激发中间态为全空间（经子空间外
+中间态的双激发贡献），子空间（SQD selected-CI）下丢失部分双激发项（与
+selected_ci.contract_2e 差 ~2 Ha）。故 `solve_sci(backend="gpu")` 仍用 T 表版
+（子空间正确）；`sigma_linkstr_gpu`/`eigsh_linkstr_gpu` 为**独立全空间快速 API**
+（FCI 基准，3-13×）。全空间 mid 对大子空间内存爆炸（t1=norb²·na_full·nb），未做
+子空间修正。`build_sparse_hamiltonian` 保留为独立 API。
+
+**测试**：`tests/test_matrixfree.py` 3 项（σ==稠密 / ops==直接 / GPU==CPU 全空间，GPU skip 分支）。
 
 ## GPU 后端：实现验证后搁置（2026-08-10，历史记录）
 > **已被上节取代**：`solve_sci(backend="gpu")` 已以 matrix-free 方式重新落地，

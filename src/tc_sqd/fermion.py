@@ -834,7 +834,7 @@ def solve_sci(
             return np.ascontiguousarray(hv, dtype=np.float64)
 
         if backend == "gpu":
-            # matrix-free GPU 对角化 (cupyx eigsh + 向量化 Slater-Condon σ-vector)
+            # matrix-free GPU 对角化 (T 表 einsum, 子空间正确; 全空间可改用 eigsh_linkstr_gpu)
             from .matrixfree import prepare_sigma_operators, eigsh_gpu
             ops = prepare_sigma_operators(ci_a, ci_b, norb, nelec,
                                           np.asarray(h1e), np.asarray(two_body_tensor))

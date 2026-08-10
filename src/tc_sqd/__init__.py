@@ -141,6 +141,8 @@ from .matrixfree import (
     prepare_sigma_operators,
     sigma_vector_ops,
     eigsh_gpu,
+    sigma_linkstr_gpu,
+    eigsh_linkstr_gpu,
 )
 from .sampler import (
     sample,
@@ -272,6 +274,8 @@ __all__ = [
     "prepare_sigma_operators",
     "sigma_vector_ops",
     "eigsh_gpu",
+    "sigma_linkstr_gpu",
+    "eigsh_linkstr_gpu",
     # sampler (统一采样后端: tc 模拟 / qcloud 真机)
     "sample",
     "BACKENDS",
