@@ -27,6 +27,7 @@ from .counts import (
 )
 from .configuration_recovery import (
     recover_configurations,
+    recover_configurations_clustered,
     postselect_by_hamming_weight,
     estimate_true_occupancies,
 )
@@ -150,6 +151,7 @@ __all__ = [
     "sample_from_circuit",
     # configuration_recovery
     "recover_configurations",
+    "recover_configurations_clustered",
     "postselect_by_hamming_weight",
     "estimate_true_occupancies",
     # subsampling

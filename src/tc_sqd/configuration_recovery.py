@@ -20,6 +20,7 @@ import numpy as np
 
 __all__ = [
     "recover_configurations",
+    "recover_configurations_clustered",
     "postselect_by_hamming_weight",
     "estimate_true_occupancies",
 ]
@@ -331,3 +332,290 @@ def estimate_true_occupancies(
             avg_b = np.clip(avg_b * num_elec_b / sb, 0.0, 1.0)
 
     return avg_a, avg_b
+
+
+# --------------------------------------------------------------------------- #
+#  Cluster-adaptive configuration recovery (CSQD)
+# --------------------------------------------------------------------------- #
+#  Standard recovery uses a single *global* average occupancy vector to fix
+#  particle-number violations.  In strongly correlated systems the electronic
+#  structure is spread over several distinct occupancy patterns; averaging them
+#  globally blurs the structure and degrades the determinant pool.  CSQD
+#  (arXiv:2603.09346) instead partitions the per-spin bitstring pool into K
+#  clusters via weighted k-modes, giving each cluster its own reference
+#  occupancy vector.  Recovery then proceeds per-sample using the vector of the
+#  cluster the sample belongs to, preserving heterogeneous occupation patterns.
+# --------------------------------------------------------------------------- #
+
+
+def _weighted_kmodes(
+    half_strings: np.ndarray,
+    weights: np.ndarray,
+    k: int,
+    max_iter: int,
+    rng: np.random.Generator,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Weighted k-modes clustering for a single-spin half-string pool.
+
+    k-modes uses the *mode* (per-column weighted majority) rather than the mean
+    as the centroid, matching the discrete (bitstring) nature of the data.
+
+    Parameters
+    ----------
+    half_strings : ndarray, shape (S, norb), dtype bool
+        Single-spin half-strings (either the alpha or beta block).
+    weights : ndarray, shape (S,)
+        Non-negative probability weight of each sample.
+    k : int
+        Number of clusters.
+    max_iter : int
+        Maximum number of k-modes iterations.
+    rng : np.random.Generator
+        Random source for centroid initialisation (probability-proportional).
+
+    Returns
+    -------
+    labels : ndarray, shape (S,), dtype int
+        Cluster index (0..k-1) assigned to each sample.  Empty clusters are
+        re-seeded, so every label in 0..k-1 may not appear; the caller handles
+        empties.
+    centroids : ndarray, shape (k, norb), dtype float64
+        Per-cluster reference occupancy vectors in [0, 1] (weighted fraction of
+        1s per orbital within the cluster).
+    """
+    S, norb = half_strings.shape
+    hs = half_strings.astype(bool)
+
+    # --- Initialise centroids: draw k distinct samples, probability-weighted.
+    #    If S < k, pad with random distinct rows (with replacement fallback).
+    if S <= k:
+        # Not enough samples for k distinct centroids: use all rows + repeat.
+        idx = np.arange(S)
+        if S < k:
+            idx = np.concatenate([idx, rng.integers(0, S, size=k - S)])
+        centroids_bool = hs[idx].copy()
+    else:
+        p = weights / weights.sum()
+        idx = rng.choice(S, size=k, replace=False, p=p)
+        centroids_bool = hs[idx].copy()
+
+    labels = np.zeros(S, dtype=int)
+    for _ in range(max_iter):
+        # --- Assignment: nearest centroid by Hamming distance.
+        #    dist[i, j] = Hamming(hs[i], centroid[j]); compute vectorised.
+        #    Shape: (S, k) via broadcasting.
+        diff = (
+            hs[:, None, :] != centroids_bool[None, :, :]
+        ).sum(axis=2)  # (S, k) Hamming distances
+        new_labels = np.argmin(diff, axis=1)
+
+        # --- Update: each centroid column = weighted mode of its members.
+        new_centroids = np.zeros((k, norb), dtype=bool)
+        for c in range(k):
+            mask = new_labels == c
+            if not np.any(mask):
+                # Empty cluster: re-seed from the worst-fit sample.
+                worst = np.argmax(diff[np.arange(S), new_labels])
+                new_centroids[c] = hs[worst]
+                continue
+            w = weights[mask]
+            col = hs[mask].astype(np.float64)
+            # Weighted fraction of 1s per orbital; mode = fraction > 0.5.
+            frac = (col * w[:, None]).sum(axis=0) / w.sum()
+            new_centroids[c] = frac > 0.5
+
+        if np.array_equal(new_centroids, centroids_bool) and np.array_equal(
+            new_labels, labels
+        ):
+            labels = new_labels
+            centroids_bool = new_centroids
+            break
+        labels = new_labels
+        centroids_bool = new_centroids
+
+    # --- Convert boolean centroids to smooth [0,1] occupancy vectors.
+    centroids = np.zeros((k, norb), dtype=np.float64)
+    for c in range(k):
+        mask = labels == c
+        if np.any(mask):
+            w = weights[mask]
+            centroids[c] = (
+                hs[mask].astype(np.float64) * w[:, None]
+            ).sum(axis=0) / w.sum()
+
+    return labels, centroids
+
+
+def _cluster_reference_occupancies(
+    half_strings: np.ndarray,
+    weights: np.ndarray,
+    labels: np.ndarray,
+    centroids: np.ndarray,
+    target_weight: int,
+) -> np.ndarray:
+    """Build a per-sample reference occupancy vector from cluster statistics.
+
+    Each sample's reference vector is the weighted-average occupancy of the
+    cluster it belongs to, normalised so the sum equals the target particle
+    number (matching the convention of :func:`estimate_true_occupancies`).
+
+    Returns
+    -------
+    ref_occ : ndarray, shape (S, norb), dtype float64
+        Reference occupancy in [0, 1] for each sample, indexed by orbital in
+        bitstring layout (not reversed -- caller aligns the bitstring slice).
+    """
+    S, norb = half_strings.shape
+    ref_occ = np.zeros((S, norb), dtype=np.float64)
+    k = centroids.shape[0]
+    for c in range(k):
+        mask = labels == c
+        if not np.any(mask):
+            continue
+        vec = centroids[c].copy()
+        # Normalise so sum == target_weight (legal-state convention).
+        s = vec.sum()
+        if s > 0:
+            vec = np.clip(vec * target_weight / s, 0.0, 1.0)
+        ref_occ[mask] = vec
+    return ref_occ
+
+
+def recover_configurations_clustered(
+    bitstring_matrix: np.ndarray,
+    probabilities: np.ndarray,
+    num_elec_a: int,
+    num_elec_b: int,
+    *,
+    n_clusters: int = 4,
+    max_kmodes_iter: int = 20,
+    rand_seed: Optional[Union[int, np.random.Generator]] = None,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """Cluster-adaptive configuration recovery (CSQD-style).
+
+    Like :func:`recover_configurations`, this refines bitstrings so that every
+    row satisfies the target alpha/beta particle numbers.  The difference is
+    that the reference occupancy guiding the bit-flips is **per-cluster** rather
+    than global: the alpha and beta half-string pools are independently
+    partitioned into ``n_clusters`` groups via weighted k-modes, and each sample
+    is recovered against the reference vector of its own cluster.
+
+    This preserves heterogeneous occupation patterns that a single global
+    average would blur, which matters for strongly correlated systems where the
+    ground state is spread over multiple determinant families
+    (see arXiv:2603.09346).
+
+    Parameters
+    ----------
+    bitstring_matrix : ndarray, shape (S, 2*norb)
+        Noisy bitstrings, layout ``[beta_{n-1}..beta_0 | alpha_{n-1}..alpha_0]``.
+    probabilities : ndarray, shape (S,)
+        Non-negative weight of each bitstring (need not be normalised).
+    num_elec_a, num_elec_b : int
+        Target alpha / beta particle numbers.
+    n_clusters : int
+        Number of k-modes clusters per spin sector (default 4).  ``k=1``
+        degenerates to the global-average behaviour.
+    max_kmodes_iter : int
+        Maximum k-modes iterations per spin sector.
+    rand_seed : int | Generator | None
+        Seed for centroid initialisation and tie-breaking.
+
+    Returns
+    -------
+    recovered_matrix : ndarray, shape (S', 2*norb)
+        Recovered (de-duplicated) bitstrings.
+    recovered_probs : ndarray, shape (S',)
+        Re-normalised probabilities.
+    """
+    bsm = np.asarray(bitstring_matrix, dtype=bool).copy()
+    probs = np.asarray(probabilities, dtype=np.float64)
+    if bsm.ndim != 2:
+        raise ValueError(
+            f"bitstring_matrix must be 2-D, got ndim={bsm.ndim}."
+        )
+    if bsm.shape[0] == 0:
+        raise ValueError("bitstring_matrix must contain at least one row.")
+    n = bsm.shape[1]
+    if n % 2 != 0:
+        raise ValueError(
+            f"bitstring width must be even (alpha/beta halves), got {n}."
+        )
+    if n >= 64:
+        raise ValueError(
+            f"bitstring width must be < 64 for integer de-duplication, got {n}."
+        )
+    if probs.shape[0] != bsm.shape[0]:
+        raise ValueError(
+            "probabilities length must match bitstring_matrix row count."
+        )
+    if not np.all(np.isfinite(probs)) or np.any(probs < 0):
+        raise ValueError("probabilities must be finite and non-negative.")
+    if probs.sum() <= 0:
+        raise ValueError("probabilities must have a positive sum.")
+    if not isinstance(n_clusters, (int, np.integer)) or n_clusters < 1:
+        raise ValueError(f"n_clusters must be a positive int, got {n_clusters}.")
+
+    if isinstance(rand_seed, np.random.Generator):
+        rng = rand_seed
+    else:
+        rng = np.random.default_rng(rand_seed)
+
+    half = n // 2
+    na, nb = num_elec_a, num_elec_b
+    if not (0 <= na <= half) or not (0 <= nb <= half):
+        raise ValueError(
+            f"Electron counts must be in [0, {half}]; got "
+            f"num_elec_a={na}, num_elec_b={nb}."
+        )
+
+    # --- Split into alpha / beta half-string pools and cluster each.
+    alpha_pool = bsm[:, half:]
+    beta_pool = bsm[:, :half]
+
+    a_labels, a_centroids = _weighted_kmodes(
+        alpha_pool, probs, n_clusters, max_kmodes_iter, rng,
+    )
+    b_labels, b_centroids = _weighted_kmodes(
+        beta_pool, probs, n_clusters, max_kmodes_iter, rng,
+    )
+
+    # --- Per-sample reference vectors (bitstring column layout, unreversed).
+    a_ref = _cluster_reference_occupancies(
+        alpha_pool, probs, a_labels, a_centroids, na,
+    )  # (S, norb) in column layout alpha_0..alpha_{n-1} -> bsm[:, half:]
+    b_ref = _cluster_reference_occupancies(
+        beta_pool, probs, b_labels, b_centroids, nb,
+    )
+
+    # --- Recover each half-string against its cluster's reference.
+    #    _recover_single expects a full-length avg_occ aligned to the *full*
+    #    bitstring layout [beta | alpha].  We assemble a per-sample avg_full
+    #    = [b_ref_sample (beta half) | a_ref_sample (alpha half)] and call it
+    #    once per half.
+    for i in range(bsm.shape[0]):
+        avg_full = np.concatenate([b_ref[i], a_ref[i]])  # (2*norb,)
+        bsm[i] = _recover_single(
+            bsm[i], avg_full, na, low=half, high=n, rng=rng,
+        )
+        bsm[i] = _recover_single(
+            bsm[i], avg_full, nb, low=0, high=half, rng=rng,
+        )
+
+    # --- De-duplicate and merge probabilities (same as recover_configurations).
+    int_vals = (
+        bsm.astype(np.uint64)
+        @ (1 << np.arange(n - 1, -1, -1, dtype=np.uint64)).reshape(-1, 1)
+    ).ravel()
+    uniq, inverse = np.unique(int_vals, return_inverse=True)
+    merged_probs = np.zeros(len(uniq), dtype=np.float64)
+    np.add.at(merged_probs, inverse, probs)
+    merged_probs /= merged_probs.sum()
+
+    recovered = np.zeros((len(uniq), n), dtype=bool)
+    for i, val in enumerate(uniq):
+        recovered[i] = (
+            (val >> np.arange(n - 1, -1, -1, dtype=np.uint64)) & 1
+        ).astype(bool)
+
+    return recovered, merged_probs

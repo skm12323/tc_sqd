@@ -50,3 +50,9 @@ _plot_data_*.npy
 
 # 外部依赖源码 (Dice/shciscf 下载) 不入库
 third_party/
+
+# mimosa hook/会话工具本地状态 (不入库)
+.mimosa/
+
+# ZCode
+.zcode/

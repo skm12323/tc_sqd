@@ -18,7 +18,10 @@ from scipy.linalg import expm
 from pyscf.fci import cistring, selected_ci
 from pyscf.fci import spin_op
 
-from .configuration_recovery import recover_configurations
+from .configuration_recovery import (
+    recover_configurations,
+    recover_configurations_clustered,
+)
 from .subsampling import subsample, limit_subspace
 
 __all__ = [
@@ -1038,6 +1041,8 @@ def diagonalize_fermionic_hamiltonian(
     include_configurations=None,
     initial_occupancies: Optional[Tuple[np.ndarray, np.ndarray]] = None,
     carryover_threshold: float = 1e-4,
+    recovery: str = "global",
+    n_clusters: int = 4,
     callback: Optional[Callable] = None,
     seed: Optional[Union[int, np.random.Generator]] = None,
 ) -> SCIResult:
@@ -1059,6 +1064,28 @@ def diagonalize_fermionic_hamiltonian(
     energy_tol, occupancies_tol : float
     max_iterations : int
     carryover_threshold : float
+    recovery : {"global", "clustered"}
+        Configuration-recovery strategy.  ``"global"`` (default) uses a single
+        average-occupancy vector; ``"clustered"`` (CSQD, arXiv:2603.09346)
+        partitions the per-spin bitstring pool into ``n_clusters`` groups via
+        weighted k-modes and recovers each sample against its own cluster's
+        reference -- preserving heterogeneous occupation patterns that matter
+        for strongly correlated systems.  When ``"clustered"``,
+        ``initial_occupancies`` is ignored (the reference vectors are derived
+        from the clusters).
+
+        **Note**: ``"clustered"`` re-clusters every iteration (the occupancy
+        refinement is used for convergence checking only).  Because iterative
+        SQD's occupancy update is inherently single-mode, it can counteract the
+        multi-mode preservation that clustering provides.  For strongest effect
+        use ``"clustered"`` with a single iteration or via
+        ``solve_sqd(mode="single")``.
+    n_clusters : int
+        Number of k-modes clusters per spin sector when ``recovery="clustered"``
+        (ignored otherwise).
+    n_clusters : int
+        Number of k-modes clusters per spin sector when ``recovery="clustered"``
+        (ignored otherwise).
     seed : int | Generator | None
 
     Returns
@@ -1132,6 +1159,11 @@ def diagonalize_fermionic_hamiltonian(
 
     na_e, nb_e = nelec
 
+    if recovery not in ("global", "clustered"):
+        raise ValueError(
+            f"recovery must be 'global' or 'clustered', got {recovery!r}."
+        )
+
     if initial_occupancies is not None:
         occ_a, occ_b = initial_occupancies
     else:
@@ -1148,9 +1180,22 @@ def diagonalize_fermionic_hamiltonian(
 
     for iteration in range(max_iterations):
         # 1. Configuration recovery
-        recovered_bsm, recovered_probs = recover_configurations(
-            bsm, probs, (occ_a, occ_b), na_e, nb_e, rand_seed=rng,
-        )
+        #    CSQD ("clustered") derives reference occupancies from per-cluster
+        #    statistics, so external occ_a/occ_b are NOT fed to the recovery.
+        #    The occ update after diagonalisation is still used for convergence
+        #    checking, but the next round's recovery re-clusters from the current
+        #    bitstring pool (which includes carryover determinants).  This keeps
+        #    multiple occupation families alive across iterations, which is the
+        #    whole point of CSQD for strongly correlated systems.
+        if recovery == "clustered":
+            recovered_bsm, recovered_probs = recover_configurations_clustered(
+                bsm, probs, na_e, nb_e,
+                n_clusters=n_clusters, rand_seed=rng,
+            )
+        else:
+            recovered_bsm, recovered_probs = recover_configurations(
+                bsm, probs, (occ_a, occ_b), na_e, nb_e, rand_seed=rng,
+            )
 
         # 1b. Merge carryover configurations into the sampling pool.
         if carryover_bsm is not None and carryover_bsm.shape[0] > 0:
