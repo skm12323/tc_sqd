@@ -1140,11 +1140,97 @@ S²≈`spin_sq` 的本征空间 P, 把 H 投影到该自旋空间再对角化。
 λ 增大连续把解从 quartet 压向 doublet，不 raise。全空间 H₂ 上惩罚法与投影法
 一致（=FCI，S²=0）。4 个新测试 + 回归全过。
 
-## OBDF one-body downfolding：实现验证后搁置（2026-08-10）
+## OBMP2 + OBDF：完整自洽实现落地（2026-08-10，`tc_sqd.obmp2`）
 
-调研 arXiv:2605.08675（OBDF-SQD）后实现：`_obmp2_correction`（t2 收缩广义
+**背景**：此前"OBDF 实现验证后删除"节的简化公式（v_oo/v_vv）**已被证伪**——
+v_oo einsum 切片维度不匹配直接报错、修正后不对称且迹 2.5× 偏离 MP2 相关能，
+不是论文的 OBMP2。2026-08-10 从 **Tran 2021（arXiv:2107.11260）** 提取正确
+理论并完整实现（见下节对比），落成 `tc_sqd.obmp2` 模块。
+
+**正确理论**（Tran 2021 Eq 3-10）：
+
+    Ĥ_OBMP2 = Ĥ_HF + [Ĥ, Â]_1 + ½[[F̂, Â], Â]_1,   Â = Â_D = ½·T·(â_ij^ab − â_ab^ij)
+    V̂_1stBCH = T̄_ij^ab [ f_a^i Ω̂(â_j^b) + g_ab^ip Ω̂(â_j^p) − g_ij^aq Ω̂(â_q^b) ]
+    (T̄_ij^ab = T_ij^ab − T_ji^ab; Ω̂(â_q^p) = â_q^p + â_p^q; f_ai = 0 at HF 故首项消失)
+    V̂_2ndBCH = 9 项 T·T̄·f 收缩 (见 obmp2.py 函数体注释)
+    C'_1stBCH = −2 T̄_ij^ab g_ab^ij
+
+**归一化关键**（破解 10× 符号问题的核心）：`A_D = ½T` → 收缩含 `½` (1st BCH)
+与 `½·(½)² = 1/8` (2nd BCH)。施加 **v_1st × ½、v_2nd × (−1/8)** 后：
+
+- **E_OBMP2(0) = E_HF + 2·Tr_occ(v) + C' 精确 = E_MP2**（N₂/H₂O/STO-3G 全吻合
+  ≤ 1e-6）。此前 2nd BCH 给 +1.24（应 −0.155，8× 反号）正是缺此因子。
+- 自洽 `solve_obmp2` 收敛（16-39 轮）：N₂/STO-3G E=−107.6499 ≈ CCSD（−107.6502，
+  差 0.3 mHa）；H₂O −74.878、LiH −7.874，均介于 E_HF 与 FCI（不过校正）。
+
+**OBDF 下折叠**（`obdf_downfold`）：`H_OBDF = H_CAS + scale·v^ext`，v^ext 从
+**外部振幅**（≥1 冻结 core/虚指标）构造投影到活性块，仅改 h1e（量子资源不变）。
+配套 `from_pyscf(n_core, n_virtual)` 中间区间活性空间（解决旧节"无法折叠虚轨道"）。
+
+**大基组实证**（scale≈0.1 普适，N₂/H₂O/cc-pVDZ × 6-10o）：
+
+| 体系 (活性) | CAS err | **OBDF err** (scale=0.1) | 改善 |
+|---|---|---|---|
+| N₂/cc-pVDZ (10o,10e) | +0.231 Ha | **+0.006 Ha** | 38× |
+| N₂/cc-pVDZ (8o) | +0.245 | **+0.008** | 29× |
+| N₂/cc-pVDZ (6o) | +0.300 | **+0.010** | 30× |
+| H₂O/cc-pVDZ (6o) | +0.211 | **+0.012** | 18× |
+
+**⚠ 开放问题**：原始 v^ext（A_D 归一化后）对下折叠约 10× 过大——OBMP2 总能量
+靠 trace+C' 相消成立，但**元素量级**与下折叠需求差一常数（scale 参数化默认
+0.1，普适于两分子/三活性大小）。10× 来源未完全解析，留作开放问题。
+STO-3G 小基组确认过校正（旧节警告正确；大基组才是 OBDF 的验证场景）。
+
+**强关联边界（R=3.0 实测，2026-08-10）**：OBDF 在 N₂/cc-pVDZ R=3.0
+（近解离强关联）**全面过校正**，scale 需从 R=1.1 的 0.1 降到 ~0.01（几何依赖）。
+与 best SQD / SHCI 同活性空间对比（参考 = 活性全空间 FCI）：
+
+| 活性 | 方法 | E | err vs 活性 FCI | 耗时 |
+|---|---|---|---|---|
+| 10o | SHCI (eps=1e-2, dim=63504) | -108.7594 | **-0.0002** | 205s |
+| 10o | best SQD (shots=100) | -108.7611 | **-0.0019** | 373s |
+| 10o | **OBDF scale=0.01** | -108.7735 | **-0.0142** | 17s |
+| 10o | OBDF scale=0.1 | -108.9131 | -0.154 | 13s |
+| 12o | SHCI (eps=1e-2, dim=592900) | -108.7811 | **-0.0002** | 812s |
+| 12o | best SQD (shots=100) | -108.7992 | **-0.0182** | 1512s |
+| 12o | best SQD (shots=40) | -109.9625 | **-1.18（PT2 崩坏）** | 956s |
+| 12o | **OBDF scale=0.01** | -108.7933 | **-0.0123** | 27s |
+| 12o | OBDF scale=0.1 | -108.9116 | -0.131 | 18s |
+
+**结论**：
+1. **SHCI 是唯一可靠收敛到活性 FCI 的参考级求解器**（两活性 err -0.0002）。
+2. **best SQD 在 12o 强关联区不稳定**（shots=40 PT2/evpt2 崩坏 -1.18 Ha；shots=100
+   才 -0.018）——印证 REVIEW「12,12 采样覆盖是根本问题」。
+3. **OBDF scale=0.01 在 12o 上略优于 best SQD（-0.012 vs -0.018）且快 ~60×**，但两者
+   都在活性 FCI 之下（OBDF 加外部相关、SQD 的 PT2 是空间内近似），无全分子参考
+   （R=3.0 CCSD(T) 失效、28 轨道 FCI 不可行）无法判定谁更"正确"。
+4. **OBDF 机制在强关联仍能折叠外部相关**（10o OBDF scale=0.01 = -108.7735 落在
+   10o-FCI(-108.7592) 与 12o-FCI(-108.7809) 之间，捕获 10o→12o 相关缺口 ~66%），
+   但 **scale 校准几何依赖、脆弱**，不构成对 best/SHCI 的替代——与论文
+   「强关联下 OBDF 退化为 CAS」一致。OBDF 的价值定位在**弱关联区（R≈平衡）**。
+
+**测试**：`tests/test_obmp2.py` 8 项（势对称、E=E_MP2、SCF 介于 HF/FCI、≈CCSD、
+active_range 外部限制、OBDF 结构/差异/校验）；`test_molecule.py` 增 4 项中间区间。
+全量回归无破坏。
+
+**参考论文**（完整理论链）：
+- T. N. Tran et al., "Quantum resource reduction for quantum-centric supercomputing
+  via correlated mean-field downfolding framework" (OBDF-SQD), arXiv:2605.08675 —— 主参考。
+- L. N. Tran & T. Yanai, "Correlated one-body potential from second-order
+  Møller–Plesset perturbation theory", *J. Chem. Phys.* **138**, 224108 (2013) —— OBMP2 奠基。
+- L. N. Tran, "Improving perturbation theory for open-shell molecules via
+  self-consistency", *J. Phys. Chem. A* **125**, 9242 (2021), arXiv:2107.11260 —— 本库实现依据。
+- N. T. Tran et al., arXiv:2310.18154 (O2BMP2); N. T. Tran & L. N. Tran, *J. Chem.
+  Phys.* **162** (2025) —— 背景扩展。
+
+## OBDF one-body downfolding：实现验证后删除（2026-08-10，仅留结论与待办）
+> **⚠ 已被上节取代**：本节公式（v_oo/v_vv）经证伪，正确实现见上节
+> 「OBMP2 + OBDF：完整自洽实现落地」。以下保留历史记录。
+
+调研 arXiv:2605.08675（OBDF-SQD）后曾实现：`_obmp2_correction`（t2 收缩广义
 Fock，v_oo = Σ_ikab t_ik^ab ⟨jk‖ab⟩，v_vv = -½ Σ_ijc t_ij^ac ⟨ij‖bc⟩）+
 `from_pyscf(downfolding="obmp2")`（仅改 h1e，eri/ecore 不变）+ 4 个测试。
+**⚠ 实现不完整，代码已删除（未保留入库）——以下仅留验证结论与待办，仓库当前无 OBDF 代码。**
 
 **验证结论**：
 - ✅ 符号正确（+v 使能量降低，-v 升高）、仅改 h1e、v 对称、量级合理（0.1）
@@ -1198,8 +1284,10 @@ Thrust 核）；"CPU 构建 + GPU 对角化"的简单方案构建成本主导、
   重依赖。观察归档，除非有量子硬件需求
 - **Krylov 广义本征工具**（难度 5/5）——`solve_krylov`（重叠矩阵 S 广义本征 +
   小本征值正则化）。SKQD 作者自评化学近期不可用；greenfield
-- **OBDF 下折叠续**（搁置中）——需先重构 `from_pyscf` 支持活性轨道区间
-  `(n_core, n_virtual)`，再在大基组 + 小活性空间验证（见上"OBDF 搁置"）
+- ~~**OBDF 下折叠续**~~（**已落地 2026-08-10**）——`from_pyscf(n_core, n_virtual)`
+  + `tc_sqd.obmp2`（`solve_obmp2`/`obdf_downfold`），大基组实测见「OBMP2 + OBDF：
+  完整自洽实现落地」。剩余：v^ext 的 10× 归一化开放问题 + 完整自洽 OBMP2 的
+  2nd-BCH 精细核对
 - **GPU matrix-free 重写**（搁置中）——真加速需 Slater-Condon matvec 直接
   GPU 化（cupy 核或 RIKEN `sbd`），"CPU 构建 + GPU 对角化"实测无收益
 - **qDRIFT 随机化**——降 Krylov/演化电路深度（中低优先）

@@ -136,6 +136,82 @@ def test_from_pyscf_open_shell_frozen():
     assert abs(data_c.solve(method="fci") - data.solve(method="fci")) < 1e-3
 
 
+def test_from_pyscf_middle_cut_slice():
+    """OBDF 基础设施: n_core + n_virtual 中间区间切片正确 (LiH/STO-3G)。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    mf = scf.RHF(mol).run()
+    mo = np.asarray(mf.mo_coeff)
+    norb_full = mo.shape[1]
+    h1e_full = mo.T @ mf.get_hcore() @ mo
+    eri_full = np.einsum("pqrs,pi,qj,rk,sl->ijkl",
+                         mol.intor("int2e_sph"), mo, mo, mo, mo, optimize=True)
+
+    data = tc_sqd.from_pyscf(mf, n_core=1, n_virtual=2)
+    start, end = 1, norb_full - 2
+    assert data.norb == end - start
+    assert data.nelec == (1, 1)                      # LiH 4e, freeze 1 core -> 2e
+    assert data.n_core == 1 and data.n_virtual == 2
+    assert np.allclose(data.h1e,
+                       h1e_full[start:end, start:end]
+                       + tc_sqd.molecule._frozen_core_potential(eri_full, 1, 2))
+    assert np.allclose(data.mo_coeff, mo[:, start:end])
+    assert np.allclose(data.eri,
+                       eri_full[start:end, start:end, start:end, start:end])
+
+
+def test_from_pyscf_middle_cut_energy_closure():
+    """能量闭合: 中间区间活性 FCI == 全空间哈密顿量受限对角化 (1e-8)。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    mf = scf.RHF(mol).run()
+    mo = np.asarray(mf.mo_coeff)
+    norb_full = mo.shape[1]
+    h1e_full = mo.T @ mf.get_hcore() @ mo
+    eri_full = np.einsum("pqrs,pi,qj,rk,sl->ijkl",
+                         mol.intor("int2e_sph"), mo, mo, mo, mo, optimize=True)
+
+    data = tc_sqd.from_pyscf(mf, n_core=1, n_virtual=2)
+    e_act = data.solve(method="fci")
+
+    # 受限对角化: α/β 各 = MO0(bit0) + 1 电子在 {MO1,MO2,MO3}, 最高 2 个 MO 恒空
+    ci_strs = np.array([1 | (1 << i) for i in range(1, 4)], dtype=np.int64)
+    res = tc_sqd.solve_sci((ci_strs, ci_strs), h1e_full, eri_full, norb_full, (2, 2))
+    e_restricted = res.energy + mf.energy_nuc()
+    assert abs(e_act - e_restricted) < 1e-8, f"{e_act:.10f} vs {e_restricted:.10f}"
+
+
+def test_from_pyscf_n_active_backward_compat():
+    """n_active 等价于 n_core=norb_full-N, n_virtual=0 (向后兼容)。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    mf = scf.RHF(mol).run()
+    norb_full = mf.mo_coeff.shape[1]
+    d1 = tc_sqd.from_pyscf(mf, n_active=norb_full - 1)
+    d2 = tc_sqd.from_pyscf(mf, n_core=1, n_virtual=0)
+    assert d1.norb == d2.norb == norb_full - 1
+    assert np.allclose(d1.h1e, d2.h1e)
+    assert np.allclose(d1.eri, d2.eri)
+    assert d1.nelec == d2.nelec
+    assert abs(d1.solve(method="fci") - d2.solve(method="fci")) < 1e-10
+
+
+def test_from_pyscf_active_range_validation():
+    """非法活性区间组合显式报错。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    mf = scf.RHF(mol).run()
+    norb_full = mf.mo_coeff.shape[1]
+    bad_cases = [
+        (dict(n_active=norb_full - 1, n_core=1), "n_active 与 n_core 互斥"),
+        (dict(n_core=2, n_virtual=norb_full - 1), "n_core+n_virtual >= norb_full"),
+        (dict(n_core=norb_full), "n_core 超范围"),
+        (dict(n_core=3), "n_core > 电子数"),
+    ]
+    for kwargs, msg in bad_cases:
+        try:
+            tc_sqd.from_pyscf(mf, **kwargs)
+            raise AssertionError(f"应报错: {msg}")
+        except ValueError:
+            pass
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

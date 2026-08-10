@@ -466,7 +466,7 @@ L1/L2 实测后把最优配置固化成库入口（`integrated.py`）：
 | **CSQD 聚类恢复** | arXiv:2603.09346 | N₂ 拉伸 -16 mHa；[2Fe-2S] -58 mHa | **已落地**（`recover_configurations_clustered`）|
 | **自旋 λ 惩罚法** | 同上（附带）| 混合自旋子空间连续选态 | **已落地**（`solve_sci_csf method="penalty"`）|
 | AS-SQD 主动选态 | arXiv:2603.13536 | 16-qubit 噪声实测显著优于 SQD | 已有（`solve_sqd_active`，EN 选态等价）|
-| OBDF 下折叠 | arXiv:2605.08675 | H₆/cc-pVDZ 小活性空间优于 CAS-SQD | **搁置**（见下）|
+| **OBDF 下折叠 + OBMP2** | arXiv:2605.08675 + 2107.11260 | H₆/cc-pVDZ 小活性空间优于 CAS-SQD | **已落地**（`obmp2` 模块 + `obdf_downfold`，2026-08-10）|
 | AB-SND 神经网络采样 | arXiv:2508.12724 | 2D-EAM 自旋玻璃系统性改善 | 未做（风险高）|
 | SKQD Krylov | arXiv:2501.09702 | SIAM 85 qubit 相对 DMRG ~10⁻⁵ | 未做（化学近期不可用）|
 | GPU 全驻留对角化 | arXiv:2601.16637 | 35-39× 单节点（Thrust matrix-free）| **搁置**（见下）|
@@ -485,18 +485,45 @@ L1/L2 实测后把最优配置固化成库入口（`integrated.py`）：
   H + λ(S²-spin_sq)² 连续压向目标自旋，**不 raise**（投影法对自旋混合子空间
   会 raise）。CH/STO-3G M_S=1/2 sector（混 doublet/quartet）实测 λ 从 0→1
   把 S² 从 3.75 连续压到 0.75。
+- **OBMP2 + OBDF 下折叠**（2026-08-10 落地，`tc_sqd.obmp2`）：
+  - **OBMP2 自洽方法**（`solve_obmp2`）：自旋轨道显式实现 Tran 2021 的一体
+    相关势（1st+2nd BCH、Ω̂ 对称化），**归一化关键** `A_D = ½T` → 1st BCH ×½、
+    2nd BCH ×(−1/8)。实证 **E_OBMP2(0) 精确 = E_MP2**；自洽收敛后 E ≈ CCSD
+    （N₂/STO-3G 平衡差 0.3 mHa）。
+  - **OBDF 下折叠**（`obdf_downfold`）：`H_OBDF = H_CAS + scale·v^ext`，v^ext 从
+    **外部振幅**（≥1 冻结 core/虚指标）构造投影到活性块，仅改 h1e。配套
+    `from_pyscf(n_core, n_virtual)` 支持中间区间活性空间（冻结虚轨道）。
+  - **大基组实证**（scale≈0.1 普适，N₂/H₂O/cc-pVDZ × 6-10o）：
+
+    | 体系 (活性) | CAS err | **OBDF err** (scale=0.1) |
+    |---|---|---|
+    | N₂/cc-pVDZ (10o) | +0.231 Ha | **+0.006 Ha** |
+    | N₂/cc-pVDZ (6o/8o) | +0.245/+0.300 | **+0.008/+0.010** |
+    | H₂O/cc-pVDZ (6o) | +0.211 | **+0.012** |
+
+    ⚠ **开放问题**：原始 v^ext（A_D 归一化后）对下折叠约 10× 过大——OBMP2
+    总能量用 trace+C' 相消成立，但元素量级与下折叠需求差一常数（scale 已
+    参数化默认 0.1）。STO-3G 小基组确认过校正（交接文档警告正确）。
+  - **参考论文**（OBMP2/OBDF 完整理论链）：
+    - **T. N. Tran et al., "Quantum resource reduction for quantum-centric
+      supercomputing via correlated mean-field downfolding framework" (OBDF-SQD)**,
+      arXiv:2605.08675 —— 主参考，`H_OBDF = H_CAS + v^ext` 公式与 H₆/N₂ 数据。
+    - **L. N. Tran & T. Yanai, "Correlated one-body potential from second-order
+      Møller–Plesset perturbation theory: Alternative to orbital-optimized MP2
+      method"**, *J. Chem. Phys.* **138**, 224108 (2013) —— OBMP2 奠基方程（付费墙）。
+    - **L. N. Tran, "Improving perturbation theory for open-shell molecules via
+      self-consistency"**, *J. Phys. Chem. A* **125**, 9242 (2021),
+      arXiv:2107.11260 —— 本库实现依据：`Ĥ_OBMP2 = Ĥ_HF + [Ĥ,Â]_1 + ½[[F̂,Â],Â]_1`、
+      V̂_1st/2nd BCH 显式收缩、Ω̂ 对称化、C' 常数（免费全文）。
+    - **N. T. Tran, H. T. Nguyen & L. N. Tran, "Reaching high accuracy for energetic
+      properties at second-order perturbation cost..."**, arXiv:2310.18154 —— O2BMP2
+      自旋-反对称扩展（背景）。
+    - **N. T. Tran & L. N. Tran, "Attaining high accuracy for charge-transfer
+      excitations in non-covalent complexes..."**, *J. Chem. Phys.* **162** (2025) ——
+      state-specific OBMP2（背景）。
 
 **搁置方向（2026-08-10，实测结论记录）**：
 
-- **OBDF one-body downfolding**（arXiv:2605.08675）：实现 `_obmp2_correction`
-  （t2 收缩广义 Fock，v_oo/v_vv 两块）+ `from_pyscf(downfolding="obmp2")`，
-  验证：+v 符号正确、仅改 h1e（eri/ecore 不变）、矩阵对称。**但**：
-  ① STO-3G 小基组 MP2 过校正（能量落 FCI 之下 0.5 Ha——基组无足够外部相关
-  空间）；② `from_pyscf` 的"冻结前 n_core 个占据轨道"逻辑**无法折叠虚轨道**
-  （OBDF 需要活性空间 = 部分占据 + 部分虚轨道，v_vv 块即虚-虚修正），大基组
-  上 `n_active` 受限。完整 OBMP2（BCH 展开、外部振幅筛选、自洽轨道优化）是
-  论文核心贡献，简化版收益未证明。**待办**：重构 `from_pyscf` 支持活性轨道
-  区间（如 `(n_core, n_virtual)`）后再续。
 - **GPU 后端**（arXiv:2601.16637 的 matrix-free 路线）：环境就绪（cupy-cuda12x
   14.1.1 + RTX 5080），实现 `build_sparse_hamiltonian`（保留，独立 API）+
   `solve_sci(backend="gpu")` 分支。**实测**：GPU eigsh 本身极快（dim=10⁴ 时
@@ -522,9 +549,10 @@ L1/L2 实测后把最优配置固化成库入口（`integrated.py`）：
    （qiskit v0.12.0 已解除）。
 
 **与 2026-08-04 调研（§7）的衔接**：§7 的"基设计 + 自适应采样 + 拟 Krylov 理论化"
-结论不变；本次调研新增了恢复侧（CSQD）、后处理侧（自旋惩罚）、预处理侧（OBDF）、
-规模侧（GPU）四个维度的评估，其中**恢复侧与后处理侧已落地**，预处理侧与规模侧
-因架构限制搁置。
+结论不变；本次调研新增了恢复侧（CSQD）、后处理侧（自旋惩罚）、预处理侧（OBDF/
+OBMP2）、规模侧（GPU）四个维度的评估，其中**恢复侧、后处理侧、预处理侧已落地**
+（OBDF/OBMP2 见 `tc_sqd.obmp2`），**规模侧（GPU matrix-free）因架构限制仍搁置**
+（"CPU 构建 + GPU 对角化"实测无收益，需 matrix-free 重写，见 `docs/HANDOFF_gpu_obdf.md`）。
 
 ---
 

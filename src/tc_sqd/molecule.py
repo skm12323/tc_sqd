@@ -39,7 +39,10 @@ class MolecularData:
     nelec : tuple(int, int)
         活性空间电子数 (n_alpha, n_beta)。
     n_core : int
-        冻结轨道数 (0 = 全轨道)。
+        冻结**占据**轨道数 (0 = 全轨道)。
+    n_virtual : int
+        冻结**虚**轨道数 (活性块 = 中间区间 ``[n_core, norb_full-n_virtual)``)。
+        虚轨道为空不改变电子数; 冻结它们用于折叠外部相关 (OBDF 需要, 见下)。
     mo_coeff : ndarray | None
         活性 MO 系数 (norb_full × norb)。
     nuc_energy : float
@@ -59,6 +62,7 @@ class MolecularData:
     norb: int
     nelec: Tuple[int, int]
     n_core: int = 0
+    n_virtual: int = 0
     mo_coeff: Optional[np.ndarray] = None
     nuc_energy: float = 0.0
     mf: object = None
@@ -96,23 +100,31 @@ def _frozen_core_energy(h1e: np.ndarray, eri: np.ndarray, n_core: int) -> float:
     return float(e)
 
 
-def _frozen_core_potential(eri_full: np.ndarray, n_core: int) -> np.ndarray:
+def _frozen_core_potential(eri_full: np.ndarray, n_core: int, n_virtual: int = 0) -> np.ndarray:
     """core 平均场对活性一电子积分的修正 (frozen-core 近似):
 
         Δh_ij = Σ_c [2 (cc|ij) - (ci|jc)]          (i, j 为活性轨道)
 
     活性空间 FCI 应使用 ``h1e_eff = h1e_act + Δh``; 这是 McWeeny 标准
     frozen-core 公式中缺失就错的部分 (只做 core-core 能量不闭合)。
+
+    活性块为**中间区间** ``[n_core, norb_full-n_virtual)``: 冻结前 ``n_core`` 个
+    占据 + 后 ``n_virtual`` 个虚轨道 (OBDF 需折叠虚轨道, 现有 "前 n_core 个占据"
+    逻辑无法表达)。虚轨道为空, 不贡献平均场 (``n_virtual=0`` 时退化为原逻辑)。
     """
-    n_act = eri_full.shape[0] - n_core
+    n_orb = eri_full.shape[0]
+    start, end = n_core, n_orb - n_virtual
+    n_act = end - start
     pot = np.zeros((n_act, n_act), dtype=np.float64)
     for c in range(n_core):
-        pot += 2.0 * eri_full[c, c, n_core:, n_core:]       # 库仑 (cc|ij)
-        pot -= eri_full[c, n_core:, n_core:, c]             # 交换 (ci|jc)
+        pot += 2.0 * eri_full[c, c, start:end, start:end]       # 库仑 (cc|ij)
+        pot -= eri_full[c, start:end, start:end, c]             # 交换 (ci|jc)
     return pot
 
 
-def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None) -> MolecularData:
+def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None,
+               n_core: Optional[int] = None,
+               n_virtual: Optional[int] = None) -> MolecularData:
     """从 PySCF 分子 / SCF 对象一键构建 SQD 输入。
 
     Parameters
@@ -120,9 +132,16 @@ def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None) -> MolecularData:
     mf_or_mol : pyscf.gto.Mole | pyscf.scf.RHF
         已收敛的 RHF 对象, 或分子对象 (自动跑 RHF)。
     n_active : int | None
-        活性空间轨道数 (冻结内层 ``norb_full - n_active`` 个 MO)。
-        ``None`` = 全轨道 (n_core=0)。冻结时 ``ecore``/``nelec`` 已按闭壳层
-        修正, 且 MO 假设按能量升序排列 (RHF 默认)。
+        **向后兼容**: 活性空间轨道数 (冻结内层 ``norb_full - n_active`` 个 MO)。
+        ``None`` = 全轨道 (n_core=0)。等价于 ``n_core=norb_full-n_active, n_virtual=0``。
+    n_core : int | None
+        冻结最低 ``n_core`` 个**占据** MO 为 core (活性块起点)。
+    n_virtual : int | None
+        冻结最高 ``n_virtual`` 个**虚** MO (活性块终点 = ``norb_full-n_virtual``)。
+        活性块 = **中间区间** ``[n_core, norb_full-n_virtual)``。
+        - 冻结虚轨道不改变电子数 (虚轨道为空)。
+        - OBDF 下折叠需要冻结虚轨道 (把外部相关折叠进活性 h1e); 现有 ``n_active``
+          只能冻结占据, 无法表达。
 
     Returns
     -------
@@ -132,14 +151,15 @@ def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None) -> MolecularData:
     Raises
     ------
     ValueError
-        非闭壳层 (奇电子)、``n_active`` 超出轨道数、输入既非 Mole 亦非 SCF。
+        ``n_active`` 与 ``n_core``/``n_virtual`` 互斥; 非法区间; 非闭壳层 (奇电子);
+        输入既非 Mole 亦非 SCF。
 
     Notes
     -----
     **开壳层 (n_α≠n_β)**: 原生支持 (P2-1b)。闭壳层自动 RHF, 开壳层 (``mol.spin!=0``)
     自动 ROHF (单 ``mo_coeff``, 空间共用轨道, ROHF 式单 ``h1e``); ``nelec`` 由
     ``mf.nelec`` / ``mol.spin`` 推断 ``(na,nb)``。frozen-core 下 core 双占,
-    活性 ``nelec = (na-n_core, nb-n_core)``。
+    活性 ``nelec = (na-n_core, nb-n_core)`` (与 ``n_virtual`` 无关)。
 
     **不支持 UHF** (自旋分辨轨道, ``mo_coeff`` 形如 ``(2,norb,norb)``): SQD 后端
     拒 ``h_alpha != h_beta``, 请用 ROHF。UHF mf 会显式 raise。
@@ -198,24 +218,45 @@ def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None) -> MolecularData:
         mol.intor("int2e_sph"), mo, mo, mo, mo, optimize=True,
     )
 
+    # ---- 活性空间区间 (start, end) 解析 ----
+    # n_active=N (向后兼容) ≡ n_core=norb_full-N, n_virtual=0 (冻结最低 N 个为 core)。
+    # n_core + n_virtual 显式给出中间区间活性块 [n_core : norb_full-n_virtual),
+    # 用于折叠虚轨道 (OBDF), 现有 n_active 无法表达。
+    if n_active is not None and (n_core is not None or n_virtual is not None):
+        raise ValueError(
+            "n_active 与 n_core/n_virtual 互斥: n_active=N 等价于 "
+            "n_core=norb_full-N, n_virtual=0; 需要折叠虚轨道请用 n_core+n_virtual。"
+        )
     if n_active is not None:
         if not (0 < n_active <= norb_full):
             raise ValueError(
                 f"n_active 必须在 (0, norb_full={norb_full}] 内, got {n_active}."
             )
         n_core = norb_full - n_active
+        n_virtual = 0
     else:
-        n_core = 0
+        n_core = 0 if n_core is None else int(n_core)
+        n_virtual = 0 if n_virtual is None else int(n_virtual)
+        if n_core < 0 or n_virtual < 0 or n_core + n_virtual >= norb_full:
+            raise ValueError(
+                f"n_core+n_virtual 必须 < norb_full={norb_full} (至少留 1 个活性轨道), "
+                f"got n_core={n_core}, n_virtual={n_virtual}."
+            )
 
-    # 活性空间积分 (MO 按能量升序, 内层为 core)
-    h1e = h1e_full[n_core:, n_core:]
-    eri = eri_full[n_core:, n_core:, n_core:, n_core:]
+    start, end = n_core, norb_full - n_virtual
+    n_act = end - start
 
-    # frozen-core 修正: core-core 能量 + core 平均场打进活性 h1e (缺后者不闭合)
+    # 活性空间积分 (MO 按能量升序, 中间区间, 不从头切)
+    h1e = h1e_full[start:end, start:end]
+    eri = eri_full[start:end, start:end, start:end, start:end]
+
+    # frozen-core 修正: core-core 能量 + core 平均场打进活性 h1e (缺后者不闭合)。
+    # 虚轨道为空, 不贡献能量/平均场 (只参与活性块位置)。
     ecore = mf.energy_nuc() + _frozen_core_energy(h1e_full, eri_full, n_core)
     if n_core > 0:
-        h1e = h1e + _frozen_core_potential(eri_full, n_core)
-    # frozen-core: core 双占 (ROHF 式, core 能量/平均场公式不变), 仅 nelec 减 core
+        h1e = h1e + _frozen_core_potential(eri_full, n_core, n_virtual)
+    # frozen-core: core 双占 (ROHF 式, core 能量/平均场公式不变), 仅 nelec 减 core;
+    # 冻结虚轨道不改变电子数。
     n_act_a = na - n_core
     n_act_b = nb - n_core
     if n_act_a < 0 or n_act_b < 0:
@@ -228,10 +269,11 @@ def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None) -> MolecularData:
         h1e=np.asarray(h1e, dtype=np.float64),
         eri=np.asarray(eri, dtype=np.float64),
         ecore=float(ecore),
-        norb=int(norb_full - n_core),
+        norb=int(n_act),
         nelec=nelec,
         n_core=int(n_core),
-        mo_coeff=mo[:, n_core:],
+        n_virtual=int(n_virtual),
+        mo_coeff=mo[:, start:end],
         nuc_energy=float(mf.energy_nuc()),
         mf=mf,
     )

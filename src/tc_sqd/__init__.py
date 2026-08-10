@@ -128,6 +128,13 @@ from .molecule import (
     MolecularData,
     from_pyscf,
 )
+from .obmp2 import (
+    OBMP2Result,
+    obmp2_potential,
+    solve_obmp2,
+    OBDFResult,
+    obdf_downfold,
+)
 from .sampler import (
     sample,
     BACKENDS,
@@ -246,6 +253,12 @@ __all__ = [
     # molecule (from_pyscf 一键分子接口)
     "MolecularData",
     "from_pyscf",
+    # obmp2 (OBMP2 一体相关势 + 自洽求解, OBDF 下折叠的基础)
+    "OBMP2Result",
+    "obmp2_potential",
+    "solve_obmp2",
+    "OBDFResult",
+    "obdf_downfold",
     # sampler (统一采样后端: tc 模拟 / qcloud 真机)
     "sample",
     "BACKENDS",
