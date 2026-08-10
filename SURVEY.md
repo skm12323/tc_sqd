@@ -469,7 +469,7 @@ L1/L2 实测后把最优配置固化成库入口（`integrated.py`）：
 | **OBDF 下折叠 + OBMP2** | arXiv:2605.08675 + 2107.11260 | H₆/cc-pVDZ 小活性空间优于 CAS-SQD | **已落地**（`obmp2` 模块 + `obdf_downfold`，2026-08-10）|
 | AB-SND 神经网络采样 | arXiv:2508.12724 | 2D-EAM 自旋玻璃系统性改善 | 未做（风险高）|
 | SKQD Krylov | arXiv:2501.09702 | SIAM 85 qubit 相对 DMRG ~10⁻⁵ | 未做（化学近期不可用）|
-| GPU 全驻留对角化 | arXiv:2601.16637 | 35-39× 单节点（Thrust matrix-free）| **搁置**（见下）|
+| **GPU matrix-free** | arXiv:2601.16637 | 35-39× 单节点（Thrust matrix-free）| **已落地**（`matrixfree` + `solve_sci(backend="gpu")`，2026-08-10）|
 | qDRIFT 随机化 | ACS 2025 | 降 Krylov 电路深度 | 未做（中低优先）|
 
 **已落地方向（2026-08-10，实测验证）**：
@@ -522,18 +522,22 @@ L1/L2 实测后把最优配置固化成库入口（`integrated.py`）：
       excitations in non-covalent complexes..."**, *J. Chem. Phys.* **162** (2025) ——
       state-specific OBMP2（背景）。
 
-**搁置方向（2026-08-10，实测结论记录）**：
+**GPU matrix-free 落地（2026-08-10，`tc_sqd.matrixfree`）**：
 
-- **GPU 后端**（arXiv:2601.16637 的 matrix-free 路线）：环境就绪（cupy-cuda12x
-  14.1.1 + RTX 5080），实现 `build_sparse_hamiltonian`（保留，独立 API）+
-  `solve_sci(backend="gpu")` 分支。**实测**：GPU eigsh 本身极快（dim=10⁴ 时
-  0.56s，cuSPARSE SpMV），结果与 CPU 完全一致（diff ≤ 1e-13）；但"显式构建
-  稀疏 H"（O(dim) 次 Python 层 contract_2e）**占 95% 耗时**（29s/31s），
-  CPU 隐式 LinearOperator matvec 路径仅 0.42s——GPU 总路径慢 70×。
-  **架构性结论**：论文的 40× 来自 matrix-free（Slater-Condon matvec 直接
-  在 GPU 算，Thrust 核），"CPU 构建 + GPU 对角化"的简单方案构建成本主导、
-  无收益。**待办**：真加速需 matrix-free 重写（RIKEN 级工程，~300-500 行
-  cupy 核），搁置。
+- **环境与前置实测**：cupy-cuda12x 14.1.1 + RTX 5080；早前"CPU 构建稀疏 H +
+  GPU 对角化"方案被否决（构建占 95% 耗时 29s，CPU 隐式 matvec 仅 0.42s，
+  GPU 总路径慢 70×）。论文 40× 来自 **matrix-free**（Slater-Condon matvec 直接
+  GPU 算）。
+- **落地**：`tc_sqd.matrixfree` —— 直接 Slater-Condon σ-vector（对角/单/双/αβ
+  交叉，Fock 型预计算），向量化 einsum/matmul，**后端无关**（numpy/cupy）。
+  `prepare_sigma_operators` 算子一次预计算 + `sigma_vector_ops` 复用；
+  `eigsh_gpu`（cupyx LinearOperator + eigsh）；`solve_sci(backend="gpu")` 集成。
+- **实测**：σ-vector == 稠密 `build_ci_matrix`（H₂/LiH/N₂ ≤1e-8）；cupy matvec
+  比 numpy 快 8×（25ms vs 205ms，dim=14400）；GPU 求解与 CPU/dense 一致（≤1e-13）。
+  ⚠ dim=14400 下 GPU 未超越 pyscf C 核（3ms，启动开销主导）——大维度（10⁵-10⁶）
+  才显 GPU 优势；T 表内存（O(M·na²)）是扩展瓶颈。**架构方向正确**（matrix-free），
+  但"半 GPU"的 numpy/cupy 简单向量化未达 RIKEN 级 Thrust 核性能（~300-500 行
+  RawKernel 是进一步优化点）。
 
 **剩余可选方向（按性价比排序，未做）**：
 
@@ -550,9 +554,9 @@ L1/L2 实测后把最优配置固化成库入口（`integrated.py`）：
 
 **与 2026-08-04 调研（§7）的衔接**：§7 的"基设计 + 自适应采样 + 拟 Krylov 理论化"
 结论不变；本次调研新增了恢复侧（CSQD）、后处理侧（自旋惩罚）、预处理侧（OBDF/
-OBMP2）、规模侧（GPU）四个维度的评估，其中**恢复侧、后处理侧、预处理侧已落地**
-（OBDF/OBMP2 见 `tc_sqd.obmp2`），**规模侧（GPU matrix-free）因架构限制仍搁置**
-（"CPU 构建 + GPU 对角化"实测无收益，需 matrix-free 重写，见 `docs/HANDOFF_gpu_obdf.md`）。
+OBMP2）、规模侧（GPU matrix-free）四个维度的评估，**四侧全部已落地**（OBDF/OBMP2
+见 `tc_sqd.obmp2`，GPU matrix-free 见 `tc_sqd.matrixfree` + `solve_sci(backend="gpu")`）。
+GPU 侧保留了 `build_sparse_hamiltonian`（独立 API），matrix-free 是大维度正解。
 
 ---
 

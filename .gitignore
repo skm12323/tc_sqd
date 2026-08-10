@@ -48,6 +48,9 @@ DISCUSSION.md
 # 画图数据缓存 (生成物, --plot 模式用; 不入库)
 _plot_data_*.npy
 
+# 交接文档 (任务已完成, 本地参考用; 不入库)
+docs/HANDOFF_gpu_obdf.md
+
 # 外部依赖源码 (Dice/shciscf 下载) 不入库
 third_party/
 

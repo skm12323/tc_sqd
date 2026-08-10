@@ -1245,7 +1245,37 @@ Fock，v_oo = Σ_ikab t_ik^ab ⟨jk‖ab⟩，v_vv = -½ Σ_ijc t_ij^ac ⟨ij‖
 完整 OBMP2（BCH 展开、外部振幅筛选、自洽轨道优化）是论文核心贡献，简化版
 收益未证明。
 
-## GPU 后端：实现验证后搁置（2026-08-10）
+## GPU matrix-free 落地（2026-08-10，`tc_sqd.matrixfree`）
+
+**背景**：早前"CPU 构建稀疏 H + GPU 对角化"方案被否决（下节保留实测），论文 40×
+来自 **matrix-free**。2026-08-10 实现**直接 Slater-Condon σ-vector**（绕开逐列
+contract_2e），后端无关（numpy/cupy）。
+
+**实现**（`src/tc_sqd/matrixfree.py`）：
+- **σ-vector**：`sigma_vector` 枚举每个 CI 字符串的单/双激发连接，矩阵元解析推导
+  （对角闭合式、单激发 Fock 型四块预计算、双激发 eri、αβ 交叉）。修复两个 bug：
+  ① 单激发符号（源位被错误计入 crossing → 符号反）；② β 双激发用了 α 式收缩
+  （应作用在列索引）。
+- **算子预计算**：`prepare_sigma_operators`（T 表 + Fock + diag + me 一次算好）+
+  `sigma_vector_ops`（后端无关 matvec，numpy/cupy 复用）。
+- **GPU 求解**：`eigsh_gpu`（cupyx LinearOperator + eigsh）→ `solve_sci(backend="gpu")`
+  基态分支（dim>1000）。
+
+**验证**：
+- σ-vector == 稠密 `build_ci_matrix`：H₂ 1.8e-15 / LiH 1.7e-15 / **N₂ dim=14400 8e-13**。
+- cupy matvec 正确（diff 5.7e-14），比 numpy 快 **8×**（25ms vs 205ms，dim=14400）。
+- `solve_sci(backend="gpu")` 与 CPU/dense 一致（E diff ≤ 1e-13，S²/RDM 一致）。
+
+**性能评估**：dim=14400 下 GPU（25ms/matvec）**未超越 pyscf C 核 contract_2e**
+（3ms，启动开销主导）——大维度（10⁵-10⁶）才显 GPU 优势。**架构方向正确**
+（matrix-free），但"半 GPU"简单向量化未达 RIKEN 级 Thrust 核性能；T 表内存
+（O(M·na²)）是扩展瓶颈。`build_sparse_hamiltonian` 保留为独立 API。
+
+**测试**：`tests/test_matrixfree.py` 3 项（σ==稠密 / ops==直接 / GPU==CPU，GPU skip 分支）。
+
+## GPU 后端：实现验证后搁置（2026-08-10，历史记录）
+> **已被上节取代**：`solve_sci(backend="gpu")` 已以 matrix-free 方式重新落地，
+> 见「GPU matrix-free 落地」。本节保留"CPU 构建 + GPU 对角化"被否决的实测。
 
 调研 arXiv:2601.16637（GPU 全驻留 matrix-free 选态对角化，35-39×）后实现：
 - 环境：cupy-cuda12x 14.1.1 + RTX 5080（WSL CUDA 13.1 驱动）就绪
@@ -1267,9 +1297,6 @@ Fock，v_oo = Σ_ikab t_ik^ab ⟨jk‖ab⟩，v_vv = -½ Σ_ijc t_ij^ac ⟨ij‖
 70×。论文的 40× 来自 **matrix-free**（Slater-Condon matvec 直接 GPU 算，
 Thrust 核）；"CPU 构建 + GPU 对角化"的简单方案构建成本主导、无收益。
 
-**待办**（如续）：matrix-free 重写（~300-500 行 cupy 核：单/双激发索引 +
-矩阵元查表 + SpMV），绕开 PySCF contract_2e；或集成 RIKEN `sbd` eigensolver。
-
 ## 后续可选改进（非阻塞）
 
 按 2026-08-10 调研（SURVEY §8.9）更新，剩余可选方向按性价比排序：
@@ -1288,8 +1315,9 @@ Thrust 核）；"CPU 构建 + GPU 对角化"的简单方案构建成本主导、
   + `tc_sqd.obmp2`（`solve_obmp2`/`obdf_downfold`），大基组实测见「OBMP2 + OBDF：
   完整自洽实现落地」。剩余：v^ext 的 10× 归一化开放问题 + 完整自洽 OBMP2 的
   2nd-BCH 精细核对
-- **GPU matrix-free 重写**（搁置中）——真加速需 Slater-Condon matvec 直接
-  GPU 化（cupy 核或 RIKEN `sbd`），"CPU 构建 + GPU 对角化"实测无收益
+- ~~**GPU matrix-free 重写**~~（**已落地 2026-08-10**）——`tc_sqd.matrixfree` +
+  `solve_sci(backend="gpu")`，见「GPU matrix-free 落地」。剩余：大维度性能
+  （~300-500 行 RawKernel/RIKEN `sbd` 是进一步优化点）+ T 表内存扩展
 - **qDRIFT 随机化**——降 Krylov/演化电路深度（中低优先）
 - **>53 轨道支持**——核对 `bitstring_matrix_to_ci_strs` 64-bit 上限
 - 配置恢复 tie-breaking 随机性的统计性测试

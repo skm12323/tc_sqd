@@ -53,6 +53,16 @@ numpy≥2 / jax 的硬性要求**。
   收敛仅 1.7×）；distill 依赖首轮 |Ψ⟩ 质量（近收敛边际、远未收敛有害）；PT2 修正普适。
   adaptive NO 换基在大体系默认参数下差于 active（子空间缩）；UCJ 采样需 CCSD 收敛
   （强关联 R=3.0 不收敛则失效）。详见 REVIEW「L1/L2 改进实验」
+- **OBMP2 自洽方法 + OBDF 下折叠**（`obmp2`，2026-08-10）：自旋轨道显式实现 Tran 2021
+  一体相关势（1st+2nd BCH、Ω̂ 对称化），`solve_obmp2` 自洽收敛 E≈CCSD（N₂/STO-3G 平衡差
+  0.3 mHa）。`obdf_downfold` 把外部相关折叠进活性 h1e（`H_OBDF=H_CAS+scale·v^ext`，仅改
+  h1e）——弱关联 N₂/H₂O/cc-pVDZ 6-10o 活性 OBDF err **0.006-0.012 Ha**（CAS 0.21-0.30，
+  改善 18-38×，近 CCSD(T)）。配套 `from_pyscf(n_core, n_virtual)` 中间区间活性空间。
+  ⚠ 强关联（R=3.0）过校正、scale 几何依赖（校准 ~0.1 弱关联 / ~0.01 强关联），详见 REVIEW。
+- **matrix-free GPU 对角化**（`matrixfree`）：向量化 Slater-Condon σ-vector
+  （`sigma_vector`/`sigma_vector_ops`，后端无关 numpy/cupy）+ `solve_sci(backend="gpu")`
+  （cupyx eigsh，结果与 CPU 一致 ≤1e-13）。绕开"显式构建稀疏 H"瓶颈（O(dim) 次
+  contract_2e），是 arXiv:2601.16637 matrix-free 路线；dim 大时 GPU 优势显现。
 - **真机一站式**（`hardware`）：腾讯 qcloud 校准加载 / 选最优 qubit 子图 / 真机采样 / SQD 后处理
 - **统一采样后端**（`sampler`）：`sample(circuit, n_samples, backend="tc"/"qcloud")` 一行切换
   模拟器 / 真机，下游 SQD 流水线不变（开发用 tc，交付用真机）
@@ -222,8 +232,14 @@ e = tc_sqd.compute_ground_state_energy(
 | predict | `max_depth_for_accuracy(T1, t_gate, shots, target, excited)` | 反向预测达目标精度的 depth 上限（int 薄封装）|
 | predict | `plan_sampling(T1, t_gate, *, target, excited, ...)` | 采样预算分配：枚举 (shots, depth) 网格，按成本排序可行方案 |
 | predict | `calibrate(h1e, eri, norb, nelec, *, circuit, ...)` | 跨体系校准 KS/KT1（二元 LSQ；circuit= 实际采样 / None=FCI 密度 benchmark）|
-| molecule | `from_pyscf(mf_or_mol, *, n_active)` | 一键构建 SQD 输入（MO 积分 + 核能 + 电子数，活性空间冻结 core）|
+| molecule | `from_pyscf(mf_or_mol, *, n_active, n_core, n_virtual)` | 一键构建 SQD 输入（MO 积分 + 核能 + 电子数，活性空间冻结 core，`n_core`+`n_virtual` 中间区间可折叠虚轨道）|
 | molecule | `MolecularData.solve(method, ...)` | 一键求基态能量（fci/sqd/direct）|
+| obmp2 | `solve_obmp2(mf, ...)` | OBMP2 自洽求解（一体相关势，E≈CCSD）|
+| obmp2 | `obdf_downfold(mf, n_core, n_virtual, *, scale)` | OBDF 下折叠：外部相关折叠进活性 h1e（`H_OBDF=H_CAS+scale·v^ext`）|
+| matrixfree | `sigma_vector(v, ci_a, ci_b, norb, nelec, h1e, eri)` | 向量化 Slater-Condon σ-vector（matrix-free matvec）|
+| matrixfree | `sigma_vector_ops(v, ops, xp)` | 后端无关 σ-vector（预计算算子，numpy/cupy 复用）|
+| matrixfree | `eigsh_gpu(ops, dim, ...)` | matrix-free GPU 本征求解（cupyx eigsh）|
+| fermion | `solve_sci(..., backend="gpu")` | 子空间对角化 GPU 后端（matrix-free cupy，结果与 CPU 一致）|
 | diagnostics | `sampling_report(h1e, eri, norb, nelec, bsm, ...)` | 采样质量综合报告（熵/维度/配置/收敛曲线）|
 | diagnostics | `energy_convergence(...)` | 能量随 shots 收敛曲线 |
 | diagnostics | `shannon_entropy(probs)` / `subspace_dimension(bsm)` | 采样熵 / 子空间维度 |
@@ -269,6 +285,8 @@ PYTHONPATH=src python -m tests.test_t1_recovery  # T1 感知恢复 3 个测试
 PYTHONPATH=src python -m tests.test_excited      # 激发态采样策略 4 个测试
 PYTHONPATH=src python -m tests.test_sampler      # 统一采样后端 5 个测试
 PYTHONPATH=src python -m tests.test_ansatz       # SQD+VQE 4 个测试
+PYTHONPATH=src python -m tests.test_obmp2        # OBMP2/OBDF 8 个测试
+PYTHONPATH=src python -m tests.test_matrixfree   # matrix-free σ-vector + GPU 3 个测试
 PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 PYTHONPATH=src python examples/excited_sqd_demo.py  # 激发态 SQD 全链路 (LiH)
 PYTHONPATH=src python examples/noise_aware_demo.py  # 噪声感知全链路 (T1反卷积+规划+诊断)
@@ -294,8 +312,8 @@ tc_sqd/
 ├── README.md                 # 本文件
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
-├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, integrated, noise, predict, hardware, molecule, diagnostics, sampler, _compat
-├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_open_shell, test_subsampling, test_t1_recovery, test_excited, test_sampler, test_ansatz, test_hardware
+├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, integrated, noise, predict, hardware, molecule, diagnostics, sampler, obmp2, matrixfree, _compat
+├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_open_shell, test_subsampling, test_t1_recovery, test_excited, test_sampler, test_ansatz, test_hardware, test_obmp2, test_matrixfree
 └── examples/
     ├── h2_sqd_demo.py        # H2 完整演示
     ├── excited_sqd_demo.py   # 激发态 SQD 全链路 (LiH: n_roots + 激发配置强制纳入)
