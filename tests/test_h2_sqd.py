@@ -873,6 +873,120 @@ def test_solve_sci_csf_spin_purity_and_validation():
         pass
 
 
+def test_solve_sci_csf_penalty_matches_projection():
+    """自旋惩罚法 (λ) 在全空间 H2 上与投影法一致 (都定 singlet, 能量≈FCI)。"""
+    from pyscf.fci import direct_spin1
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    ci_a = cistring.make_strings(range(d.norb), 1)
+    ci_b = cistring.make_strings(range(d.norb), 1)
+
+    r_proj = tc_sqd.solve_sci_csf(
+        (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec,
+        spin_sq=0.0, method="projection")
+    r_pen = tc_sqd.solve_sci_csf(
+        (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec,
+        spin_sq=0.0, method="penalty", spin_penalty=0.1)
+
+    e_fci = direct_spin1.kernel(d.h1e, d.eri, d.norb, d.nelec,
+                                conv_tol=1e-12)[0]
+    # 全空间含纯 singlet: 惩罚法与投影法都取到 FCI 基态
+    assert abs(r_proj.energy - e_fci) < 1e-8
+    assert abs(r_pen.energy - e_fci) < 1e-8, \
+        f"惩罚法全空间能量 ≠ FCI: {r_pen.energy} vs {e_fci}"
+    assert abs(r_proj.spin_square - 0.0) < 1e-8
+    assert abs(r_pen.spin_square - 0.0) < 1e-6, \
+        f"惩罚法 S² 应≈0: {r_pen.spin_square}"
+    print(f"  PASS: penalty & projection agree on full H2 "
+          f"(E={r_pen.energy:.8f}, S²={r_pen.spin_square:.6f})")
+
+
+def test_solve_sci_csf_penalty_no_raise_on_spin_mixed():
+    """惩罚法在自旋混合子空间不 raise (投影法会 raise 的不可达场景)。"""
+    mol = gto.M(atom="Li 0 0 0; H 0 0 1.6", basis="sto-3g", verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    bsm = np.random.default_rng(0).random((20, 2 * d.norb)) > 0.5
+    rec, _ = tc_sqd.recover_configurations(
+        bsm, np.full(20, 1.0 / 20),
+        (np.full(d.norb, 0.5), np.full(d.norb, 0.5)),
+        d.nelec[0], d.nelec[1], rand_seed=0)
+    ci_a, ci_b = tc_sqd.bitstring_matrix_to_ci_strs(rec)
+
+    # 投影法对不可达自旋 (S²=12) 应 raise
+    try:
+        tc_sqd.solve_sci_csf(
+            (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec,
+            spin_sq=12.0, method="projection")
+        assert False, "投影法对不可达自旋应报错"
+    except ValueError:
+        pass
+    # 惩罚法不 raise, 返回有限解, S² 被压向 12 (虽不可达, 但解存在)
+    r = tc_sqd.solve_sci_csf(
+        (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec,
+        spin_sq=12.0, method="penalty", spin_penalty=0.1)
+    assert np.isfinite(r.energy)
+    # 惩罚把解推向高自旋: 平均 S² 应显著高于无惩罚的 singlet 结果
+    r_sing = tc_sqd.solve_sci_csf(
+        (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec,
+        spin_sq=0.0, method="penalty", spin_penalty=0.1)
+    assert r.spin_square > r_sing.spin_square, \
+        f"高自旋惩罚应推高 S²: {r.spin_square} vs {r_sing.spin_square}"
+    print(f"  PASS: penalty no-raise on spin-mixed space; "
+          f"S²(high-spin target)={r.spin_square:.3f} > S²(singlet)="
+          f"{r_sing.spin_square:.3f}")
+
+
+def test_solve_sci_csf_penalty_strength_effect():
+    """惩罚强度 λ 增大, 解越靠近目标自旋 (S² 不增), 同时能量代价上升。
+
+    用 CH/STO-3G 的 M_S=1/2 sector (混合 doublet S²=0.75 与 quartet S²=3.75,
+    见 test_solve_sci_csf_ch_doublet_and_quartet)。无惩罚时基态 = quartet
+    (S²≈3.75); 惩罚定 doublet (S²=0.75) 应随 λ 增大把 S² 压向 0.75。
+    """
+    mol = gto.M(atom="C 0 0 0; H 0 0 1.0", basis="sto-3g", spin=1, verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    na, nb = d.nelec
+    ci_a = cistring.make_strings(range(d.norb), na)
+    ci_b = cistring.make_strings(range(d.norb), nb)
+
+    s2_vals, e_vals = [], []
+    for lam in [0.0, 0.01, 0.1, 1.0]:
+        r = tc_sqd.solve_sci_csf(
+            (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec,
+            spin_sq=0.75, method="penalty", spin_penalty=lam)
+        s2_vals.append(r.spin_square)
+        e_vals.append(r.energy)
+    print(f"  λ-sweep: S² = {[f'{v:.4f}' for v in s2_vals]}  "
+          f"E = {[f'{v:.6f}' for v in e_vals]}")
+    # λ 从 0 → 大: S² 单调不增 (压向 0.75; 0.75 可达所以最终应接近)
+    for a, b in zip(s2_vals[:-1], s2_vals[1:]):
+        assert b <= a + 1e-6, f"S² 应单调不增: {s2_vals}"
+    # 强惩罚下 S² 显著低于无惩罚
+    assert s2_vals[0] > s2_vals[-1] + 1e-3, \
+        f"强惩罚未压低 S² (从 quartet 压向 doublet): {s2_vals}"
+    # 强惩罚下解更接近目标: S² 应接近 0.75
+    assert abs(s2_vals[-1] - 0.75) < 0.5, \
+        f"强惩罚后 S² 应接近 doublet 0.75, got {s2_vals[-1]}"
+    print(f"  PASS: λ-sweep S² non-increasing, pulled toward 0.75 "
+          f"({s2_vals[0]:.3f} → {s2_vals[-1]:.3f})")
+
+
+def test_solve_sci_csf_penalty_invalid_method():
+    """非法 method 值应报错。"""
+    mol = gto.M(atom="H 0 0 0; H 0 0 0.74", basis="sto-3g", verbose=0)
+    d = tc_sqd.from_pyscf(mol)
+    ci_a = cistring.make_strings(range(d.norb), 1)
+    ci_b = cistring.make_strings(range(d.norb), 1)
+    try:
+        tc_sqd.solve_sci_csf(
+            (ci_a, ci_b), d.h1e, d.eri, d.norb, d.nelec,
+            spin_sq=0.0, method="bogus")
+        assert False, "非法 method 应报错"
+    except ValueError:
+        pass
+    print("  PASS: invalid method rejected")
+
+
 if __name__ == "__main__":
     test_counts()
     test_fermion_sqd()
@@ -886,4 +1000,8 @@ if __name__ == "__main__":
     test_solve_sci_csf_h2_singlet()
     test_solve_sci_csf_ch_doublet_and_quartet()
     test_solve_sci_csf_spin_purity_and_validation()
+    test_solve_sci_csf_penalty_matches_projection()
+    test_solve_sci_csf_penalty_no_raise_on_spin_mixed()
+    test_solve_sci_csf_penalty_strength_effect()
+    test_solve_sci_csf_penalty_invalid_method()
     print("All tests passed!")

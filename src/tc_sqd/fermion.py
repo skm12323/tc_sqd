@@ -815,21 +815,31 @@ def solve_sci_csf(
     *,
     spin_sq: float,
     spin_tol: float = 1e-3,
+    method: str = "projection",
+    spin_penalty: float = 0.1,
     verbose: bool = False,
 ) -> SCIResult:
-    """自旋适配 (CSF 式, 路线 A: S² 投影) 子空间对角化。
+    """自旋适配 (CSF 式) 子空间对角化, 支持投影法 / 惩罚法两种路线。
 
     **动机 (方向①)**: det 基的子空间对角化会把不同自旋的态混在一起 (自旋污染);
     C₂ 式准简并 (基态 singlet vs 第二根 triplet) 下易跳根或混入错误自旋分量。CSF 是
-    S² 本征态, 构造即自旋纯。本函数在 det 子空间内构建 **S² 矩阵**, 投影到目标自旋
-    本征空间后再对角化 H —— 与"在 CSF 基对角化"等价 (子空间完备时即精确自旋适配),
-    但复用现有 det / contract 基建, 无需 det→CSF 展开表。
+    S² 本征态, 构造即自旋纯。本函数在 det 子空间内构建 **S² 矩阵**, 用两种方式之
+    一施加目标自旋约束 (子空间完备时均等价于"在 CSF 基对角化")。
 
-    **算法**:
+    **算法 (method="projection", 默认)**:
       1. S² 矩阵: 第 i 列 = ``spin_op.contract_ss(basis_i)`` (O(dim) 次调用)。
       2. ``eigh(S²)`` → 取 S²≈``spin_sq`` 的本征空间 P (列 = 自旋本征矢)。
       3. H 投影: ``H_proj = Pᵀ H P`` (n_spin × n_spin), ``eigh`` 对角化。
       4. 基态回到 det 基 (``c_det = P @ c_proj[:,0]``)。
+      *子空间不含目标自旋时 raise* (与 ``solve_sci`` 的 ``spin_sq`` 分支一致)。
+
+    **算法 (method="penalty")**:
+      1. 同投影法构建 S² 矩阵 (不 eigh 分解)。
+      2. 惩罚修正: ``H_pen = H + λ (S² - spin_sq)²``, ``eigh`` 对角化整个 H_pen。
+      3. 基态 c 直接取 H_pen 最小本征矢 (未投影, 但被惩罚压向目标自旋)。
+      *子空间不含纯目标自旋时不报错* —— 惩罚法用连续势把解压向目标自旋,
+      对近简并 / 混合自旋子空间更稳健 (CSQD 论文 arXiv:2603.09346 的用法, λ=0.1)。
+      代价: 解不是严格自旋纯 (S² 与目标偏差随 λ 增大而减小)。
 
     Parameters
     ----------
@@ -839,20 +849,25 @@ def solve_sci_csf(
     spin_sq : float
         **目标 S² 本征值** (0.0=singlet, 0.75=doublet, 2.0=triplet, ...)。
     spin_tol : float
-        S² 匹配容差 (本征值偏差 < tol 的本征空间入选)。
+        (仅 ``method="projection"``) S² 匹配容差 (本征值偏差 < tol 的本征空间入选)。
+    method : {"projection", "penalty"}
+        自旋约束施加方式。``"projection"`` = 投影到目标自旋本征空间 (严格自旋纯,
+        子空间无目标自旋时 raise); ``"penalty"`` = H + λ(S²-spin_sq)² 惩罚 (不 raise,
+        连续压向目标自旋, 适合子空间自旋不纯的场景)。
+    spin_penalty : float
+        (仅 ``method="penalty"``) 惩罚强度 λ (论文用 0.1)。
     verbose : bool
 
     Returns
     -------
     SCIResult
-        ``spin_square`` 应 ≈ ``spin_sq`` (构造即自旋纯)。
+        ``spin_square`` 应 ≈ ``spin_sq`` (投影法构造即自旋纯; 惩罚法接近但非严格)。
 
     Notes
     -----
-    - 成本: S² 矩阵构建 O(dim) 次 ``contract_ss`` + 两次 O(dim³) ``eigh`` (S² 与 H_proj)。
+    - 成本: 两法均需 S² 矩阵构建 O(dim) 次 ``contract_ss`` + O(dim³) ``eigh``。
       适合 dim ≲ 2000 的子空间; 大子空间用现有 :func:`solve_sci` + eigsh。
-    - 子空间不含目标自旋时 raise (与 ``solve_sci`` 的 ``spin_sq`` 分支一致)。
-    - 对 M_S 混合的 det 子空间 (α/β 不同占据组合), 投影同时消除 S² 与 M_S 污染。
+    - 对 M_S 混合的 det 子空间 (α/β 不同占据组合), 两法均消除 M_S 污染。
     """
     ci_strs_a, ci_strs_b = ci_strings
     # h1e prep (与 solve_sci 一致): direct_spin1 需单个 (norb, norb)
@@ -897,15 +912,21 @@ def solve_sci_csf(
         S2[:, i] = np.asarray(spin_op.contract_ss(civec, norb, nelec)).ravel()
     S2 = 0.5 * (S2 + S2.T)                       # 数值对称化 (理论 Hermitian)
 
-    # ---- 2) 目标自旋本征空间 ----
-    s2_evals, s2_evecs = np.linalg.eigh(S2)
-    keep = np.abs(s2_evals - spin_sq) < spin_tol
-    if not np.any(keep):
+    if method not in ("projection", "penalty"):
         raise ValueError(
-            f"子空间无 S²≈{spin_sq} (tol {spin_tol}) 的自旋本征空间; "
-            f"S² 谱={np.round(s2_evals, 4)}"
+            f"method must be 'projection' or 'penalty', got {method!r}."
         )
-    P = s2_evecs[:, keep]                        # (dim, n_spin)
+
+    # ---- 2) 目标自旋约束: 投影法取本征空间; 惩罚法整矩阵处理 ----
+    if method == "projection":
+        s2_evals, s2_evecs = np.linalg.eigh(S2)
+        keep = np.abs(s2_evals - spin_sq) < spin_tol
+        if not np.any(keep):
+            raise ValueError(
+                f"子空间无 S²≈{spin_sq} (tol {spin_tol}) 的自旋本征空间; "
+                f"S² 谱={np.round(s2_evals, 4)}"
+            )
+        P = s2_evecs[:, keep]                    # (dim, n_spin)
 
     # ---- 3) H 矩阵 (复用 solve_sci 基态分支的 contract_2e 路径) ----
     from pyscf import ao2mo as _ao2mo
@@ -928,10 +949,17 @@ def solve_sci_csf(
         e_col[col] = 1.0
         H[:, col] = _hop(e_col)
 
-    # ---- 4) 投影到目标自旋空间 + 对角化 ----
-    H_proj = P.T @ H @ P                         # (n_spin, n_spin)
-    e_vals, c_proj = np.linalg.eigh(H_proj)
-    c_det = (P @ c_proj[:, 0]).reshape(na, nb)   # 基态回到 det 基
+    # ---- 4) 施加自旋约束 + 对角化 ----
+    if method == "projection":
+        H_proj = P.T @ H @ P                     # (n_spin, n_spin)
+        e_vals, c_proj = np.linalg.eigh(H_proj)
+        c_det = (P @ c_proj[:, 0]).reshape(na, nb)  # 基态回到 det 基
+    else:  # penalty
+        # H_pen = H + λ (S² - spin_sq)² —— 连续势把解压向目标自旋。
+        # 直接对角化整个 H_pen (不投影, 不 raise)。
+        H_pen = H + spin_penalty * (S2 - spin_sq * np.eye(dim)) ** 2
+        e_vals, c_pen = np.linalg.eigh(H_pen)
+        c_det = c_pen[:, 0].reshape(na, nb)
 
     civec = selected_ci._as_SCIvector(c_det, (ci_a, ci_b))
     s2_final = float(selected_ci.spin_square(civec, norb, nelec)[0])
