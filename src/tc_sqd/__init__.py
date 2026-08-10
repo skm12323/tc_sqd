@@ -135,6 +135,13 @@ from .obmp2 import (
     OBDFResult,
     obdf_downfold,
 )
+from .matrixfree import (
+    sigma_vector,
+    prepare_sigma_tables,
+    prepare_sigma_operators,
+    sigma_vector_ops,
+    eigsh_gpu,
+)
 from .sampler import (
     sample,
     BACKENDS,
@@ -259,6 +266,12 @@ __all__ = [
     "solve_obmp2",
     "OBDFResult",
     "obdf_downfold",
+    # matrixfree (向量化 Slater-Condon σ-vector + GPU matrix-free 对角化)
+    "sigma_vector",
+    "prepare_sigma_tables",
+    "prepare_sigma_operators",
+    "sigma_vector_ops",
+    "eigsh_gpu",
     # sampler (统一采样后端: tc 模拟 / qcloud 真机)
     "sample",
     "BACKENDS",

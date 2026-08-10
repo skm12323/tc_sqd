@@ -664,6 +664,7 @@ def solve_sci(
     *,
     spin_sq: Optional[float] = None,
     n_roots: Optional[int] = None,
+    backend: str = "cpu",
     **kwargs,
 ):
     """Diagonalise the Hamiltonian in the subspace defined by ``ci_strings``.
@@ -681,6 +682,10 @@ def solve_sci(
         Number of eigenstates to return. ``None``/1 = ground state only
         (returns :class:`SCIResult`); ``>1`` = low-lying excited states
         (returns ``list[SCIResult]`` in ascending energy). 激发态 SQD.
+    backend : {"cpu", "gpu"}
+        对角化后端。``"cpu"`` = scipy eigsh / numpy eigh (默认); ``"gpu"`` =
+        matrix-free cupy (``tc_sqd.matrixfree``, 需 cupy + NVIDIA GPU)。仅基态
+        分支 (dim>1000) 生效; 小空间仍用 numpy eigh。结果与 CPU 一致 (≤1e-13)。
     **kwargs
         Forwarded to ``pyscf.fci.selected_ci.kernel_fixed_space``.
 
@@ -828,7 +833,15 @@ def solve_sci(
                 norb, nelec, link).reshape(-1)
             return np.ascontiguousarray(hv, dtype=np.float64)
 
-        if dim <= 1000:
+        if backend == "gpu":
+            # matrix-free GPU 对角化 (cupyx eigsh + 向量化 Slater-Condon σ-vector)
+            from .matrixfree import prepare_sigma_operators, eigsh_gpu
+            ops = prepare_sigma_operators(ci_a, ci_b, norb, nelec,
+                                          np.asarray(h1e), np.asarray(two_body_tensor))
+            e_vals, c_vec = eigsh_gpu(ops, dim, k=1, which="SA", tol=1e-8)
+            e_tot = float(e_vals[0])
+            c_1d = np.asarray(c_vec).ravel()
+        elif dim <= 1000:
             # 小空间: 显式构建 H + numpy eigh (无 ARPACK k>=N 限制, 绝对可靠)
             H = np.zeros((dim, dim))
             for col in range(dim):
