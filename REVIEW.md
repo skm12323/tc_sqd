@@ -1391,3 +1391,49 @@ Thrust 核）；"CPU 构建 + GPU 对角化"的简单方案构建成本主导、
   外推实测过冲（N₂/C₂ 均落 FCI 之下），不作默认**
 - **方向 E 强化**：`recommend_sqd_params` 接入真实校准（`calibrate` 拟合的
   KS/KT1 回填）；`noise_impact` 支持 T2/读出噪声类型与多参数安全区扫描
+
+## 方向 C1：尾部发现采样（round_001 部分验证，2026-08-12）
+
+**来源**：SQD-AA（arXiv:2605.02565）振幅抑制的经典模拟版。SQUAD 协作 round_001
+全流水线验证（R1 调研→R2 理论→R3 实现→R4 审查→R5 跑分）。
+
+**实现**（commit `6b510b1`，`tc_sqd.tail_sampling`）：
+- `suppress_seen_bitstrings`（批内抑制：丢弃恢复后 α∈seen_a ∧ β∈seen_b 的位串）
+- `discover_tail_pool`（过抽尾部发现：10× 预算抽新随机位串 → 恢复 → 抑制已见 → 收集新贡献）
+- `solve_sqd_active` / `solve_sqd_ev` 加 `tail_suppression` / `tail_max_draw_factor` /
+  `tail_n_target_per_round`（默认全关，零行为变化；全库 167 测试通过）
+- **distill 边界形式化保证**：API 绝不接受/读取 c2d，只读 (seen_a, seen_b)
+
+**实测**（A/B 对照，同 seed 同 max_strings，差异纯净归因 C1）：
+
+| 体系 | shots | baseline err | C1 err | 比值 | 判定 |
+|---|---|---|---|---|---|
+| N₂/cc-pVDZ **(12,12)** @100 seed=0 | 100 | 1.958e-4 | **7.979e-5** | 2.45× | 部分 |
+| N₂/cc-pVDZ **(12,12)** @100 seed=3 | 100 | 2.493e-4 | 1.362e-4 | 1.83× | 部分（种子依赖）|
+| N₂/cc-pVDZ **(10o)** @80 seed=0 | 80 | 9.702e-7 | **1.395e-8**（补满全空间）| **70×** | 通过 |
+| P2 诊断（12,12 n_new 末轮）| 100 | 10 / 6 | **41 / 40** | **4.1× / 6.7×** | 机制生效 |
+
+**结论状态：部分（机制成立、未达 3× 目标、种子依赖）**
+- **机制端确认**（P2）：C1 每轮新 det 41-80 全程保持 vs baseline 5-10（coupon-collector
+  尾部被削），跨 seed 稳健（4.1×/6.7×）。C1 确实改变了采样覆盖。
+- **精度改善 ~2.1× 均值**（1.8-2.9×），小于电路模式 SQD-AA 的 3× 目标。
+  主因 = **低振幅稀释**（"发现更多 det ≠ 发现更重要的 det"）。
+- **10o 补满全空间**（80 shots → err 1.4e-8 = FCI 级），预期外强结果。
+- **wall 不倒退**（C1 1009s vs baseline 1094s），内存 <1GB。
+
+**关键实现发现（R5）**：C1 **bootstrap 预算与 shots 解耦** —— tail_suppression=True 时
+每轮用 discover_tail_pool 固定预算（10×30=300/轮）替代初始池，初始 bsm 行数（shots）
+仅在 discover 返回空池回退时生效。**@500 shots C1 与 @100 shots 逐位相同**：低 shots 端
+巨大增益（100 shots → dim 341k），高 shots 端反而落后普通基线（不用多出的 shots）。
+这是 bootstrap 模式的结构性局限。
+
+**不按证伪处理**的理由：P2 机制 + P1 不回归 + wall 不倒退 三项独立实证均成立。
+"部分"指向改进方向（预算缩放 + 软抑制），不是机制失效。
+
+**后续改进（round_002 候选）**：
+1. **预算随 shots 缩放**（最直接杠杆）：discover_tail_pool 总预算与 shots 挂钩
+2. **软抑制护栏**（suppression="decay" / prob_floor）：抑制过平引入低振幅 det
+3. **电路模式 C1**（需非-CCSD ansatz）：C1 在电路模式才预期 3×+ 纯粹机制
+
+**口径修正**：theory.md 的 `<500 random>` 配方与基线 2.28e-4 不一致（500 shots 实测
+5.28e-7 近收敛）；2.28e-4 实际对应 ~100 shots。后续 task 需对齐 shots 数与基线引用。
