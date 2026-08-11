@@ -144,6 +144,10 @@ from .matrixfree import (
     sigma_linkstr_gpu,
     eigsh_linkstr_gpu,
 )
+from .selected_ci_gpu import (
+    sigma_selected_ci_gpu,
+    eigsh_selected_ci_gpu,
+)
 from .sampler import (
     sample,
     BACKENDS,
@@ -276,6 +280,9 @@ __all__ = [
     "eigsh_gpu",
     "sigma_linkstr_gpu",
     "eigsh_linkstr_gpu",
+    # selected_ci_gpu (selected-CI 子空间 GPU matrix-free: 3-contraction RawKernel)
+    "sigma_selected_ci_gpu",
+    "eigsh_selected_ci_gpu",
     # sampler (统一采样后端: tc 模拟 / qcloud 真机)
     "sample",
     "BACKENDS",

@@ -86,6 +86,29 @@ def test_solve_sci_gpu_matches_cpu():
     assert abs(r_cpu.energy - r_gpu.energy) < 1e-8
 
 
+def test_solve_sci_gpu_subspace_matches_cpu():
+    """solve_sci(backend='gpu') 子空间 == cpu (关键: selected-CI 子空间正确性)。
+
+    此前 linkstr_gpu 子空间错 (丢双激发), 本测试锁定 selected_ci_gpu 子空间正确。
+    """
+    try:
+        import cupy  # noqa
+        if not cupy.cuda.runtime.getDeviceCount():
+            raise ImportError("no GPU")
+    except Exception:
+        import pytest
+        pytest.skip("cupy / GPU 不可用")
+    from pyscf.fci import cistring
+    mol = gto.M(atom="N 0 0 0; N 0 0 1.1", basis="sto-3g", verbose=0)
+    h1e, eri, norb, nelec = _ints(mol)
+    full = np.array(cistring.make_strings(range(norb), nelec[0]), dtype=np.int64)
+    ci_a = full[:40]          # 子空间 (非全空间)
+    ci_b = full[:40]
+    r_cpu = tc_sqd.solve_sci((ci_a, ci_b), h1e, eri, norb, nelec, backend="cpu")
+    r_gpu = tc_sqd.solve_sci((ci_a, ci_b), h1e, eri, norb, nelec, backend="gpu")
+    assert abs(r_cpu.energy - r_gpu.energy) < 1e-8, f"子空间 GPU 能量 {r_gpu.energy} vs CPU {r_cpu.energy}"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

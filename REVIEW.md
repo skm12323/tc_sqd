@@ -1323,6 +1323,19 @@ selected_ci.contract_2e 差 ~2 Ha）。故 `solve_sci(backend="gpu")` 仍用 T �
 - **价值评估**：即使移植成功，pyscf C 核 selected_ci.contract_2e 子空间已快（dim 14k~3ms），
   GPU 优势主要在 linkstr 全空间（已交付）；子空间 GPU 增益有限、内存风险（t1=norb²·ninter·nb）。
 
+**落地（`tc_sqd.selected_ci_gpu`，2026-08-11）**：深挖完成 —— numpy 参考 + cupy 移植
+均验证正确，`solve_sci(backend="gpu")` 改用它（子空间正确 + 大维度加速）。
+- **调试关键**：numpy 参考初始 err 大，两个根因 —— ① ββ 的 fcivec 须传 `v.T`
+  （_aaaa_np 内部按 β 索引取行）；② cupy `v.T` 是转置视图（非连续内存），kernel 线性
+  索引错，须 `np.ascontiguousarray(v.T)`。
+- **验证**：vs selected_ci.contract_2e —— H2 2.8e-17、Be 7.1e-15、N2/STO-3G 2.3e-13；
+  `solve_sci(backend="gpu")` 子空间能量 == cpu（≤2e-13，新增子空间测试锁定）。
+- **性能**（N₂/cc-pVDZ 12o 选定子空间，solve_sci 全流程含 eigsh）：dim 10⁴ GPU 慢
+  25×（启动开销）；**dim 9×10⁴ GPU 6× 快**（39s→6.4s）；dim 4.9×10⁵ GPU 2× 快。
+- **小结**：GPU matrix-free 三版定位 —— T 表 einsum（子空间正确、慢）、linkstr RawKernel
+  （全空间快、子空间错）、**selected_ci 3-contraction RawKernel（子空间正确 + 大维度快）**。
+  后两者互补：全空间 FCI 基准用 linkstr，SQD 子空间用 selected_ci_gpu。
+
 ## GPU 后端：实现验证后搁置（2026-08-10，历史记录）
 > **已被上节取代**：`solve_sci(backend="gpu")` 已以 matrix-free 方式重新落地，
 > 见「GPU matrix-free 落地」。本节保留"CPU 构建 + GPU 对角化"被否决的实测。

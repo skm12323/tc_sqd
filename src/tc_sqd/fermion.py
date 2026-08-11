@@ -834,11 +834,11 @@ def solve_sci(
             return np.ascontiguousarray(hv, dtype=np.float64)
 
         if backend == "gpu":
-            # matrix-free GPU 对角化 (T 表 einsum, 子空间正确; 全空间可改用 eigsh_linkstr_gpu)
-            from .matrixfree import prepare_sigma_operators, eigsh_gpu
-            ops = prepare_sigma_operators(ci_a, ci_b, norb, nelec,
-                                          np.asarray(h1e), np.asarray(two_body_tensor))
-            e_vals, c_vec = eigsh_gpu(ops, dim, k=1, which="SA", tol=1e-8)
+            # selected-CI 子空间 GPU 对角化 (3-contraction RawKernel, 子空间正确 + 快)
+            from .selected_ci_gpu import eigsh_selected_ci_gpu
+            e_vals, c_vec = eigsh_selected_ci_gpu(
+                ci_a, ci_b, norb, nelec, np.asarray(h1e),
+                np.asarray(two_body_tensor), k=1, which="SA", tol=1e-8)
             e_tot = float(e_vals[0])
             c_1d = np.asarray(c_vec).ravel()
         elif dim <= 1000:
