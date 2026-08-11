@@ -59,3 +59,6 @@ third_party/
 
 # ZCode
 .zcode/
+# 多 agent 协作流程文档 (工作区状态, 不入库; 恢复入口 docs/rounds/STATE.md)
+docs/COLLABORATION.md
+docs/rounds/
