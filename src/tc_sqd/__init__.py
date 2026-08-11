@@ -83,6 +83,10 @@ from .cipsi import (
     solve_sqd_distill,
     eigenvector_importance_sample,
 )
+from .tail_sampling import (
+    suppress_seen_bitstrings,
+    discover_tail_pool,
+)
 from .basis import (
     natural_orbitals_from_rdm,
     rotate_to_natural_orbitals,
@@ -227,6 +231,9 @@ __all__ = [
     "solve_sqd_ev",
     "solve_sqd_distill",
     "eigenvector_importance_sample",
+    # tail_sampling (C1 尾部发现采样, round_001: SQD-AA 经典模拟 — 采样端抑制已见 det)
+    "suppress_seen_bitstrings",
+    "discover_tail_pool",
     # basis (基设计: 自然轨道换基 + 自洽迭代, 提升子空间构建效率)
     "natural_orbitals_from_rdm",
     "rotate_to_natural_orbitals",

@@ -35,6 +35,7 @@ from scipy.sparse.linalg import eigsh, LinearOperator
 from .configuration_recovery import recover_configurations
 from .fermion import bitstring_matrix_to_ci_strs, SCIState
 from .diagnostics import extrapolate_energy_variance, extrapolate_ev_pt2
+from .tail_sampling import discover_tail_pool
 
 __all__ = ["solve_cipsi", "solve_sqd_active", "solve_sqd_adaptive", "solve_hci",
            "solve_sqd_ev", "solve_sqd_distill", "eigenvector_importance_sample"]
@@ -702,6 +703,10 @@ def solve_sqd_active(
     trajectory: Optional[list] = None,
     # ---- 自蒸馏 (方向②): 取出最终本征矢供重采样 ----
     state_out: Optional[list] = None,
+    # ---- C1 尾部发现采样 (round_001) ----
+    tail_suppression: bool = False,
+    tail_max_draw_factor: int = 10,
+    tail_n_target_per_round: int = 0,
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
 
@@ -766,6 +771,16 @@ def solve_sqd_active(
         PT2 分子平方和, 即对生成集的**精确方差**); ``e_pt2`` 为 Epstein-Nesbet
         PT2 全和; ``dim`` 为对角化维度。供 :func:`solve_sqd_ev` 做能量-方差
         外推 (E(σ²)→0)。不传则无额外开销。
+    tail_suppression : bool
+        **C1 尾部发现采样 (round_001)**: ``True`` 时每轮 ① 前调
+        :func:`tc_sqd.tail_sampling.discover_tail_pool`, 用过抽 (``tail_max_draw_factor``×)
+        + 抑制已见 det 收集新贡献者替代本轮固定池。**默认 ``False``, 零行为变化**
+        (与 AS-SQD/PT2 正交可叠加; distill 边界: 不读 ``c2d``, 只读
+        ``(seen_a, seen_b)``)。
+    tail_max_draw_factor : int
+        C1 自举过抽倍数 (原始抽样预算 = ``tail_max_draw_factor × n_target``; 默认 10)。
+    tail_n_target_per_round : int
+        C1 每轮目标新 det 数; ``0`` = 用 ``n_active_per_round``。
 
     Returns
     -------
@@ -827,6 +842,25 @@ def solve_sqd_active(
         #    B1 增量采样: 每轮用池的前 n_cur 行 (shots 逐轮递增)。
         bsm_r = bsm[:n_cur] if shots_step > 0 else bsm
         probs_r = probs[:n_cur] if shots_step > 0 else probs
+        # C1 尾部发现采样 hook (round_001): 默认全关 → block 完全跳过, 零行为变化。
+        #    启用时 (tail_suppression=True): 用 discover_tail_pool 过抽 + 抑制已见
+        #    det, 收集 "贡献新 α/β 字符串" 的位串替代本轮固定池。无新贡献 (恢复映像
+        #    饱和) 则回退原 bsm_r/probs_r, 避免 ② 对角化饿死。distill 边界: 不读 c2d。
+        if tail_suppression:
+            n_tgt = tail_n_target_per_round or n_active_per_round
+            # 每轮用 round 偏移种子推进 RNG → 每轮抽新随机位串 (固定种子会每轮
+            # 恢复到同一批 det, 第 2 轮起全被抑制 → 退化)。rand_seed=None 时透传 None。
+            round_seed = None if rand_seed is None else rand_seed + r + 1
+            _bsm_new, _probs_new, _ = discover_tail_pool(
+                (occ_a, occ_b), na, nb, norb,
+                seen_a=set(int(s) for s in str_a),
+                seen_b=set(int(s) for s in str_b),
+                n_target_new=n_tgt, base_distribution="bootstrap",
+                max_draw_factor=tail_max_draw_factor, rand_seed=round_seed,
+            )
+            if _bsm_new.shape[0] > 0:            # 有新贡献 → 用 C1 池替代本轮池
+                bsm_r, probs_r = _bsm_new, _probs_new
+            # else: 无新贡献 (恢复映像饱和) → 回退原 bsm_r/probs_r
         rec, _ = recover_configurations(
             bsm_r, probs_r, (occ_a, occ_b), na, nb, rand_seed=rand_seed
         )
@@ -996,6 +1030,10 @@ def solve_sqd_ev(
     shots_step: int = 0,
     energy_tol: Optional[float] = None,
     return_details: bool = False,
+    # ---- C1 尾部发现采样 (round_001): 透传给 solve_sqd_active ----
+    tail_suppression: bool = False,
+    tail_max_draw_factor: int = 10,
+    tail_n_target_per_round: int = 0,
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
 
@@ -1051,6 +1089,9 @@ def solve_sqd_ev(
         rand_seed=rand_seed, verbose=verbose,
         shots_budget=shots_budget, shots_step=shots_step,
         energy_tol=energy_tol, trajectory=trajectory,
+        tail_suppression=tail_suppression,
+        tail_max_draw_factor=tail_max_draw_factor,
+        tail_n_target_per_round=tail_n_target_per_round,
     )
     if len(trajectory) < 2:
         raise ValueError(f"轨迹点不足 (<2), 无法修正: got {len(trajectory)}.")
