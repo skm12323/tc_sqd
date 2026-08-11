@@ -1301,6 +1301,28 @@ selected_ci.contract_2e 差 ~2 Ha）。故 `solve_sci(backend="gpu")` 仍用 T �
 
 **测试**：`tests/test_matrixfree.py` 3 项（σ==稠密 / ops==直接 / GPU==CPU 全空间，GPU skip 分支）。
 
+**selected_ci 子空间 4-block GPU 移植（2026-08-11 深挖，部分成果 + 卡点记录）**：
+
+动机：`solve_sci` 用 selected_ci.contract_2e（子空间专用，4-block linkstr），linkstr_gpu
+（direct_spin1 语义）子空间不匹配。移植 selected_ci 算法可使 solve_sci(backend="gpu")
+子空间加速。深挖结论：
+
+- **算法完全解析**（pyscf/lib/mcscf/select_ci.c）：3 个独立 contraction ——
+  - **aaaa_α/aaaa_β**（同自旋双）：`des_des` linkstr，intermediate = nelec-2 双消灭去重
+    目标集（**含子空间外**，这是子空间正确的关键），antisym eri tril ⟨ij‖ab⟩×2；
+  - **bbaa**（αβ 交叉 + h1e）：`cre_des` linkstr（子空间内单激发），eri×2+h_ps restore(4)。
+  子空间正确性来自 dd 的 intermediate 维度（nelec-2 去重目标，含子空间外双消灭态）。
+- **numpy 参考实现**（验证代数）：bbaa **完全正确**（H2 err 2.7e-17）；aaaa 有残留 bug
+  （Be/N2 diag 近对 diff~0.02、off-diag 错，eri 因子/符号/转置扫描均非根因）。sign/eri
+  packing/intermediate 逻辑逐一排查均合理，未定位根因（疑似 des_des linkstr 的 sign 语义
+  或 eri1_aaaa 的 (des,cre) 对偶索引微妙处）。
+- **direct_spin1 子空间不可用**已确认（AssertionError，仅全空间）。
+- **状态**：算法理解完整（可指导后续），bbaa 验证（linkstr+eri packing 框架对），aaaa
+  需更多调试。cupy 移植未开始（待 numpy 参考正确）。后续可接手：定位 aaaa sign/索引 →
+  cupy 3-contraction（scatter RawKernel + eri matmul + gather）→ 接入 solve_sci(backend="gpu")。
+- **价值评估**：即使移植成功，pyscf C 核 selected_ci.contract_2e 子空间已快（dim 14k~3ms），
+  GPU 优势主要在 linkstr 全空间（已交付）；子空间 GPU 增益有限、内存风险（t1=norb²·ninter·nb）。
+
 ## GPU 后端：实现验证后搁置（2026-08-10，历史记录）
 > **已被上节取代**：`solve_sci(backend="gpu")` 已以 matrix-free 方式重新落地，
 > 见「GPU matrix-free 落地」。本节保留"CPU 构建 + GPU 对角化"被否决的实测。
