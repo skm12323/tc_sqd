@@ -91,7 +91,7 @@ def _excited_dets(a: int, b: int, norb: int):
 class _Subspace:
     """字符串集合 (α, β) 的子空间对角化, 提供 <a|H|Psi> 的 PT2 矩阵元。"""
 
-    def __init__(self, h1e, eri, norb, nelec):
+    def __init__(self, h1e, eri, norb, nelec, *, backend: str = "cpu"):
         self.h1e = np.asarray(h1e)
         self.eri = np.asarray(eri)
         self.norb = norb
@@ -99,6 +99,12 @@ class _Subspace:
         self.h2e = direct_spin1.absorb_h1e(self.h1e, self.eri, norb, nelec, 0.5)
         self.h2e = ao2mo.restore(1, self.h2e, norb)
         self.myci = selected_ci.SCI()
+        # GPU 后端: 无 cupy/GPU 时静默回退 CPU (绝不 raise, round_003 §6.4)
+        self.backend = backend
+        if backend == "gpu":
+            from .noise import has_gpu
+            if not has_gpu():
+                self.backend = "cpu"
 
     def diag(self, str_a, str_b):
         """对角化 (str_a, str_b) 子空间, 返回 (E_gs, c2d, sa, sb)。"""
@@ -116,6 +122,7 @@ class _Subspace:
             return np.ascontiguousarray(hv, dtype=np.float64)
 
         if dim <= 1000:
+            # 分支 ①: 始终 CPU numpy eigh (不读 backend; GPU 小维度 25× 启动开销无优势)
             H = np.zeros((dim, dim))
             for col in range(dim):
                 e = np.zeros(dim)
@@ -123,7 +130,20 @@ class _Subspace:
                 H[:, col] = hop(e)
             ev, cv = np.linalg.eigh(H)
             E, c1d = float(ev[0]), cv[:, 0]
+        elif self.backend == "gpu":
+            # 分支 ②-GPU: cupyx eigsh (方式 A, 与 fermion.solve_sci 一致); 失败回退 CPU
+            from .selected_ci_gpu import eigsh_selected_ci_gpu
+            try:
+                ev, cv = eigsh_selected_ci_gpu(
+                    sa, sb, self.norb, self.nelec,
+                    self.h1e, self.eri, k=1, which="SA", tol=1e-10)
+                E, c1d = float(ev[0]), np.asarray(cv).ravel()
+            except Exception:
+                op = LinearOperator((dim, dim), matvec=hop, dtype=np.float64)
+                ev, cv = eigsh(op, k=1, which="SA", maxiter=3000)
+                E, c1d = float(ev[0]), np.asarray(cv).ravel()
         else:
+            # 分支 ②-CPU: scipy eigsh (默认, 与改造前逐字一致, L1 零回归)
             op = LinearOperator((dim, dim), matvec=hop, dtype=np.float64)
             ev, cv = eigsh(op, k=1, which="SA", maxiter=3000)
             E, c1d = float(ev[0]), np.asarray(cv).ravel()
@@ -178,6 +198,7 @@ def solve_cipsi(
     max_iter: int = 40,
     ecore: float = 0.0,
     verbose: bool = False,
+    backend: str = "cpu",
 ) -> float:
     """CIPSI 迭代精化: 从种子 det 集合出发补全到近 FCI 精度。
 
@@ -248,7 +269,7 @@ def solve_cipsi(
     if max_strings is None:
         max_strings = full_size
 
-    sub = _Subspace(h1e, eri, norb, nelec)
+    sub = _Subspace(h1e, eri, norb, nelec, backend=backend)
     for it in range(max_iter):
         if len(str_a) >= max_strings or len(str_b) >= max_strings:
             break
@@ -328,6 +349,7 @@ def solve_hci(
     ecore: float = 0.0,
     verbose: bool = False,
     return_details: bool = False,
+    backend: str = "cpu",
 ):
     """SHCI (heat-bath CI + PT2 修正, Holmes 2016 / Sharma 2017).
 
@@ -410,7 +432,7 @@ def solve_hci(
         if not open_shell:
             str_b = str_a
 
-    sub = _Subspace(h1e, eri, norb, nelec)
+    sub = _Subspace(h1e, eri, norb, nelec, backend=backend)
 
     def _dominant(c2d, sa, sb):
         nA, nB = c2d.shape
@@ -514,6 +536,7 @@ def solve_sqd_adaptive(
     rand_seed: Optional[int] = 0,
     verbose: bool = False,
     rounds_out: Optional[list] = None,
+    backend: str = "cpu",
 ) -> float:
     """自适应 SQD: 自洽换基表示层 (方向①) + 受限 PT2 选态选择层 (方向②) 叠加。
 
@@ -580,7 +603,7 @@ def solve_sqd_adaptive(
     if max_strings is None:
         max_strings = full_size
 
-    sub = _Subspace(h1e, eri, norb, nelec)
+    sub = _Subspace(h1e, eri, norb, nelec, backend=backend)
     e_prev = np.inf
     best_E = np.inf                       # 各轮 ③ 能量的 min (每轮自洽: B_r sub + B_r dets)
     n_rounds_done = 0
@@ -649,7 +672,7 @@ def solve_sqd_adaptive(
                       ci_strs_b=np.asarray(sb), norb=norb, nelec=nelec)
         dm1 = st.rdm(rank=1, spin_summed=True)
         h1e, eri, U_step, occ_nat = rotate_to_natural_orbitals(h1e, eri, dm1)
-        sub = _Subspace(h1e, eri, norb, nelec)  # 重建 (新基)
+        sub = _Subspace(h1e, eri, norb, nelec, backend=backend)  # 重建 (新基)
         occ_a = np.clip(occ_nat / 2.0, 0.0, 1.0)
         occ_b = occ_a.copy()
 
@@ -709,6 +732,7 @@ def solve_sqd_active(
     tail_n_target_per_round: int = 0,
     # ---- C1 预算随 shots 缩放 (round_002) ----
     tail_shots_ref: int = 0,
+    backend: str = "cpu",
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
 
@@ -834,7 +858,7 @@ def solve_sqd_active(
     if max_strings is None:
         max_strings = full_size
 
-    sub = _Subspace(h1e, eri, norb, nelec)
+    sub = _Subspace(h1e, eri, norb, nelec, backend=backend)
     str_a: list = []
     str_b: list = []
     e_prev = np.inf
@@ -1065,6 +1089,7 @@ def solve_sqd_ev(
     tail_n_target_per_round: int = 0,
     # ---- C1 预算随 shots 缩放 (round_002): 透传 ----
     tail_shots_ref: int = 0,
+    backend: str = "cpu",
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
 
@@ -1124,6 +1149,7 @@ def solve_sqd_ev(
         tail_max_draw_factor=tail_max_draw_factor,
         tail_n_target_per_round=tail_n_target_per_round,
         tail_shots_ref=tail_shots_ref,
+        backend=backend,
     )
     if len(trajectory) < 2:
         raise ValueError(f"轨迹点不足 (<2), 无法修正: got {len(trajectory)}.")
@@ -1218,6 +1244,7 @@ def solve_sqd_distill(
     rand_seed: Optional[int] = 0,
     keep_pool: bool = True,
     verbose: bool = False,
+    backend: str = "cpu",
 ) -> float:
     """自蒸馏 SQD 闭环 (方向②): solve → 按 |c|^(2/T) 重采 → recover → solve。
 
@@ -1315,6 +1342,7 @@ def solve_sqd_distill(
             bitstring_matrix=pool, probabilities=pool_probs,
             max_strings=max_strings, n_active_per_round=n_active_per_round,
             ecore=ecore, rand_seed=cur_seed, state_out=state_out,
+            backend=backend,
         )
         c2d, sa, sb = state_out[0]
         if E < best_E:
