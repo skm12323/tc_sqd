@@ -708,7 +708,7 @@ def solve_sqd_active(
     tail_max_draw_factor: int = 10,
     tail_n_target_per_round: int = 0,
     # ---- C1 预算随 shots 缩放 (round_002) ----
-    tail_shots_ref: int = 100,
+    tail_shots_ref: int = 0,
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
 
@@ -1064,7 +1064,7 @@ def solve_sqd_ev(
     tail_max_draw_factor: int = 10,
     tail_n_target_per_round: int = 0,
     # ---- C1 预算随 shots 缩放 (round_002): 透传 ----
-    tail_shots_ref: int = 100,
+    tail_shots_ref: int = 0,
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
 
