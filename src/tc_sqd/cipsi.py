@@ -707,6 +707,8 @@ def solve_sqd_active(
     tail_suppression: bool = False,
     tail_max_draw_factor: int = 10,
     tail_n_target_per_round: int = 0,
+    # ---- C1 预算随 shots 缩放 (round_002) ----
+    tail_shots_ref: int = 100,
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
 
@@ -781,6 +783,18 @@ def solve_sqd_active(
         C1 自举过抽倍数 (原始抽样预算 = ``tail_max_draw_factor × n_target``; 默认 10)。
     tail_n_target_per_round : int
         C1 每轮目标新 det 数; ``0`` = 用 ``n_active_per_round``。
+    tail_shots_ref : int
+        **C1 预算随 shots 缩放 (round_002, C1-v2)**: ``>0`` 时启用, 每轮目标新 det 数
+        按当前 shots 游标 ``n_cur`` 与 ``tail_shots_ref`` 之比线性缩放::
+
+            n_tgt = clip(ceil(n_active_per_round * n_cur / tail_shots_ref),
+                         n_active_per_round, 3 * n_active_per_round)
+
+        使得 C1 的发现努力随用户给的 shots 量级对齐 (修复 round_001 实证的 "bootstrap
+        预算与 shots 解耦" 局限)。``@100 shots`` 恰给 ``n_tgt=30`` (默认 ``=100`` →
+        与 round_001 C1-v1 **逐位一致**, 零回归); ``@500 shots`` 给 ``n_tgt=90`` (cap=3
+        封顶, 用上多出的 shots)。``=0`` 关闭缩放, 走 round_001 路径
+        (``n_tgt = tail_n_target_per_round or n_active_per_round``)。
 
     Returns
     -------
@@ -842,16 +856,28 @@ def solve_sqd_active(
         #    B1 增量采样: 每轮用池的前 n_cur 行 (shots 逐轮递增)。
         bsm_r = bsm[:n_cur] if shots_step > 0 else bsm
         probs_r = probs[:n_cur] if shots_step > 0 else probs
-        # C1 尾部发现采样 hook (round_001): 默认全关 → block 完全跳过, 零行为变化。
+        # C1 尾部发现采样 hook (round_001 + round_002 预算缩放):
+        #    默认全关 (tail_suppression=False) → block 完全跳过, 零行为变化。
         #    启用时 (tail_suppression=True): 用 discover_tail_pool 过抽 + 抑制已见
         #    det, 收集 "贡献新 α/β 字符串" 的位串替代本轮固定池。无新贡献 (恢复映像
         #    饱和) 则回退原 bsm_r/probs_r, 避免 ② 对角化饿死。distill 边界: 不读 c2d。
+        #
+        #    round_002 (C1-v2): n_tgt 随当前 shots 游标 n_cur 与 tail_shots_ref 之比
+        #    线性缩放 (带 clip), 修复 round_001 "bootstrap 预算与 shots 解耦" 局限。
+        #    tail_shots_ref>0 时覆盖 tail_n_target_per_round; =0 时走 round_001 路径。
+        #    @100 shots + tail_shots_ref=100 → n_tgt=30 (= round_001) 逐位零回归。
         if tail_suppression:
-            n_tgt = tail_n_target_per_round or n_active_per_round
+            if tail_shots_ref > 0:              # C1-v2: shots 缩放 (round_002)
+                n_tgt_raw = int(np.ceil(
+                    n_active_per_round * n_cur / tail_shots_ref))
+                n_tgt = max(n_active_per_round,
+                            min(n_tgt_raw, 3 * n_active_per_round))
+            else:                               # round_001 路径 (缩放关)
+                n_tgt = tail_n_target_per_round or n_active_per_round
             # 每轮用 round 偏移种子推进 RNG → 每轮抽新随机位串 (固定种子会每轮
             # 恢复到同一批 det, 第 2 轮起全被抑制 → 退化)。rand_seed=None 时透传 None。
             round_seed = None if rand_seed is None else rand_seed + r + 1
-            _bsm_new, _probs_new, _ = discover_tail_pool(
+            _bsm_new, _probs_new, _n_drawn = discover_tail_pool(
                 (occ_a, occ_b), na, nb, norb,
                 seen_a=set(int(s) for s in str_a),
                 seen_b=set(int(s) for s in str_b),
@@ -861,6 +887,9 @@ def solve_sqd_active(
             if _bsm_new.shape[0] > 0:            # 有新贡献 → 用 C1 池替代本轮池
                 bsm_r, probs_r = _bsm_new, _probs_new
             # else: 无新贡献 (恢复映像饱和) → 回退原 bsm_r/probs_r
+            # _n_drawn 接住 (round_001 用 _ 丢弃): 诊断 = 本轮原始抽样数, 供
+            # R5 P2 饱和度分析 (n_drawn/n_tgt → 恢复映像饱和度) 与 round_002 P1
+            # 过抽自适应 (theory.md §1.3)。P0 不消费, 仅保留变量供后续扩展。
         rec, _ = recover_configurations(
             bsm_r, probs_r, (occ_a, occ_b), na, nb, rand_seed=rand_seed
         )
@@ -1034,6 +1063,8 @@ def solve_sqd_ev(
     tail_suppression: bool = False,
     tail_max_draw_factor: int = 10,
     tail_n_target_per_round: int = 0,
+    # ---- C1 预算随 shots 缩放 (round_002): 透传 ----
+    tail_shots_ref: int = 100,
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
 
@@ -1092,6 +1123,7 @@ def solve_sqd_ev(
         tail_suppression=tail_suppression,
         tail_max_draw_factor=tail_max_draw_factor,
         tail_n_target_per_round=tail_n_target_per_round,
+        tail_shots_ref=tail_shots_ref,
     )
     if len(trajectory) < 2:
         raise ValueError(f"轨迹点不足 (<2), 无法修正: got {len(trajectory)}.")
