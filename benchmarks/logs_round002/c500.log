@@ -1,0 +1,134 @@
+=== START C @500 (12,12) ===
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+{
+  "system": "1212",
+  "shots": 500,
+  "variant": "C",
+  "seed": 0,
+  "E": -108.76868573241788,
+  "E_ref": -108.76868573746447,
+  "err": 5.046587148171966e-09,
+  "E_direct": -108.76868537398855,
+  "E_PT2": -3.584293191135148e-07,
+  "dim": 824464,
+  "wall_s": 1626.3,
+  "peak_rss_kb": 881152,
+  "n_tgt_rounds": [
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90,
+    90
+  ],
+  "n_drawn_rounds": [
+    90,
+    180,
+    180,
+    270,
+    360,
+    540,
+    900,
+    900,
+    900,
+    900
+  ],
+  "n_drawn_total": 5220,
+  "per_round": [
+    {
+      "round": 1,
+      "E": -67.96724340460607,
+      "dim": 27889,
+      "n_str": 167,
+      "n_new_proxy": 167,
+      "n_tgt": 90,
+      "n_drawn": 90
+    },
+    {
+      "round": 2,
+      "E": -68.2232589346395,
+      "dim": 125316,
+      "n_str": 354,
+      "n_new_proxy": 187,
+      "n_tgt": 90,
+      "n_drawn": 180
+    },
+    {
+      "round": 3,
+      "E": -68.23087060759799,
+      "dim": 230400,
+      "n_str": 480,
+      "n_new_proxy": 126,
+      "n_tgt": 90,
+      "n_drawn": 180
+    },
+    {
+      "round": 4,
+      "E": -68.2328803413696,
+      "dim": 366025,
+      "n_str": 605,
+      "n_new_proxy": 125,
+      "n_tgt": 90,
+      "n_drawn": 270
+    },
+    {
+      "round": 5,
+      "E": -68.23358463574317,
+      "dim": 474721,
+      "n_str": 689,
+      "n_new_proxy": 84,
+      "n_tgt": 90,
+      "n_drawn": 360
+    },
+    {
+      "round": 6,
+      "E": -68.23381154187925,
+      "dim": 614656,
+      "n_str": 784,
+      "n_new_proxy": 95,
+      "n_tgt": 90,
+      "n_drawn": 540
+    },
+    {
+      "round": 7,
+      "E": -68.23387501381833,
+      "dim": 737881,
+      "n_str": 859,
+      "n_new_proxy": 75,
+      "n_tgt": 90,
+      "n_drawn": 900
+    },
+    {
+      "round": 8,
+      "E": -68.2338830536985,
+      "dim": 779689,
+      "n_str": 883,
+      "n_new_proxy": 24,
+      "n_tgt": 90,
+      "n_drawn": 900
+    },
+    {
+      "round": 9,
+      "E": -68.23388369183616,
+      "dim": 810000,
+      "n_str": 900,
+      "n_new_proxy": 17,
+      "n_tgt": 90,
+      "n_drawn": 900
+    },
+    {
+      "round": 10,
+      "E": -68.2338842034906,
+      "dim": 824464,
+      "n_str": 908,
+      "n_new_proxy": 8,
+      "n_tgt": 90,
+      "n_drawn": 900
+    }
+  ]
+}
+[bench] saved case 1212_s500_varC_seed0 -> /mnt/d/tc_sqd/benchmarks/_round002_c1_results.json

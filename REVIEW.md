@@ -1473,3 +1473,48 @@ round_002 修复命门（cipsi.py:850 的 `n_tgt` 完全不读 shots）。
 （P2 物证 + @500 行为从退化变改善，与体系大小无关）。大体系验证留 round_005 plot 轮。
 
 **遗留可选项**：cap 敏感性（cap∈{2,3,4}）；过抽自适应 ρ 触发；`n_cur` vs `n_pool`（增量采样时）。
+
+## 方向 GPU-Subspace：_Subspace GPU backend 改造（round_003 部分证伪，2026-08-12）
+
+**来源**：round_003 工程基建轮。`_Subspace.diag`（cipsi.py:103-130）是 5 个 solver 的公共对角化
+基建，CPU `contract_2e` + scipy `eigsh`。改造目标：加 GPU backend 加速大子空间对角化。
+
+**实现**（commit `9d8062b`）：
+- `_Subspace.__init__` 加 `*, backend="cpu"` + `has_gpu()` 优雅回退
+- `diag` 三分支：dim≤1000 始终 CPU numpy eigh（不读 backend）；dim>1000 + GPU 调
+  `eigsh_selected_ci_gpu(tol=1e-10)` + try/except 回退；dim>1000 + CPU（默认）scipy eigsh
+- 6 solver 透传 backend；全库 179 测试通过（L1 零回归）；P1 正确性 E_diff ≤4.1e-12
+
+**实测**（dim 扫描，N₂/cc-pVDZ 12-MO 窗口）：
+
+| dim | CPU wall | GPU wall | speedup | 判定 |
+|---|---|---|---|---|
+| 1e4 | 1.7s | 121s（含 85s warm-up）| 0.014× | warm-up 灾难 |
+| 5e4 | 84s | 433s | 0.19× | crossover 慢区 |
+| **1e5** | 96s | 43s | **2.22×** | 唯一 GPU 受益（<3× 阈值）|
+| 5e5 | 137s | 372s | **0.37×** | **大 dim 反而慢 2.7×** |
+
+端到端 12,12 GPU e2e：**GPU 慢于 CPU**（cupyx eigsh 大 dim 卡住）。
+
+**结论状态：部分证伪（正确性通过 + 性能未达 P0 目标）**
+
+**核心矛盾**：`solve_sci(backend="gpu")` 直接调 `eigsh_selected_ci_gpu` 在 dim 5e5 时 **2× 快**
+（REVIEW:1334），但 `_Subspace(backend="gpu")` 调同一函数在 dim 5e5 时 **2.7× 慢** ——
+同样 GPU 函数、加速比差 ~5×。
+
+**三个根因**：
+1. **eri 每次 matvec 重算**：`eigsh_selected_ci_gpu` 内部 `absorb_h1e` + eri packing 每次 diag 重做
+   （selected_ci_gpu.py:125/135）；`_Subspace.__init__` 已算 h2e 但 GPU 路径不用它。
+   theory §1.4 预判"eri 重算非瓶颈"在大 dim + 多 matvec 下被证伪。
+2. **linkstr 双重建**：`_Subspace.diag` 先建 `_all_linkstr_index`（CPU），GPU 分支的
+   `eigsh_selected_ci_gpu` 内部又建 4 个 linkstr——大 dim 时 O(norb²·na) 非平凡。
+3. **cupyx eigsh 收敛性差于 scipy**：selected-CI 子空间矩阵上 cupyx ARPACK 可能需要更多 matvec。
+
+**改进方向（后续轮）**：
+- **方式 B/C 升为必须**（theory 原判 P1/P2 可选）：_Subspace.__init__ 预算 eri1_aaaa/eri1_bbaa
+  缓存 + links/kernels 预计算，绕过 eigsh_selected_ci_gpu 包装层重复开销
+- 或诊断 cupyx eigsh 的 N_matvec vs scipy（收敛性差异定量）
+- 或承认 GPU 仅 solve_sci（单次固定子空间）受益，_Subspace 迭代场景需更深层重构
+
+**对 plot 的影响**：round_005 全量 plot 的 GPU 加速预期下调——当前 _Subspace GPU 端到端
+反而慢，plot 应保持 CPU（~10h）或仅 dim>1e5 局部开 GPU。真正的 plot 加速需先解决 eri/linkstr 重复。

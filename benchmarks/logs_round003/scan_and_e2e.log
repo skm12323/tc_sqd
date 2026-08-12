@@ -1,0 +1,18 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+[scan] cpu n_str= 100 dim=  10000 E=-68.2076869327 wall=1.722s
+[scan] cpu n_str= 224 dim=  50176 E=-68.2194431150 wall=83.728s
+[scan] cpu n_str= 317 dim= 100489 E=-68.2240407675 wall=95.930s
+[scan] cpu n_str= 708 dim= 501264 E=-68.2333596786 wall=136.916s
+[scan] gpu warmup n_str=100 dim=10000 E=-68.2076869327 wall=84.770s (含 cupy/RawModule 初始化)
+[scan] gpu n_str= 100 dim=  10000 E=-68.2076869327 wall=121.048s
+[scan] gpu n_str= 224 dim=  50176 E=-68.2194431150 wall=432.885s
+[scan] gpu n_str= 317 dim= 100489 E=-68.2240407675 wall=43.156s
+[scan] gpu n_str= 708 dim= 501264 E=-68.2333596786 wall=371.500s
+[scan] dim=  10000 ratio=70.292 speedup=0.01x Ediff=2.64e-12
+[scan] dim=  50176 ratio=5.170 speedup=0.19x Ediff=4.09e-12
+[scan] dim= 100489 ratio=0.450 speedup=2.22x Ediff=7.11e-14
+[scan] dim= 501264 ratio=2.713 speedup=0.37x Ediff=1.56e-13
+[scan] P0 dim>1e5 判定: False  (ratio≤0.33 逐点)
+[scan] P1 判定: True  (|E_gpu-E_cpu|≤1e-10 逐点)
+[bench] saved scan -> /mnt/d/tc_sqd/benchmarks/_round003_gpu_results.json
+[e2e] cpu wall=2489.4s E=-108.7686857324 dim=824464 err=5.05e-09

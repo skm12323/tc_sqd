@@ -1,0 +1,68 @@
+=== START C @500 (10o) ===
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+{
+  "system": "10o",
+  "shots": 500,
+  "variant": "C",
+  "seed": 0,
+  "E": -108.75937471872436,
+  "E_ref": -108.75937471856588,
+  "err": 1.5847945178393275e-10,
+  "E_direct": -108.75937471872436,
+  "E_PT2": 0.0,
+  "dim": 63504,
+  "wall_s": 175.8,
+  "peak_rss_kb": 567608,
+  "n_tgt_rounds": [
+    90,
+    90,
+    90,
+    90
+  ],
+  "n_drawn_rounds": [
+    180,
+    360,
+    900,
+    900
+  ],
+  "n_drawn_total": 2340,
+  "per_round": [
+    {
+      "round": 1,
+      "E": -23.65208845920336,
+      "dim": 29929,
+      "n_str": 173,
+      "n_new_proxy": 173,
+      "n_tgt": 90,
+      "n_drawn": 180
+    },
+    {
+      "round": 2,
+      "E": -23.70253296992294,
+      "dim": 53824,
+      "n_str": 232,
+      "n_new_proxy": 59,
+      "n_tgt": 90,
+      "n_drawn": 360
+    },
+    {
+      "round": 3,
+      "E": -23.70312190781539,
+      "dim": 63504,
+      "n_str": 252,
+      "n_new_proxy": 20,
+      "n_tgt": 90,
+      "n_drawn": 900
+    },
+    {
+      "round": 4,
+      "E": -23.703129163313516,
+      "dim": 63504,
+      "n_str": 252,
+      "n_new_proxy": 0,
+      "n_tgt": 90,
+      "n_drawn": 900
+    }
+  ]
+}
+[bench] saved case 10o_s500_varC_seed0 -> /mnt/d/tc_sqd/benchmarks/_round002_c1_results.json
