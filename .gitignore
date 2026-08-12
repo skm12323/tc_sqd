@@ -45,8 +45,14 @@ vlog.txt
 # 双 agent 协作内部通道 (不入库)
 DISCUSSION.md
 
-# 画图数据缓存 (生成物, --plot 模式用; 不入库)
+# 画图数据缓存 (生成物, --plot 模式用; 不入库; 历史快照见 plot_cache/)
 _plot_data_*.npy
+_*_ints.npz
+
+# 画图历史快照 (入库, 每轮 plot 完成后 R5 复制缓存到此)
+# 否定规则: plot_cache/ 下的 .npy/.npz 入库 (覆盖上面的通配符 ignore)
+!plot_cache/
+!plot_cache/**
 
 # 交接文档 (任务已完成, 本地参考用; 不入库)
 docs/HANDOFF_gpu_obdf.md
