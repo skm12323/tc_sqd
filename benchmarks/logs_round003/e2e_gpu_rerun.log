@@ -1,0 +1,5 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+[diag] round# 1 backend=gpu dim=   23716 E=-67.9672434046 wall=61.8s
+[diag] round# 2 backend=gpu dim=  116964 E=-68.2232589346 wall=112.1s
+[diag] round# 3 backend=gpu dim=  218089 E=-68.2308706076 wall=109.3s
+[diag] round# 4 backend=gpu dim=  351649 E=-68.2328803414 wall=518.4s

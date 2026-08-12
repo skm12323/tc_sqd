@@ -1518,3 +1518,12 @@ round_002 修复命门（cipsi.py:850 的 `n_tgt` 完全不读 shots）。
 
 **对 plot 的影响**：round_005 全量 plot 的 GPU 加速预期下调——当前 _Subspace GPU 端到端
 反而慢，plot 应保持 CPU（~10h）或仅 dim>1e5 局部开 GPU。真正的 plot 加速需先解决 eri/linkstr 重复。
+
+**R5 实证补充（2026-08-12，`_probe_eigsh_round003.py` matvec 计数）**：上述「三个根因」中，
+**#3（cupyx eigsh 收敛性）被确认为唯一主导项，#1/#2（eri 重算 / linkstr 双重建）为非瓶颈**。
+同一子空间下 cupyx `eigsh(which="SA", tol=1e-10)` 的 matvec 次数 = **24,417（dim 5e4）/
+6,465（dim 1e5）**，scipy `eigsh` 仅 **741 / 701** → **9-33× 更多迭代**，把 GPU matvec 单次
+速度优势（~10-40×）吃光。内存非瓶颈（dim 5e5 t1 峰值 ~4.6 GB << 17 GB）。故「方式 B/C
+eri/linkstr 缓存」**不能**解决本问题（开销仅 µs/ms 级）；下轮应优先 **cupyx eigsh 调参
+（ncv/maxiter/v0/shift-invert）或加慢回退护栏**（matvec 计数/wall 超时回退 CPU，现只有异常
+回退无慢回退）。详见 `docs/rounds/round_003/benchmark.md` §3。
