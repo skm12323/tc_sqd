@@ -91,7 +91,9 @@ def _excited_dets(a: int, b: int, norb: int):
 class _Subspace:
     """字符串集合 (α, β) 的子空间对角化, 提供 <a|H|Psi> 的 PT2 矩阵元。"""
 
-    def __init__(self, h1e, eri, norb, nelec, *, backend: str = "cpu"):
+    def __init__(self, h1e, eri, norb, nelec, *,
+                 backend: str = "cpu",
+                 gpu_eigsh_mode: str = "hybrid"):
         self.h1e = np.asarray(h1e)
         self.eri = np.asarray(eri)
         self.norb = norb
@@ -101,6 +103,15 @@ class _Subspace:
         self.myci = selected_ci.SCI()
         # GPU 后端: 无 cupy/GPU 时静默回退 CPU (绝不 raise, round_003 §6.4)
         self.backend = backend
+        # round_005 三模式旋钮 (仅 backend=="gpu" 时 diag 读; CPU 路径完全不触及):
+        #   "hybrid"       (默认, 新): scipy.sparse.linalg.eigsh + GPU matvec (sigma)。
+        #                   绕开 cupyx ARPACK 收敛停滞 (round_003/004 实证 #3), 引擎换回
+        #                   scipy 继承 ~700-811 N_matvec, matvec 仍走 GPU (5-15× per-mv)。
+        #   "cupyx"        (诊断/调参/方向 B 基线): 原 cupyx.eigsh + maxiter 护栏 (方向 C,
+        #                   stall -> ArpackNoConvergence -> except 回退 CPU, 不再挂死)。
+        #   "cpu_fallback" (逃生舱): scipy eigsh + contract_2e (GPU 不参与 matvec),
+        #                   隔离 "慢在 eigsh 还是 init" 用。默认 backend="cpu" 不读此参数。
+        self.gpu_eigsh_mode = gpu_eigsh_mode
         # round_004 方式 C: 实例级 eri 缓存 (cupy 常驻 GPU, 一次)。
         # _eri1_aaaa/_bbaa 与 self.h2e 同生命周期 (init 固定); solve_sqd_adaptive 换基
         # 重建 _Subspace (cipsi.py:675) -> 新 h1e/eri -> 新 self.h2e -> 新缓存, 语义自洽。
@@ -158,13 +169,14 @@ class _Subspace:
             ev, cv = np.linalg.eigh(H)
             E, c1d = float(ev[0]), cv[:, 0]
         elif self.backend == "gpu":
-            # 分支 ②-GPU: round_004 方式 B+C 合并 (内联 cupy LinearOperator + eri 缓存)。
-            # 不再调 eigsh_selected_ci_gpu 薄包装层; 直接内联 cupyx.eigsh, matvec 显式
-            # 传 eri1_aaaa/_bbaa (方式 C 实例级缓存) + links (intra-call 复用) +
-            # kernels (进程级 memo)。GPU 成功路径不调 _build_cpu_hop (方式 B 一半收益)。
+            # 分支 ②-GPU: round_005 三模式路由 (hybrid/cupyx/cpu_fallback)。
+            # round_003/004 实证 cupyx ARPACK 收敛停滞 (#3: matvec 次数 8.8-33× scipy),
+            # round_005 方向 A 把本征引擎从 cupyx.eigsh 换成 scipy.sparse.linalg.eigsh,
+            # matvec 仍走 GPU sigma (5-15× per-mv) -> 继承 scipy ~700-811 N_matvec。
+            # _gpu_sigma(v) 共用: hybrid 与 cupyx 共用同一 GPU matvec 核 (含 eri 缓存),
+            # 仅返回类型分支 (hybrid .get() 回 numpy 给 scipy; cupyx 留 cupy 给 cupyx)。
+            # GPU 成功路径不调 _build_cpu_hop (方式 B 一半收益, round_004 保留)。
             import cupy as cp
-            from cupyx.scipy.sparse.linalg import eigsh as cp_eigsh
-            from cupyx.scipy.sparse.linalg import LinearOperator as cp_LO
             from pyscf.fci import selected_ci as _sci
             from .selected_ci_gpu import sigma_selected_ci_gpu, _get_kernels
             kernels = _get_kernels()
@@ -173,18 +185,44 @@ class _Subspace:
                      _sci.cre_des_linkstr(sa, self.norb, self.nelec[0], True),
                      _sci.cre_des_linkstr(sb, self.norb, self.nelec[1], True)]
 
-            def matvec(v):
+            def _gpu_sigma(v):
                 xv = cp.asarray(v).reshape(nA, nB)
                 return sigma_selected_ci_gpu(
                     xv, sa, sb, self.norb, self.nelec, self.h1e, self.eri,
                     links=links, kernels=kernels,
-                    eri1_aaaa=self._eri1_aaaa, eri1_bbaa=self._eri1_bbaa).reshape(-1)
+                    eri1_aaaa=self._eri1_aaaa, eri1_bbaa=self._eri1_bbaa)
+
             try:
-                A = cp_LO((dim, dim), matvec=matvec, dtype=np.float64)
-                ev, cv = cp_eigsh(A, k=1, which="SA", tol=1e-10)
-                E, c1d = float(ev[0]), np.asarray(cv).ravel()
+                if self.gpu_eigsh_mode == "hybrid":
+                    # 方向 A: scipy ARPACK 黑盒驱动 GPU matvec (绕开 cupyx 收敛停滞)。
+                    # matvec(v): v numpy (scipy 给) -> cp.asarray H2D -> sigma GPU ->
+                    # .get() D2H 回 numpy 给 scipy。引擎 == CPU else 分支的同一个
+                    # scipy.sparse.linalg.eigsh -> N_matvec 同分布 (~700-811, theory §1.2)。
+                    def matvec(v):
+                        return np.asarray(_gpu_sigma(v).get()).ravel()
+                    op = LinearOperator((dim, dim), matvec=matvec, dtype=np.float64)
+                    ev, cv = eigsh(op, k=1, which="SA", tol=1e-10, maxiter=3000)
+                    E, c1d = float(ev[0]), np.asarray(cv).ravel()
+                elif self.gpu_eigsh_mode == "cupyx":
+                    # round_004 现状 (诊断/调参/方向 B 基线) + 方向 C maxiter 护栏。
+                    # maxiter=3000 (~3.7× scipy 的 811): 正常 cupyx 收敛能过; 病理 stall
+                    # (7169 matvec @ dim 5e5) 触发 ArpackNoConvergence -> except 回退 CPU。
+                    # 复现 round_004 原始 cupyx wall (无护栏) 时临时改大 maxiter。
+                    from cupyx.scipy.sparse.linalg import eigsh as cp_eigsh
+                    from cupyx.scipy.sparse.linalg import LinearOperator as cp_LO
+                    def matvec(v):
+                        return _gpu_sigma(v).reshape(-1)
+                    A = cp_LO((dim, dim), matvec=matvec, dtype=np.float64)
+                    ev, cv = cp_eigsh(A, k=1, which="SA", tol=1e-10, maxiter=3000)
+                    E, c1d = float(ev[0]), np.asarray(cv).ravel()
+                else:  # "cpu_fallback" (逃生舱: scipy eigsh + contract_2e, GPU 不参与)
+                    _build_cpu_hop()
+                    op = LinearOperator((dim, dim), matvec=hop, dtype=np.float64)
+                    ev, cv = eigsh(op, k=1, which="SA", tol=1e-10, maxiter=3000)
+                    E, c1d = float(ev[0]), np.asarray(cv).ravel()
             except Exception:
-                # OOM / cupyx 不收敛 -> 回退 CPU scipy eigsh (懒构 hop)
+                # OOM / cupyx 不收敛 (maxiter 触发 ArpackNoConvergence) / scipy 不收敛
+                # -> 懒构 hop + scipy eigsh 回退 (round_004 护栏, 三模式共用)。
                 _build_cpu_hop()
                 op = LinearOperator((dim, dim), matvec=hop, dtype=np.float64)
                 ev, cv = eigsh(op, k=1, which="SA", maxiter=3000)

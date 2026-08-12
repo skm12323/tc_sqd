@@ -1,13 +1,18 @@
-"""tc_sqd.cipsi._Subspace GPU backend 测试 (round_003 R3)。
+"""tc_sqd.cipsi._Subspace GPU backend 测试 (round_003 R3 / round_005 R3 三模式)。
 
-三锚点 (theory.md §3):
+锚点 (round_005 theory.md §3):
 - **P2 零回归**: backend="cpu" (默认) 路径逐位不变; dim≤1000 始终 CPU (不读 backend)。
-- **P1 正确性**: 固定子空间 dim>1e5, backend="gpu" vs "cpu" E diff ≤1e-10。
-- **P0 性能**: 固定子空间 dim>1e5, 单次 diag wall GPU/CPU ≤0.5 (≥2× 稳健阈值;
-  理论目标 ≤0.33 即 ≥3×)。
-- **回退**: mock has_gpu()=False → backend="gpu" 静默降级 "cpu", 绝不 raise。
+  backend="gpu" 默认 gpu_eigsh_mode="hybrid" 仅在 GPU 分支读, CPU 路径完全不触及。
+- **P1 正确性**: 固定子空间 dim>1e5, backend="gpu" (hybrid, tol=1e-10) vs "cpu"
+  E diff ≤1e-10。
+- **P0 性能**: 固定子空间 dim>1e5, 单次 diag wall GPU(hybrid)/CPU ≤0.5 (≥2× 稳健阈值)。
+  round_005 hybrid 绕开 cupyx 收敛停滞, 预期 ratio ≤0.3 (≥3×), 应 xpass。
+- **三模式覆盖**: hybrid / cupyx / cpu_fallback 三模式在中等 dim 下能量数值一致。
+- **回退**: mock has_gpu()=False → backend="gpu" 静默降级 "cpu", 绝不 raise;
+  mock cupyx.eigsh (cupyx 模式) / sigma_selected_ci_gpu OOM (hybrid 模式) → except
+  懒构 hop 回退 CPU scipy, 能量逐位一致。
 
-无 cupy/GPU 环境: P1/P0 测试 skip, 其余 (P2/回退) 必通过。
+无 cupy/GPU 环境: P1/P0/三模式 测试 skip, 其余 (P2/回退) 必通过。
 """
 import time
 
@@ -59,14 +64,22 @@ def _large_subspace_ints(n_str=400):
 #  P2 零回归: 默认 backend="cpu", dim≤1000 始终 CPU
 # --------------------------------------------------------------------------- #
 def test_subspace_default_backend_cpu():
-    """_Subspace 默认 backend="cpu" (keyword-only, 不破坏位置参数)。"""
+    """_Subspace 默认 backend="cpu", gpu_eigsh_mode="hybrid" (keyword-only, 不破坏位置参数)。
+
+    round_005: gpu_eigsh_mode 默认 "hybrid" 仅在 backend=="gpu" 时 diag 读;
+    CPU 路径完全不触及 -> 默认值不影响零回归。
+    """
     h1e = np.zeros((4, 4))
     eri = np.zeros((4, 4, 4, 4))
     sub = _Subspace(h1e, eri, 4, (2, 2))
     assert sub.backend == "cpu"
-    # 位置参数不受影响 (backend 是 keyword-only)
+    assert sub.gpu_eigsh_mode == "hybrid"     # round_005 新默认
+    # 位置参数不受影响 (backend / gpu_eigsh_mode 均为 keyword-only)
     sub2 = _Subspace(h1e, eri, 4, (2, 2), backend="cpu")
     assert sub2.backend == "cpu"
+    # gpu_eigsh_mode 可显式覆盖 (三模式)
+    sub3 = _Subspace(h1e, eri, 4, (2, 2), backend="gpu", gpu_eigsh_mode="cupyx")
+    assert sub3.gpu_eigsh_mode == "cupyx"
 
 
 def test_subspace_small_dim_always_cpu():
@@ -128,10 +141,13 @@ def test_gpu_graceful_fallback_no_cupy(monkeypatch):
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
 def test_gpu_correctness_large_subspace():
-    """P1: dim>1e5 子空间, backend="gpu" (tol=1e-10) vs "cpu" E diff ≤1e-10。
+    """P1: dim>1e5 子空间, backend="gpu" (round_005 默认 hybrid, tol=1e-10) vs "cpu"
+    E diff ≤1e-10。
 
-    theory §3 P1: REVIEW 基线 sigma vs contract_2e ≤2e-13; _Subspace 包装后
-    E diff 应 ≤1e-10 (tol 收紧对齐 CPU scipy 默认机器精度)。
+    round_005 hybrid = scipy.sparse.linalg.eigsh + GPU matvec (sigma + .get())。
+    引擎与 CPU else 分支同一个 scipy eigsh -> N_matvec 同分布; matvec 误差地板
+    ~1e-13 (round_004 sigma vs contract_2e 实测 ≤4.4e-13) ≪ tol=1e-10 -> E diff
+    富余。theory §3 P1: ≤1e-10 证实 / 1e-10–1e-8 部分 / >1e-8 证伪。
     """
     h1e, eri, norb, nelec, sa, sb = _large_subspace_ints(n_str=400)
     dim = len(sa) * len(sb)
@@ -149,19 +165,22 @@ def test_gpu_correctness_large_subspace():
 
 @pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
 @pytest.mark.xfail(strict=False, reason=(
-    "round_003 R5 已证伪: cupyx ARPACK 收敛 erratic (matvec 次数 9-33× scipy), "
-    "B+C 不触及. round_004 theory §1.1/§1.5 + §3 三态: >0.5 证伪 ≠ B+C bug. "
-    "B+C 的可归因验收锚定在 test_p0_prime_per_matvec_eri_cache_isolation. "
-    "strict=False: ratio 落任意三态均不破回归; 实测值 print 供 R5 归因."))
+    "round_005 R3: 默认 hybrid (scipy eigsh + GPU matvec) 绕开 cupyx 收敛停滞, "
+    "theory §1.3.2 预期 ratio 0.21-0.31 (3.2-4.7×) @ dim 5e5 / 0.09-0.19 @ dim 1e5 "
+    "-> 应 xpass (ratio ≤0.5). strict=False: R5 确认达标后 R3 移除 xfail 改硬 assert. "
+    "若仍 >0.5, 查 P0' N_matvec 归因 (hybrid 是否继承 scipy ~700-811) — theory §3 "
+    "风险声明 2: P0' 是 P0 的因果前提."))
 def test_gpu_performance_large_subspace():
-    """P0: dim>1e5 子空间, 单次 diag wall GPU/CPU ≤0.5 (≥2× 稳健; 目标 ≤0.33 即 ≥3×)。
+    """P0: dim>1e5 子空间, 单次 diag wall GPU(hybrid)/CPU ≤0.5 (≥2×; 目标 ≤0.33 即 ≥3×)。
 
+    round_005 hybrid = scipy ARPACK 黑盒驱动 GPU matvec (绕开 cupyx 收敛停滞)。
     GPU 先 warm-up (cupy 上下文初始化 + RawModule 编译一次性开销, 不计入稳态计时),
     再计时。断言 dim>1e5 防 crossover 假证伪 (theory §3 风险声明 2)。
 
-    round_004 诚实声明: 本 P0 headline 大概率在 dim 5e5 证伪 (cupyx 收敛 #3 主导,
-    B+C 不触及, 见 implementation.md)。B+C 的可归因验收由 ``test_p0_prime_*``
-    (per-matvec 隔离测) 锚定, 与本 P0 解耦。
+    theory §1.3.2 预测带: dim 1e5 ratio 0.09-0.19 (5.4-11.7×); dim 5e5 ratio
+    0.21-0.31 (3.2-4.7×)。保守端 dim 5e5 仍 3.2× 富余, 远超 P0 阈值 2×。
+    唯一危险: scipy N_mv 也退化到 ~3000+ (P0' 证伪) — 但 scipy 引擎 + 同矩阵 +
+    同 v0 分布必然 ~700-811 (theory §1.2), 概率低。P0' 必跑 (N_mv 是 P0 因果前提)。
     """
     h1e, eri, norb, nelec, sa, sb = _large_subspace_ints(n_str=400)
     dim = len(sa) * len(sb)
@@ -242,11 +261,14 @@ def test_sigma_cached_eri_correctness():
 
 
 @pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
-def test_subspace_gpu_lazy_hop_fallback(monkeypatch):
-    """round_004 方式 B: GPU 分支 except 回退走 _build_cpu_hop (懒构路径覆盖)。
+def test_subspace_gpu_lazy_hop_fallback_cupyx(monkeypatch):
+    """round_005 三模式 fallback (cupyx 模式): mock cupyx.eigsh 抛异常 ->
+    分支 ②-GPU 的 except 捕获, 懒构 hop (此前 GPU 成功路径未付 _all_linkstr_index 税),
+    回退 CPU scipy eigsh。
 
-    模拟 cupyx.eigsh 抛异常 (e.g. 不收敛 / OOM) -> 分支 ②-GPU 的 except 捕获,
-    懒构 hop (此前 GPU 成功路径未付 _all_linkstr_index 税), 回退 CPU scipy eigsh。
+    round_004 的 test_subspace_gpu_lazy_hop_fallback 在 round_005 默认 hybrid 下会退化
+    (hybrid 用 scipy eigsh, mock cupyx.eigsh 不再触发)。本测试 pin
+    gpu_eigsh_mode="cupyx" 恢复 cupyx 路径的 fallback 覆盖 (theory §2.4.1)。
     能量应与纯 CPU 路径一致; 本征矢符号不定 (ARPACK 相位模糊, ±v 等价)。
     """
     import cupyx.scipy.sparse.linalg as cpsl
@@ -256,7 +278,8 @@ def test_subspace_gpu_lazy_hop_fallback(monkeypatch):
     monkeypatch.setattr(cpsl, "eigsh", _boom)
 
     h1e, eri, norb, nelec, sa, sb = _large_subspace_ints(n_str=120)
-    sub_gpu = _Subspace(h1e, eri, norb, nelec, backend="gpu")
+    sub_gpu = _Subspace(h1e, eri, norb, nelec, backend="gpu",
+                        gpu_eigsh_mode="cupyx")         # ← pin cupyx 走 cupyx.eigsh 路径
     sub_cpu = _Subspace(h1e, eri, norb, nelec, backend="cpu")
     E_gpu, c_gpu, _, _ = sub_gpu.diag(sa, sb)
     E_cpu, c_cpu, _, _ = sub_cpu.diag(sa, sb)
@@ -269,6 +292,72 @@ def test_subspace_gpu_lazy_hop_fallback(monkeypatch):
         np.allclose(c_gpu, c_cpu, atol=1e-10) or \
         np.allclose(c_gpu, -c_cpu, atol=1e-10), (
         "GPU 回退本征矢与 CPU 既非 +c 也非 -c (相位模糊外的不一致)")
+
+
+@pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
+def test_subspace_gpu_lazy_hop_fallback_hybrid(monkeypatch):
+    """round_005 三模式 fallback (hybrid 模式, 默认): mock sigma_selected_ci_gpu 抛
+    OOM -> hybrid 的 matvec 闭包内 _gpu_sigma 失败 -> except 懒构 hop + CPU scipy 回退。
+
+    theory §2.4.1: hybrid 用 scipy eigsh (本就不 stall), 故 fallback 触发点是 matvec
+    (GPU OOM / sigma 异常)。mock tc_sqd.selected_ci_gpu.sigma_selected_ci_gpu 抛
+    MemoryError, 验证 except 接住 -> 能量与 CPU 一致。
+    """
+    import tc_sqd.selected_ci_gpu as sgpu
+    def _oom(*args, **kwargs):
+        raise MemoryError("mock sigma_selected_ci_gpu GPU OOM (强制走懒构 hop 回退)")
+    monkeypatch.setattr(sgpu, "sigma_selected_ci_gpu", _oom)
+
+    h1e, eri, norb, nelec, sa, sb = _large_subspace_ints(n_str=120)
+    sub_gpu = _Subspace(h1e, eri, norb, nelec, backend="gpu")          # 默认 hybrid
+    sub_cpu = _Subspace(h1e, eri, norb, nelec, backend="cpu")
+    E_gpu, c_gpu, _, _ = sub_gpu.diag(sa, sb)
+    E_cpu, c_cpu, _, _ = sub_cpu.diag(sa, sb)
+    assert abs(E_gpu - E_cpu) < 1e-10, (
+        f"hybrid 回退路径 E={E_gpu:.10f} != CPU E={E_cpu:.10f} (懒构 hop 接合 bug)")
+    assert np.allclose(np.abs(c_gpu), np.abs(c_cpu), atol=1e-10) or \
+        np.allclose(c_gpu, c_cpu, atol=1e-10) or \
+        np.allclose(c_gpu, -c_cpu, atol=1e-10), (
+        "hybrid 回退本征矢与 CPU 既非 +c 也非 -c (相位模糊外的不一致)")
+
+
+@pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
+def test_three_gpu_eigsh_modes_energy_consistency():
+    """round_005 三模式覆盖: hybrid / cupyx / cpu_fallback 在中等 dim 下能量数值一致。
+
+    固定子空间 (n_str=120, dim=14400 > 1000 -> 走 GPU 分支), 跑三模式 + 纯 CPU 对照:
+      - hybrid:       scipy eigsh + GPU matvec (sigma + .get())
+      - cupyx:        cupyx eigsh + GPU matvec (留 cupy); maxiter=3000, 病理 stall
+                      会触发 ArpackNoConvergence -> except 回退 CPU (仍正确)
+      - cpu_fallback: scipy eigsh + contract_2e (GPU 不参与 matvec)
+
+    三模式 + CPU 四个能量两两 diff ≤1e-10 (theory §3 P1 基线; 实测 ~1e-13 级)。
+    中等 dim 选 n_str=120: 既 >1000 触发 GPU 分支 (不走分支 ① numpy eigh), 又足够小
+    让 cupyx 在 maxiter=3000 内收敛 (避免恒回退, 实测 cupyx 收敛性)。
+    """
+    h1e, eri, norb, nelec, sa, sb = _large_subspace_ints(n_str=120)
+    dim = len(sa) * len(sb)
+    assert dim > 1000, f"测试子空间 dim={dim} 须 >1000 (走 GPU 分支, 非分支 ①)"
+
+    sub_cpu = _Subspace(h1e, eri, norb, nelec, backend="cpu")
+    sub_hybrid = _Subspace(h1e, eri, norb, nelec, backend="gpu",
+                           gpu_eigsh_mode="hybrid")
+    sub_cupyx = _Subspace(h1e, eri, norb, nelec, backend="gpu",
+                          gpu_eigsh_mode="cupyx")
+    sub_fb = _Subspace(h1e, eri, norb, nelec, backend="gpu",
+                       gpu_eigsh_mode="cpu_fallback")
+
+    E_cpu, _, _, _ = sub_cpu.diag(sa, sb)
+    E_hybrid, _, _, _ = sub_hybrid.diag(sa, sb)
+    E_cupyx, _, _, _ = sub_cupyx.diag(sa, sb)
+    E_fb, _, _, _ = sub_fb.diag(sa, sb)
+
+    for label, E in [("hybrid", E_hybrid), ("cupyx", E_cupyx),
+                     ("cpu_fallback", E_fb)]:
+        diff = abs(E - E_cpu)
+        assert diff <= 1e-10, (
+            f"{label} vs CPU E diff {diff:.2e} >1e-10 "
+            f"(E_{label}={E:.10f}, E_cpu={E_cpu:.10f})")
 
 
 @pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
