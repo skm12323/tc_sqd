@@ -101,10 +101,25 @@ class _Subspace:
         self.myci = selected_ci.SCI()
         # GPU 后端: 无 cupy/GPU 时静默回退 CPU (绝不 raise, round_003 §6.4)
         self.backend = backend
+        # round_004 方式 C: 实例级 eri 缓存 (cupy 常驻 GPU, 一次)。
+        # _eri1_aaaa/_bbaa 与 self.h2e 同生命周期 (init 固定); solve_sqd_adaptive 换基
+        # 重建 _Subspace (cipsi.py:675) -> 新 h1e/eri -> 新 self.h2e -> 新缓存, 语义自洽。
+        # CPU 路径不预算 (None -> diag 不读, 零开销); GPU 路径预算两个小 cupy 数组
+        # (norb=12: eri1_aaaa=(66,66)≈35KB, eri1_bbaa=(78,78)≈49KB, 合计 ~84KB)。
+        self._eri1_aaaa = None
+        self._eri1_bbaa = None
         if backend == "gpu":
             from .noise import has_gpu
             if not has_gpu():
                 self.backend = "cpu"
+            else:
+                # 方式 C: 用 self.h2e (== sigma_selected_ci_gpu 内部重算的 h2e, 逐字
+                # 相同) 预算 eri1_aaaa/_bbaa, cp.asarray 一次常驻 GPU。sigma 内部
+                # 喂 cp.matmul 直接用, 不再 cp.asarray。
+                from .selected_ci_gpu import _selci_eri_aaaa, _selci_eri_bbaa
+                import cupy as cp
+                self._eri1_aaaa = cp.asarray(_selci_eri_aaaa(self.h2e, norb))
+                self._eri1_bbaa = cp.asarray(_selci_eri_bbaa(self.h2e, norb, nelec))
 
     def diag(self, str_a, str_b):
         """对角化 (str_a, str_b) 子空间, 返回 (E_gs, c2d, sa, sb)。"""
@@ -112,17 +127,29 @@ class _Subspace:
         sb = np.asarray(sorted(str_b), dtype=np.int64)
         nA, nB = len(sa), len(sb)
         dim = nA * nB
-        link = selected_ci._all_linkstr_index((sa, sb), self.norb, self.nelec)
 
-        def hop(v):
-            v = np.ascontiguousarray(v, dtype=np.float64)
-            hv = self.myci.contract_2e(
-                self.h2e, selected_ci._as_SCIvector(v, (sa, sb)),
-                self.norb, self.nelec, link).reshape(-1)
-            return np.ascontiguousarray(hv, dtype=np.float64)
+        # round_004 方式 B: hop / link 懒构到 _build_cpu_hop 闭包。
+        # GPU 成功路径完全不付 _all_linkstr_index (CPU 合并索引) 的构建税;
+        # 仅分支 ① (dim≤1000)、分支 ②-CPU (默认)、分支 ②-GPU 的 except 回退
+        # 三处调用 -> 拿到 (link, hop) 二元组 (闭包内 nonlocal 缓存)。
+        link = None
+        hop = None
+
+        def _build_cpu_hop():
+            nonlocal link, hop
+            link = selected_ci._all_linkstr_index((sa, sb), self.norb, self.nelec)
+
+            def hop(v):
+                v = np.ascontiguousarray(v, dtype=np.float64)
+                hv = self.myci.contract_2e(
+                    self.h2e, selected_ci._as_SCIvector(v, (sa, sb)),
+                    self.norb, self.nelec, link).reshape(-1)
+                return np.ascontiguousarray(hv, dtype=np.float64)
+            return hop
 
         if dim <= 1000:
             # 分支 ①: 始终 CPU numpy eigh (不读 backend; GPU 小维度 25× 启动开销无优势)
+            _build_cpu_hop()
             H = np.zeros((dim, dim))
             for col in range(dim):
                 e = np.zeros(dim)
@@ -131,19 +158,40 @@ class _Subspace:
             ev, cv = np.linalg.eigh(H)
             E, c1d = float(ev[0]), cv[:, 0]
         elif self.backend == "gpu":
-            # 分支 ②-GPU: cupyx eigsh (方式 A, 与 fermion.solve_sci 一致); 失败回退 CPU
-            from .selected_ci_gpu import eigsh_selected_ci_gpu
+            # 分支 ②-GPU: round_004 方式 B+C 合并 (内联 cupy LinearOperator + eri 缓存)。
+            # 不再调 eigsh_selected_ci_gpu 薄包装层; 直接内联 cupyx.eigsh, matvec 显式
+            # 传 eri1_aaaa/_bbaa (方式 C 实例级缓存) + links (intra-call 复用) +
+            # kernels (进程级 memo)。GPU 成功路径不调 _build_cpu_hop (方式 B 一半收益)。
+            import cupy as cp
+            from cupyx.scipy.sparse.linalg import eigsh as cp_eigsh
+            from cupyx.scipy.sparse.linalg import LinearOperator as cp_LO
+            from pyscf.fci import selected_ci as _sci
+            from .selected_ci_gpu import sigma_selected_ci_gpu, _get_kernels
+            kernels = _get_kernels()
+            links = [_sci.des_des_linkstr(sa, self.norb, self.nelec[0], True),
+                     _sci.des_des_linkstr(sb, self.norb, self.nelec[1], True),
+                     _sci.cre_des_linkstr(sa, self.norb, self.nelec[0], True),
+                     _sci.cre_des_linkstr(sb, self.norb, self.nelec[1], True)]
+
+            def matvec(v):
+                xv = cp.asarray(v).reshape(nA, nB)
+                return sigma_selected_ci_gpu(
+                    xv, sa, sb, self.norb, self.nelec, self.h1e, self.eri,
+                    links=links, kernels=kernels,
+                    eri1_aaaa=self._eri1_aaaa, eri1_bbaa=self._eri1_bbaa).reshape(-1)
             try:
-                ev, cv = eigsh_selected_ci_gpu(
-                    sa, sb, self.norb, self.nelec,
-                    self.h1e, self.eri, k=1, which="SA", tol=1e-10)
+                A = cp_LO((dim, dim), matvec=matvec, dtype=np.float64)
+                ev, cv = cp_eigsh(A, k=1, which="SA", tol=1e-10)
                 E, c1d = float(ev[0]), np.asarray(cv).ravel()
             except Exception:
+                # OOM / cupyx 不收敛 -> 回退 CPU scipy eigsh (懒构 hop)
+                _build_cpu_hop()
                 op = LinearOperator((dim, dim), matvec=hop, dtype=np.float64)
                 ev, cv = eigsh(op, k=1, which="SA", maxiter=3000)
                 E, c1d = float(ev[0]), np.asarray(cv).ravel()
         else:
             # 分支 ②-CPU: scipy eigsh (默认, 与改造前逐字一致, L1 零回归)
+            _build_cpu_hop()
             op = LinearOperator((dim, dim), matvec=hop, dtype=np.float64)
             ev, cv = eigsh(op, k=1, which="SA", maxiter=3000)
             E, c1d = float(ev[0]), np.asarray(cv).ravel()

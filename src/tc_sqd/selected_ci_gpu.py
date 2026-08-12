@@ -105,7 +105,8 @@ def _get_kernels():
 
 
 def sigma_selected_ci_gpu(v, ci_a, ci_b, norb, nelec, h1e, eri,
-                          links=None, kernels=None):
+                          links=None, kernels=None,
+                          eri1_aaaa=None, eri1_bbaa=None):
     """selected-CI 子空间 ``H·v`` (GPU, 3-contraction)。子空间正确。
 
     Parameters
@@ -113,6 +114,15 @@ def sigma_selected_ci_gpu(v, ci_a, ci_b, norb, nelec, h1e, eri,
     v : (na, nb), numpy 或 cupy (C-contiguous)
     links : 4-tuple (dd_a, dd_b, cd_a, cd_b) tril-mode linkstr (可复用)
     kernels : 预编译 RawKernel (可复用)
+    eri1_aaaa, eri1_bbaa : cupy ndarray, optional
+        预算并缓存的第二电子积分重组 (round_004 方式 C)。``None`` 时内部从
+        ``(h1e, eri, norb, nelec)`` 重算 (== round_003 现状, 向后兼容)。
+        非 ``None`` 时直接复用, 跳过 ``absorb_h1e`` + ``ao2mo.restore`` +
+        ``_selci_eri_*`` + 2× ``cp.asarray`` 的 per-matvec 重算。
+        **必须是 cupy 数组** (本函数直接喂 ``cp.matmul``, 不再 ``cp.asarray``)。
+        由调用方保证与 ``(h1e, eri, norb, nelec)`` 一致
+        (``_Subspace.__init__`` 用同 ``self.h2e`` 预算, cipsi.py:99-100 与
+        本函数重算分支逐字相同 -> 数值天然一致)。
 
     Returns
     -------
@@ -122,7 +132,15 @@ def sigma_selected_ci_gpu(v, ci_a, ci_b, norb, nelec, h1e, eri,
     from pyscf import ao2mo
     from pyscf.fci import selected_ci, direct_spin1
     na, nb = len(ci_a), len(ci_b)
-    h2e = ao2mo.restore(1, direct_spin1.absorb_h1e(h1e, eri, norb, nelec, 0.5), norb)
+    if eri1_aaaa is None or eri1_bbaa is None:
+        # 重算分支 (默认 == round_003 现状, 逐字一致)
+        h2e = ao2mo.restore(1, direct_spin1.absorb_h1e(h1e, eri, norb, nelec, 0.5), norb)
+        if eri1_aaaa is None:
+            eri1_aaaa = cp.asarray(_selci_eri_aaaa(h2e, norb))
+        if eri1_bbaa is None:
+            eri1_bbaa = cp.asarray(_selci_eri_bbaa(h2e, norb, nelec))
+    # else: 直接复用调用方传入的 cupy 缓存 (方式 C), 跳过 absorb_h1e+restore+
+    # _selci_eri_*+2× cp.asarray 的 per-matvec 重算 (eri1_* 已是 cupy 数组)。
     if links is None:
         links = [selected_ci.des_des_linkstr(ci_a, norb, nelec[0], True),
                  selected_ci.des_des_linkstr(ci_b, norb, nelec[1], True),
@@ -132,8 +150,6 @@ def sigma_selected_ci_gpu(v, ci_a, ci_b, norb, nelec, h1e, eri,
         kernels = _get_kernels()
     scat_t1, gath_t1, scat_ba, gath_bb = kernels
     dd_a, dd_b, cd_a, cd_b = links
-    eri1_aaaa = cp.asarray(_selci_eri_aaaa(h2e, norb))
-    eri1_bbaa = cp.asarray(_selci_eri_bbaa(h2e, norb, nelec))
     vg = cp.ascontiguousarray(v, np.float64) if isinstance(v, cp.ndarray) \
         else cp.asarray(np.ascontiguousarray(v), np.float64)
     ci1 = cp.zeros((na, nb))
@@ -167,10 +183,18 @@ def sigma_selected_ci_gpu(v, ci_a, ci_b, norb, nelec, h1e, eri,
     return ci1
 
 
-def eigsh_selected_ci_gpu(ci_a, ci_b, norb, nelec, h1e, eri, *, k=1, which="SA", tol=1e-8):
+def eigsh_selected_ci_gpu(ci_a, ci_b, norb, nelec, h1e, eri, *, k=1, which="SA", tol=1e-8,
+                          eri1_aaaa=None, eri1_bbaa=None):
     """selected-CI 子空间 GPU 本征求解 (cupyx eigsh + 3-contraction matvec)。
 
     子空间正确 (与 selected_ci.contract_2e 一致, ≤1e-13), 用于 solve_sci(backend="gpu")。
+
+    Parameters
+    ----------
+    eri1_aaaa, eri1_bbaa : cupy ndarray, optional
+        预算缓存 (round_004 方式 C)。``None`` 时 matvec 内部每次重算 (== round_003
+        现状, ``fermion.solve_sci`` 等既有调用者不传 -> 逐字零回归)。非 ``None``
+        时透传给 :func:`sigma_selected_ci_gpu`, 跳过 per-matvec 重算。
     """
     import cupy as cp
     from pyscf.fci import selected_ci
@@ -185,7 +209,8 @@ def eigsh_selected_ci_gpu(ci_a, ci_b, norb, nelec, h1e, eri, *, k=1, which="SA",
 
     def matvec(x):
         xv = cp.asarray(x).reshape(na, nb)
-        return sigma_selected_ci_gpu(xv, ci_a, ci_b, norb, nelec, h1e, eri, links, kernels).reshape(-1)
+        return sigma_selected_ci_gpu(xv, ci_a, ci_b, norb, nelec, h1e, eri, links, kernels,
+                                     eri1_aaaa=eri1_aaaa, eri1_bbaa=eri1_bbaa).reshape(-1)
     A = LinearOperator((dim, dim), matvec=matvec, dtype=np.float64)
     e, c = eigsh(A, k=k, which=which, tol=tol)
     e = e.get() if hasattr(e, "get") else np.asarray(e)
