@@ -108,8 +108,12 @@ def _gpu_ctx(sa, sb, norb, nelec, h1e, eri):
     return links, kernels, eri1_aaaa, eri1_bbaa
 
 
-def run_hybrid(sa, sb, norb, nelec, h1e, eri):
-    """hybrid 分支镜像: scipy eigsh (tol=1e-10) + GPU sigma matvec (.get() 回 numpy)。"""
+def run_hybrid(sa, sb, norb, nelec, h1e, eri, tol=1e-10):
+    """hybrid 分支镜像: scipy eigsh + GPU sigma matvec (.get() 回 numpy)。
+
+    tol=1e-10  (默认) = shipped hybrid 分支 (cipsi.py:204);
+    tol=0       = 与 CPU 分支同 tol 的引擎匹配测 (隔离变量: 仅 matvec 实现不同)。
+    """
     from scipy.sparse.linalg import LinearOperator as SciOp, eigsh
     import cupy as cp
     dim = len(sa) * len(sb)
@@ -128,7 +132,7 @@ def run_hybrid(sa, sb, norb, nelec, h1e, eri):
     A = SciOp((dim, dim), matvec=matvec, dtype=np.float64)
     t0 = time.perf_counter()
     try:
-        e, c = eigsh(A, k=1, which="SA", tol=1e-10, maxiter=3000)
+        e, c = eigsh(A, k=1, which="SA", tol=tol, maxiter=3000)
         return {"matvecs": cnt["n"], "wall": time.perf_counter() - t0,
                 "E": float(e[0]), "status": "ok"}
     except Exception as ex:
@@ -190,17 +194,24 @@ def main():
     scipy_res = run_scipy_cpu(sa, sb, norb, nelec, h1e, eri)
     print(f"[scipy_cpu] {scipy_res}", flush=True)
 
-    hybrid_res = run_hybrid(sa, sb, norb, nelec, h1e, eri)
+    hybrid_res = run_hybrid(sa, sb, norb, nelec, h1e, eri, tol=1e-10)
     print(f"[hybrid    ] {hybrid_res}", flush=True)
+
+    hybrid_tol0 = run_hybrid(sa, sb, norb, nelec, h1e, eri, tol=0)
+    print(f"[hybrid_t0 ] {hybrid_tol0}", flush=True)
 
     cupyx_res = run_cupyx(sa, sb, norb, nelec, h1e, eri, args.cupyx_timeout)
     print(f"[cupyx     ] {cupyx_res}", flush=True)
 
     out_entry = {"n_str": n_str, "dim": dim,
                  "scipy_cpu": scipy_res, "hybrid": hybrid_res,
-                 "cupyx": cupyx_res}
+                 "hybrid_tol0": hybrid_tol0, "cupyx": cupyx_res}
     if (scipy_res.get("status") == "ok" and hybrid_res.get("status") == "ok"):
         out_entry["hybrid_over_scipy"] = hybrid_res["matvecs"] / scipy_res["matvecs"]
+    if (scipy_res.get("status") == "ok"
+            and hybrid_tol0.get("status") == "ok"):
+        out_entry["hybrid_tol0_over_scipy"] = (
+            hybrid_tol0["matvecs"] / scipy_res["matvecs"])
     if (scipy_res.get("status") == "ok" and cupyx_res.get("status") == "ok"):
         out_entry["cupyx_over_scipy"] = cupyx_res["matvecs"] / scipy_res["matvecs"]
 

@@ -1,0 +1,7 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+=== n_str=708 dim=501264 ===
+[scipy_cpu] {'matvecs': 811, 'wall': 138.37774340901524, 'E': -68.23335967856598, 'status': 'ok'}
+[hybrid    ] {'matvecs': 571, 'wall': 29.23045541800093, 'E': -68.23335967856592, 'status': 'ok'}
+[hybrid_t0 ] {'matvecs': 811, 'wall': 40.59304427797906, 'E': -68.23335967856576, 'status': 'ok'}
+[cupyx     ] {'matvecs': 8129, 'wall': 293.4916291749978, 'E': -68.23335967856579, 'status': 'ok'}
+[probe] saved -> /mnt/d/tc_sqd/benchmarks/_round005_results.json

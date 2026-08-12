@@ -1,0 +1,12 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+[scan] dim=  10000 cpu=     3.09s hybrid=     0.95s ratio=0.306 speedup=3.27x Ediff=2.84e-13
+[scan] dim=  50176 cpu=    84.41s hybrid=     3.26s ratio=0.039 speedup=25.90x Ediff=1.14e-13
+[scan] dim= 100489 cpu=    90.02s hybrid=     5.33s ratio=0.059 speedup=16.87x Ediff=1.42e-13
+[3way] dim= 100489 cupyx          wall=   116.70s E=-68.2240407675
+[3way] dim= 100489 cpu_fallback   wall=    62.24s E=-68.2240407675
+[scan] dim= 501264 cpu=   136.81s hybrid=    28.12s ratio=0.206 speedup=4.86x Ediff=9.95e-14
+[3way] dim= 501264 cupyx          wall=   250.68s E=-68.2333596786
+[3way] dim= 501264 cpu_fallback   wall=    93.66s E=-68.2333596786
+[scan] P1 判定: 证实  (|E_hybrid-E_cpu|≤1e-10, n=2)
+[scan] P0 判定: dim1e5 ratio=0.059 (证实); dim5e5 ratio=0.206 (证实)
+[bench] saved scan -> /mnt/d/tc_sqd/benchmarks/_round005_results.json

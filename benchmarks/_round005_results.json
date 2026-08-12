@@ -1,0 +1,215 @@
+{
+  "scan": {
+    "rows": [
+      {
+        "n_str": 100,
+        "dim": 10000,
+        "t_cpu": 3.0930708489904646,
+        "t_hybrid": 0.9458582660008688,
+        "E_cpu": -68.20768693269744,
+        "E_hybrid": -68.20768693269773,
+        "cpu_status": "ok",
+        "hybrid_status": "ok",
+        "hybrid_warmup": 1.516970731987385,
+        "ratio": 0.3057990948734924,
+        "speedup": 3.2701208628942973,
+        "E_diff": 2.8421709430404007e-13
+      },
+      {
+        "n_str": 224,
+        "dim": 50176,
+        "t_cpu": 84.40934736299096,
+        "t_hybrid": 3.2586417849815916,
+        "E_cpu": -68.21944311495828,
+        "E_hybrid": -68.2194431149584,
+        "cpu_status": "ok",
+        "hybrid_status": "ok",
+        "hybrid_warmup": 1.7521442450233735,
+        "ratio": 0.0386052242646569,
+        "speedup": 25.903229913768442,
+        "E_diff": 1.1368683772161603e-13
+      },
+      {
+        "n_str": 317,
+        "dim": 100489,
+        "t_cpu": 90.01849656100967,
+        "t_hybrid": 5.334950839984231,
+        "E_cpu": -68.22404076752149,
+        "E_hybrid": -68.22404076752163,
+        "cpu_status": "ok",
+        "hybrid_status": "ok",
+        "hybrid_warmup": 1.123804144008318,
+        "ratio": 0.05926505155935913,
+        "speedup": 16.87335071325151,
+        "E_diff": 1.4210854715202004e-13
+      },
+      {
+        "n_str": 708,
+        "dim": 501264,
+        "t_cpu": 136.81162196799414,
+        "t_hybrid": 28.124594665016048,
+        "E_cpu": -68.23335967856598,
+        "E_hybrid": -68.23335967856588,
+        "cpu_status": "ok",
+        "hybrid_status": "ok",
+        "hybrid_warmup": 1.9468966969870962,
+        "ratio": 0.2055716777599168,
+        "speedup": 4.864483332027287,
+        "E_diff": 9.947598300641403e-14
+      }
+    ],
+    "p0_verdict": "dim1e5 ratio=0.059 (\u8bc1\u5b9e); dim5e5 ratio=0.206 (\u8bc1\u5b9e)",
+    "p1_ok": true,
+    "modes_3way": {
+      "100489": {
+        "hybrid": {
+          "n_str": 317,
+          "mode": "hybrid",
+          "backend_effective": "gpu",
+          "dim": 100489,
+          "warmup_wall": 1.123804144008318,
+          "status": "ok",
+          "E": -68.22404076752163,
+          "wall": 5.334950839984231
+        },
+        "cpu": {
+          "n_str": 317,
+          "mode": "cpu",
+          "backend_effective": "cpu",
+          "dim": 100489,
+          "warmup_wall": 0.0,
+          "status": "ok",
+          "E": -68.22404076752149,
+          "wall": 90.01849656100967
+        },
+        "cupyx": {
+          "n_str": 317,
+          "mode": "cupyx",
+          "backend_effective": "gpu",
+          "dim": 100489,
+          "warmup_wall": 8.1022827209963,
+          "status": "ok",
+          "E": -68.22404076752112,
+          "wall": 116.69521430699388
+        },
+        "cpu_fallback": {
+          "n_str": 317,
+          "mode": "cpu_fallback",
+          "backend_effective": "gpu",
+          "dim": 100489,
+          "warmup_wall": 1.186387391993776,
+          "status": "ok",
+          "E": -68.22404076752159,
+          "wall": 62.23876938398462
+        }
+      },
+      "501264": {
+        "hybrid": {
+          "n_str": 708,
+          "mode": "hybrid",
+          "backend_effective": "gpu",
+          "dim": 501264,
+          "warmup_wall": 1.9468966969870962,
+          "status": "ok",
+          "E": -68.23335967856588,
+          "wall": 28.124594665016048
+        },
+        "cpu": {
+          "n_str": 708,
+          "mode": "cpu",
+          "backend_effective": "cpu",
+          "dim": 501264,
+          "warmup_wall": 0.0,
+          "status": "ok",
+          "E": -68.23335967856598,
+          "wall": 136.81162196799414
+        },
+        "cupyx": {
+          "n_str": 708,
+          "mode": "cupyx",
+          "backend_effective": "gpu",
+          "dim": 501264,
+          "warmup_wall": 7.652735570009099,
+          "status": "ok",
+          "E": -68.23335967856553,
+          "wall": 250.67866267901263
+        },
+        "cpu_fallback": {
+          "n_str": 708,
+          "mode": "cpu_fallback",
+          "backend_effective": "gpu",
+          "dim": 501264,
+          "warmup_wall": 1.346029375999933,
+          "status": "ok",
+          "E": -68.23335967856555,
+          "wall": 93.65929413799313
+        }
+      }
+    },
+    "timeouts": {}
+  },
+  "nmatvec": [
+    {
+      "n_str": 317,
+      "dim": 100489,
+      "scipy_cpu": {
+        "matvecs": 701,
+        "wall": 90.25952955702087,
+        "E": -68.22404076752149,
+        "status": "ok"
+      },
+      "hybrid": {
+        "matvecs": 501,
+        "wall": 5.83526547200745,
+        "E": -68.22404076752171,
+        "status": "ok"
+      },
+      "hybrid_tol0": {
+        "matvecs": 701,
+        "wall": 7.9060046350059565,
+        "E": -68.22404076752224,
+        "status": "ok"
+      },
+      "cupyx": {
+        "matvecs": 12577,
+        "wall": 110.52800164499786,
+        "E": -68.22404076752117,
+        "status": "ok"
+      },
+      "hybrid_over_scipy": 0.7146932952924394,
+      "hybrid_tol0_over_scipy": 1.0,
+      "cupyx_over_scipy": 17.94151212553495
+    },
+    {
+      "n_str": 708,
+      "dim": 501264,
+      "scipy_cpu": {
+        "matvecs": 811,
+        "wall": 138.37774340901524,
+        "E": -68.23335967856598,
+        "status": "ok"
+      },
+      "hybrid": {
+        "matvecs": 571,
+        "wall": 29.23045541800093,
+        "E": -68.23335967856592,
+        "status": "ok"
+      },
+      "hybrid_tol0": {
+        "matvecs": 811,
+        "wall": 40.59304427797906,
+        "E": -68.23335967856576,
+        "status": "ok"
+      },
+      "cupyx": {
+        "matvecs": 8129,
+        "wall": 293.4916291749978,
+        "E": -68.23335967856579,
+        "status": "ok"
+      },
+      "hybrid_over_scipy": 0.7040690505548706,
+      "hybrid_tol0_over_scipy": 1.0,
+      "cupyx_over_scipy": 10.023427866831073
+    }
+  ]
+}
