@@ -1,0 +1,5 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+=== n_str=317 dim=100489 ===
+[scipy ] {'matvecs': 701, 'wall': 90.40932240901748, 'E': -68.22404076752149, 'status': 'ok'}
+[cupyx ] {'matvecs': 7265, 'wall': 64.23899458599044, 'E': -68.2240407675219, 'status': 'ok'}
+[probe] saved -> /mnt/d/tc_sqd/benchmarks/_round004_results.json

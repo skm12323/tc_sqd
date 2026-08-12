@@ -1,0 +1,8 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+[scan] dim=  10000 cpu=     3.90s gpu=   148.23s ratio=38.050 speedup=0.03x Ediff=5.68e-14
+[scan] dim=  50176 cpu=    85.66s gpu=   194.83s ratio=2.274 speedup=0.44x Ediff=3.55e-13
+[scan] dim= 100489 cpu=    92.84s gpu=   136.48s ratio=1.470 speedup=0.68x Ediff=3.69e-13
+[scan] dim= 501264 cpu=   141.91s gpu=   361.86s ratio=2.550 speedup=0.39x Ediff=4.41e-13
+[scan] P1 判定: 证实  (|E_gpu-E_cpu|≤1e-10, n=2)
+[scan] P0 判定: 证伪 (无任何 dim>1e5 点 ratio≤0.33)  (ratio≤0.33 证实 / ≤0.5 部分 / >0.5 证伪)
+[bench] saved scan -> /mnt/d/tc_sqd/benchmarks/_round004_results.json

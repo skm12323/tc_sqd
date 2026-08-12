@@ -1,0 +1,5 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+[P0'] sigma 缓存 vs 重算 max|Δ|=8.53e-14 (阈值 ≤2e-13)
+[P0'] dim=100489 n_mv=50 interleave med_recompute=9.45ms med_cached=9.23ms ratio_med=0.977 speedup_med=1.02x | tot_recompute=465ms tot_cached=453ms ratio_agg=0.976
+[P0'] 判定: 部分 (0.88-1.0)  (阈值 ratio_med ≤0.88)
+[bench] saved p0_prime -> /mnt/d/tc_sqd/benchmarks/_round004_results.json

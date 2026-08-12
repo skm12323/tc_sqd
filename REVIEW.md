@@ -1527,3 +1527,24 @@ round_002 修复命门（cipsi.py:850 的 `n_tgt` 完全不读 shots）。
 eri/linkstr 缓存」**不能**解决本问题（开销仅 µs/ms 级）；下轮应优先 **cupyx eigsh 调参
 （ncv/maxiter/v0/shift-invert）或加慢回退护栏**（matvec 计数/wall 超时回退 CPU，现只有异常
 回退无慢回退）。详见 `docs/rounds/round_003/benchmark.md` §3。
+
+**round_004 R5 实证补充（2026-08-12，方式 B+C 落地后独立进程重测）**：round_004 已实现
+「方式 B+C」（eri 缓存 + 内联 cupy LO + 懒构 hop，commit `5fddef4`，默认路径零回归）。R5
+独立进程重测（**每点独立进程**消除 round_003 单进程显存碎片 confound）的结论**部分修正
+round_003 的「开销仅 µs/ms 级」判断**——B+C 的确定性 per-matvec 收益**实测 ~2.4%**（P0'
+缓存/重算 ratio_med 0.977/0.972，方向对但远低于 theory §1.2 的 8-12% 与 1.14× 阈值），
+**仍不足以逆转 #3**：
+
+| 项 | round_003（无 B+C，单进程）| round_004（B+C，独立进程）|
+|---|---|---|
+| dim 1e5 GPU/CPU | 0.45（2.22×，GPU 43s 幸运点）| **1.47（0.68×，GPU 136s）**——幸运点翻转，erratic 实证 |
+| dim 5e5 GPU/CPU | 2.71（GPU 372s）| **2.55（GPU 362s，2.6% 改善 ≈ P0' 的 2.4%）** |
+| dim 5e4 GPU/CPU | 5.17（GPU 433s stall）| 2.27（GPU 195s，stall 未复发，亦 erratic）|
+| cupyx/scipy matvecs | dim 1e5: 6,465/701（9.2×）| **dim 1e5: 7,265/701（10.4×）；dim 5e5: 7,169/811（8.8×）** |
+
+**#3 升级为实证三连**：(a) cupyx matvecs 8.8-10.4× 于 scipy（复现 + 扩至 dim 5e5）；(b) 同
+dim 1e5 跨 run N_matvec 差 ~2×（probe 7,265 → 64s vs scan ~15,000 → 136s，cupyx 起始向量
+默认随机 → 收敛路径抖动）；(c) 幸运点翻转（2.22×→0.68×）。**B+C 修复了 #1/#2（P0' 证实
+~2.4%），但 #3 是主导，round_005 应攻 cupyx 收敛（调参 / GPU-matvec + CPU-scipy-eigsh
+混合 / 慢回退护栏）**。P0 dim 5e5 证伪为预期结论（theory §1.5），非 B+C 失败。本轮 4 点 +
+2 probe 全收敛无 stall、无 GPU 崩溃。详见 `docs/rounds/round_004/benchmark.md`。
