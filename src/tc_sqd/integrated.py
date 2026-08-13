@@ -542,6 +542,13 @@ def solve_sqd_best(
     rand_seed: Optional[int] = 0,
     return_details: bool = False,
     verbose: bool = False,
+    # ---- C1 尾部发现采样透传 (round_001/002); 默认全关零回归 ----
+    tail_suppression: bool = False,
+    tail_max_draw_factor: int = 10,
+    tail_n_target_per_round: int = 0,
+    tail_shots_ref: int = 0,
+    # ---- GPU hybrid backend (round_005) ----
+    backend: str = "cpu",
 ) -> Union[float, dict]:
     """当前最优 SQD 配置 (2026-08-10 跨体系实测最优; benchmark/测试用)。
 
@@ -566,6 +573,21 @@ def solve_sqd_best(
         互异 ``e_pt2`` 点 <2 时退化为 baseline PT2 (evpt2 永不劣于 pt2)。
     degree : int
         evpt2 外推多项式次数 (默认 1 = 线性)。
+    tail_suppression : bool
+        C1 尾部发现采样透传 (round_001/002, 与 solve_sqd_active/solve_sqd_ev 同语义)。
+        ``True`` 时每轮用 discover_tail_pool 过抽 + 抑制已见 det 收集新贡献者。
+        默认 ``False`` 零行为变化。
+    tail_max_draw_factor : int
+        C1 过抽倍数 (默认 10)。
+    tail_n_target_per_round : int
+        C1 每轮目标新 det 数; 0 = 用 n_active_per_round (round_001 路径)。
+    tail_shots_ref : int
+        C1-v2 预算随 shots 缩放参考 (round_002): >0 时
+        n_tgt = clip(ceil(n_active_per_round*n_cur/tail_shots_ref), n_active, 3*n_active)。
+        =0 走 round_001 路径 (缩放关)。
+    backend : {"cpu", "gpu"}
+        round_005 hybrid 透传: "gpu" 时对角化引擎用 scipy eigsh + GPU matvec。
+        默认 "cpu"。
 
     Returns
     -------
@@ -594,7 +616,12 @@ def solve_sqd_best(
             h1e, eri, norb, nelec, ecore=ecore, bitstring_matrix=bsm,
             probabilities=probs, max_strings=max_strings,
             n_active_per_round=n_active_per_round, rand_seed=rand_seed,
-            trajectory=traj, verbose=verbose)
+            trajectory=traj, verbose=verbose,
+            tail_suppression=tail_suppression,
+            tail_max_draw_factor=tail_max_draw_factor,
+            tail_n_target_per_round=tail_n_target_per_round,
+            tail_shots_ref=tail_shots_ref,
+            backend=backend)
         return E, (traj[-1] if traj else None)
 
     # baseline (n_shots): active 变分 + PT2
