@@ -1548,3 +1548,77 @@ dim 1e5 跨 run N_matvec 差 ~2×（probe 7,265 → 64s vs scan ~15,000 → 136s
 ~2.4%），但 #3 是主导，round_005 应攻 cupyx 收敛（调参 / GPU-matvec + CPU-scipy-eigsh
 混合 / 慢回退护栏）**。P0 dim 5e5 证伪为预期结论（theory §1.5），非 B+C 失败。本轮 4 点 +
 2 probe 全收敛无 stall、无 GPU 崩溃。详见 `docs/rounds/round_004/benchmark.md`。
+
+## 方向 hybrid：GPU-matvec + CPU-scipy-eigsh 混合（round_005 突破，2026-08-13）
+
+**来源**：round_003/004 两轮证伪的精确定位——cupyx ARPACK 收敛停滞（matvec 8.8-33× 于
+scipy）是 GPU 慢的唯一主导因子（eri 重算仅 2.4%）。round_005 攻 #3：把 `_Subspace.diag`
+GPU 分支的本征引擎从 `cupyx.eigsh` 换成 `scipy.eigsh` + GPU matvec（`sigma_selected_ci_gpu`
++ `.get()` 回 CPU）——**GPU 做快 matvec，CPU scipy 做稳收敛**。
+
+**实现**（commit `e3cb9ab`）：`_Subspace` 加 `gpu_eigsh_mode="hybrid"|"cupyx"|"cpu_fallback"`
+三模式旋钮（hybrid 为 backend="gpu" 新默认）；cupyx 模式加 maxiter 护栏。全库 187 passed
+（+1 xfail +1 xpass）。
+
+**实测**（dim 扫描，每点独立进程）：
+- **P0 证实**：dim 1e5 **16.87×**（R3 18.55×）；dim 5e5 **4.86×**（R3 5.13×）
+- **P0' 因果锚**：hybrid N_matvec 与 CPU scipy **逐位相等**（701=701 / 811=811）——加速完全
+  来自 GPU per-matvec 速度，收敛路径不变
+- **crossover 全部移出**：最小 dim 1e4 也 3.27× 快（vs round_003 的 0.014×）
+- E_diff ≤1.4e-13（GPU/CPU 代数等价）
+
+**三轮 GPU 探索闭环**：003 诊断根因（cupyx 收敛停滞）→ 004 排除非主因（eri 2.4%）→
+005 精准修复（scipy 收敛 + GPU matvec = hybrid，5-18×）。
+
+## round_006：全量 plot + 扫 shots + 端到端加速比（2026-08-13/14）
+
+### max_strings 版 plot（5 体系，C1-v2+best 跨体系验证）
+
+`plot_c1v2_best_vs_shci_*.py`（新建不覆盖旧脚本），4 曲线（C1-v2+best/best/improved/SHCI），
+x 轴实际 dim，GPU hybrid，缓存 `plot_cache/round_006/`：
+
+| 体系 | 全空间 | C1-v2+best | best 末点 | SHCI 末点 |
+|---|---|---|---|---|
+| N₂/STO-3G | 14,400 | 全空间 ~2e-9 | — | — |
+| C₂/STO-3G | 44,100 | 全空间 **~1e-13** | 2.0e-9 | 9.3e-11 |
+| N₂/cc-pVDZ 10o | 63,504 | 全空间 **~1e-10** | 1.5e-9 | 9.5e-11 |
+| C₂/cc-pVDZ 10o | 63,504 | 全空间 **~1.4e-14** | 9.7e-10 | 2.6e-13 |
+| **N₂/cc-pVDZ 12,12** | **853,776** | **dim 824k err 2.1e-8** | 1.1e-7@520k | 3.8e-11@830k |
+
+**结论**：C1-v2+best 在 ≤63k 全空间体系全部达准 FCI（err 1e-10~1e-14，500 shots tail 填满
+全空间）。12,12 上 SHCI 同 dim 仍优（2.1e-8 vs 3.8e-11），但 C1-v2+best 的价值在量子资源
+效率（500 shots 达 97% 全空间）。**问题**：max_strings 对 C1-v2 控制力弱（tail 不受 gate）
+→ C1-v2+best 曲线退化为单点。
+
+### 扫 shots 版 plot（5 体系，替代 max_strings 版）
+
+扫 `SHOTS_LIST=[10,30,50,100,300,1000]` + max_strings=None + **自适应 seed**（每 shots 点先
+3-seed，max/min err <5× 后单 seed，误差带展示涨落）：
+
+| 体系 | improved err 跨度 | best err 跨度 | C1-v2+best |
+|---|---|---|---|
+| N₂/STO-3G | ~1 数量级 | 同 | 近全空间饱和 |
+| C₂/STO-3G | 1.5 数量级 | 同 | 低 shots 涨落 ratio 8-46× |
+| N₂/cc-pVDZ 10o | **6 数量级** | 同 | 低 shots 涨落 ratio **169×** |
+| C₂/cc-pVDZ 10o | 2.5-4.5 数量级 | 同 | shots=300 出现 err=0（完美 FCI）|
+| **N₂/cc-pVDZ 12,12** | **3.5 数量级**（19k→697k）| **4.5 数量级** | **341k→824k, 1.7e-4→7.4e-9** |
+
+**关键发现**：(1) 扫 shots 让 SQD 三曲线全部有可读分散度；(2) C1-v2+best 低 shots 端极端
+涨落（ratio 8-169×，全空间饱和边缘差几个 det 决定 err）——自适应 seed 正确应对；
+(3) 12,12 的 C1-v2+best shots 是关键控制变量（低 shots dim 341k err 2e-4 → 高 shots dim
+824k err 7.4e-9 准 FCI）。
+
+### GPU hybrid 端到端精确加速比（3 代表性点）
+
+同体系/同参数/同 seed，唯一变量 backend（`bench_round006_speedup_points.py`）：
+
+| 点 | 体系 | dim | CPU | GPU | **加速比** | E_diff |
+|---|---|---|---|---|---|---|
+| P1 | N₂/STO-3G | ~1.6k | 11.7s | 2.7s | **4.39×** | 4.3e-14 |
+| P2 | N₂/cc-pVDZ 10o | ~17k | 10.2s | 2.9s | **3.57×** | 1.8e-14 |
+| P3 | N₂/cc-pVDZ 12,12 | ~824k | 1192.5s | 247.7s | **4.81×** | 2.8e-14 |
+
+**端到端加速比稳定 ~3.6-4.8×，无 crossover 慢区**（hybrid 在所有 dim 都有效）。E_diff 机器
+精度。12,12 @500 单点 CPU 20min → GPU 4min。修正之前估算（考虑旧版 3-seed 虚高）：真实
+端到端加速比 **~4×**。全量 plot wall 实测：max_strings 版 5 体系 ~9h（GPU），CPU 估 ~32h；
+12,12 单体系 6.1h（GPU），CPU 估 ~21h。
