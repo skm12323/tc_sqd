@@ -549,6 +549,9 @@ def solve_sqd_best(
     tail_shots_ref: int = 0,
     # ---- 方向 B: PT2 排序剪枝透传 (round_007); 默认全关零回归 ----
     prune_keep: float = 1.0,
+    # ---- 方向 C: 三激发定向注入透传 (round_008); 默认全关零回归 ----
+    triple_injection: bool = False,
+    n_triples_per_round: int = 0,
     # ---- GPU hybrid backend (round_005) ----
     backend: str = "cpu",
 ) -> Union[float, dict]:
@@ -592,6 +595,13 @@ def solve_sqd_best(
         每个 shots 尺度的 active 最终子空间按字符串边际权重剪枝 (同 ``prune_keep``,
         保证外推点可比)。默认 ``1.0`` = 不剪枝零回归; 区间 ``(0, 1]``, 越界
         raise ValueError。
+    triple_injection : bool
+        方向 C 三激发定向注入透传 (round_008): 与 solve_sqd_active 同语义 ——
+        每个 shots 尺度的 active 收敛后, 对全部已选字符串迭代单激发连接,
+        按字符串级 EN-PT2 得分注入补高激发阶字符串。默认 ``False`` 零回归。
+    n_triples_per_round : int
+        每迭代注入新字符串数上限; ``0`` = 无 cap 到 fixpoint。仅
+        ``triple_injection=True`` 时读取。
     backend : {"cpu", "gpu"}
         round_005 hybrid 透传: "gpu" 时对角化引擎用 scipy eigsh + GPU matvec。
         默认 "cpu"。
@@ -629,6 +639,8 @@ def solve_sqd_best(
             tail_n_target_per_round=tail_n_target_per_round,
             tail_shots_ref=tail_shots_ref,
             prune_keep=prune_keep,
+            triple_injection=triple_injection,
+            n_triples_per_round=n_triples_per_round,
             backend=backend)
         return E, (traj[-1] if traj else None)
 

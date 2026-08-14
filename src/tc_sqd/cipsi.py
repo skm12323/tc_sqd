@@ -86,6 +86,22 @@ def _excited_dets(a: int, b: int, norb: int):
     return out
 
 
+def _single_excited_strings(s: int, norb: int):
+    """字符串 s 的所有单激发目标字符串集合 (occ→virt, 激发阶 +1)。
+
+    与 :func:`_excited_dets` 的差别: 只做单激发、且是**字符串级** (单个自旋扇区),
+    供 round_008 三激发定向注入对全部已选字符串迭代爬激发阶用
+    (单激发图连通 ⇒ 迭代到 fixpoint = 全空间)。
+    """
+    occ = [i for i in range(norb) if (s >> i) & 1]
+    virt = [v for v in range(norb) if not (s >> v) & 1]
+    out = set()
+    for i in occ:
+        for v in virt:
+            out.add(s ^ (1 << i) ^ (1 << v))
+    return out
+
+
 # --------------------------------------------------------------------------- #
 #  子空间对角化 (与 solve_sci 相同的稳健路径)
 # --------------------------------------------------------------------------- #
@@ -821,6 +837,9 @@ def solve_sqd_active(
     tail_shots_ref: int = 0,
     # ---- 方向 B: PT2 排序剪枝 (round_007); 默认全关零回归 ----
     prune_keep: float = 1.0,
+    # ---- 方向 C: 三激发定向注入 (round_008); 默认全关零回归 ----
+    triple_injection: bool = False,
+    n_triples_per_round: int = 0,
     backend: str = "cpu",
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
@@ -917,6 +936,17 @@ def solve_sqd_active(
         ``str_a == str_b`` 不变式。``1.0`` = 不剪枝 (默认, 零回归); ``0.6`` =
         每自旋保留 60% top 字符串 (dim ≈ 0.36×)。区间 ``(0, 1]``, 越界
         raise ValueError。
+    triple_injection : bool
+        **方向 C 三激发定向注入 (round_008)**: ``True`` 时在收敛循环结束后、
+        最终 diag 前, 对**全部已选字符串**迭代生成单激发连接 (occ→virt,
+        激发阶 +1), 按字符串级 EN-PT2 得分 (``Σ_b |⟨(s',b)|H|Ψ⟩|²/(E−E_a)``)
+        排序注入 top-N, 直到无新字符串 (单激发图连通 → 12,12 补全到全空间)。
+        补上现有 ④ (S/D-from-dominant) 不可达的高激发阶字符串
+        (round_007 诊断的 ~16 缺失字符串)。默认 ``False``, 零行为变化。
+    n_triples_per_round : int
+        每迭代注入的新字符串数上限; ``0`` = 无 cap (注入所有 ``|pt2|>pt2_floor``
+        的新字符串, 到 fixpoint); ``>0`` = 每迭代取 top-N (大空间定向注入)。
+        仅在 ``triple_injection=True`` 时读取。
 
     Returns
     -------
@@ -1119,6 +1149,66 @@ def solve_sqd_active(
         if shots_step > 0:
             n_cur = min(n_cur + shots_step, n_pool)
 
+    # ---- 方向 C: 三激发定向注入 (round_008); 默认全关零回归 ----
+    # 收敛循环结束时子空间已被 S/D-from-dominant ④ + 采样 + tail 填满低激发阶;
+    # 此处对全部已选字符串迭代单激发, 逐层 +1 激发阶, 补上 ④ 不可达的高阶字符串
+    # (round_007 诊断的 ~16 缺失字符串)。单激发图连通 ⇒ 迭代到 fixpoint = 全空间。
+    # 打分复用 pt2_matrix_elements 一次 contract_2e 得全部候选 <a|H|Ψ>, 按新字符串
+    # 聚合 EN-PT2, 注入 top-N。默认 triple_injection=False 整块跳过 = 零回归。
+    # 注入在 prune 之前 (剪枝会剪掉高阶字符串的父串, theory §1.4)。
+    if triple_injection:
+        E, c2d, sa, sb = sub.diag(str_a, str_b)  # 种子 c2d (当前最好波函数)
+        set_a = set(int(x) for x in sa)
+        set_b = set(int(x) for x in sb)
+        for _ in range(norb):                    # 迭代护栏 (≤ norb 次爬阶)
+            new_a = set()
+            new_b = set()
+            for s in set_a:
+                new_a |= _single_excited_strings(s, norb) - set_a
+            if open_shell:                       # 闭壳层 α/β 同集合, 单次生成即可
+                for s in set_b:
+                    new_b |= _single_excited_strings(s, norb) - set_b
+            if not new_a and not new_b:
+                break
+            # 候选 det = 新字符串 × 现有对侧字符串的笛卡尔积 (字符串级, 非 det 级)
+            cand = set()
+            for ca in new_a:
+                cand.update((ca, cb) for cb in set_b)
+            for cb in new_b:
+                cand.update((ca, cb) for ca in set_a)
+            if not cand:
+                break
+            me = sub.pt2_matrix_elements(str_a, str_b, cand, c2d, sa, sb)
+            agg = {}                             # 按新字符串聚合 EN-PT2 得分
+            for (ca, cb), (h, Ea) in me.items():
+                if abs(E - Ea) <= 1e-12:
+                    continue
+                key = ca if ca in new_a else cb  # 开壳层: 新串必属单一自旋扇区
+                agg[key] = agg.get(key, 0.0) + h * h / (E - Ea)
+            ranked = sorted(agg.items(), key=lambda kv: -abs(kv[1]))
+            add = []
+            for s_new, v in ranked:
+                if abs(v) < pt2_floor:
+                    break
+                if n_triples_per_round > 0 and len(add) >= n_triples_per_round:
+                    break
+                if len(str_a) + len(add) >= max_strings:
+                    break
+                add.append(s_new)
+            if not add:
+                break
+            for s_new in add:                    # 注入到所属自旋扇区
+                if s_new in new_a:
+                    str_a.append(s_new)
+                else:
+                    str_b.append(s_new)
+            str_a = sorted(set(str_a))
+            str_b = str_a if not open_shell else sorted(set(str_b))
+            E, c2d, sa, sb = sub.diag(str_a, str_b)  # 补全后重对角化
+            set_a = set(int(x) for x in sa)
+            set_b = set(int(x) for x in sb)
+        # 补全后的子空间交给下方最终 diag + prune + 最终轨迹点照旧处理
+
     E, c2d, sa, sb = sub.diag(str_a, str_b)
 
     # ---- 方向 B: PT2 排序剪枝 (round_007); 默认全关零回归 ----
@@ -1219,6 +1309,9 @@ def solve_sqd_ev(
     tail_shots_ref: int = 0,
     # ---- 方向 B: PT2 排序剪枝 (round_007): 透传 ----
     prune_keep: float = 1.0,
+    # ---- 方向 C: 三激发定向注入 (round_008): 透传 ----
+    triple_injection: bool = False,
+    n_triples_per_round: int = 0,
     backend: str = "cpu",
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
@@ -1247,7 +1340,9 @@ def solve_sqd_ev(
     其余参数与 :func:`solve_sqd_active` 一致 (``ecore`` 在返回/诊断中计入;
     轨迹内部不含 ecore)。``prune_keep`` (方向 B, round_007) 透传至 active 的
     最终子空间剪枝 (默认 ``1.0`` = 不剪枝零回归; ``<1.0`` 剪低权重字符串后
-    重对角化, 被剪 det 的关联进入 ``E_PT2`` 回补)。
+    重对角化, 被剪 det 的关联进入 ``E_PT2`` 回补)。``triple_injection`` /
+    ``n_triples_per_round`` (方向 C, round_008) 透传至 active 的末轮三激发
+    定向注入 (默认关零回归)。
     correction : {"pt2", "evpt2", "ev"}
         修正方式 (见上)。``"pt2"`` = E+E_PT2 (推荐); ``"evpt2"`` = E_V vs E_PT2
         两点外推 (方向③, 不过冲); ``"ev"`` = σ² 线性外推 (诊断, 可能过冲)。
@@ -1282,6 +1377,8 @@ def solve_sqd_ev(
         tail_n_target_per_round=tail_n_target_per_round,
         tail_shots_ref=tail_shots_ref,
         prune_keep=prune_keep,
+        triple_injection=triple_injection,
+        n_triples_per_round=n_triples_per_round,
         backend=backend,
     )
     if len(trajectory) < 2:
