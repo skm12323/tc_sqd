@@ -68,3 +68,10 @@ third_party/
 # 多 agent 协作流程文档 (工作区状态, 不入库; 恢复入口 docs/rounds/STATE.md)
 docs/COLLABORATION.md
 docs/rounds/
+
+# round_006 新图 (已归档 plot_cache/, 根目录活跃副本不重复入库)
+fig_c1v2_best_vs_shci_*.png
+
+# 遗留诊断脚本
+benchmarks/_diag_*.py
+benchmarks/_probe_*.py
