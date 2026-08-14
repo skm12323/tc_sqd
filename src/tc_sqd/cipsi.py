@@ -25,6 +25,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Optional, Sequence, Tuple
 
 import numpy as np
@@ -818,6 +819,8 @@ def solve_sqd_active(
     tail_n_target_per_round: int = 0,
     # ---- C1 预算随 shots 缩放 (round_002) ----
     tail_shots_ref: int = 0,
+    # ---- 方向 B: PT2 排序剪枝 (round_007); 默认全关零回归 ----
+    prune_keep: float = 1.0,
     backend: str = "cpu",
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
@@ -905,6 +908,15 @@ def solve_sqd_active(
         与 round_001 C1-v1 **逐位一致**, 零回归); ``@500 shots`` 给 ``n_tgt=90`` (cap=3
         封顶, 用上多出的 shots)。``=0`` 关闭缩放, 走 round_001 路径
         (``n_tgt = tail_n_target_per_round or n_active_per_round``)。
+    prune_keep : float
+        **方向 B 子空间去稀释 (round_007)**: 收敛后按最终本征矢的**字符串边际权重**
+        (``Σ|c|²`` 行/列和) 排序, 每自旋保留 top ``prune_keep`` 比例的字符串
+        (``keep = ceil(prune_keep × n_strings)``), 剪掉低权重尾再重对角化 +
+        重算 PT2 (被剪 det 移出子空间 → 进入 ``E_PT2`` 和式, 关联被二阶回补)。
+        闭壳层 (``na==nb``) 用合并权重 (行和+列和) 剪**同一**集合, 保证
+        ``str_a == str_b`` 不变式。``1.0`` = 不剪枝 (默认, 零回归); ``0.6`` =
+        每自旋保留 60% top 字符串 (dim ≈ 0.36×)。区间 ``(0, 1]``, 越界
+        raise ValueError。
 
     Returns
     -------
@@ -922,6 +934,11 @@ def solve_sqd_active(
     eri = np.asarray(two_body_tensor)
     na, nb = nelec
     open_shell = na != nb
+    # 方向 B (round_007): prune_keep 越界提前报错 (1.0 = 不剪枝零回归, 不报错)
+    if not 0.0 < prune_keep <= 1.0:
+        raise ValueError(
+            f"prune_keep 须在 (0, 1] 区间 (1.0 = 不剪枝零回归), got {prune_keep!r}."
+        )
 
     bsm = np.asarray(bitstring_matrix, dtype=bool)
     if bsm.ndim != 2 or bsm.shape[1] != 2 * norb:
@@ -1104,7 +1121,32 @@ def solve_sqd_active(
 
     E, c2d, sa, sb = sub.diag(str_a, str_b)
 
-    # 方向 D: 最终对角化点也进轨迹 (最大子空间 -> 方差最小, 外推最右端点)
+    # ---- 方向 B: PT2 排序剪枝 (round_007); 默认全关零回归 ----
+    # 收敛后的最终子空间上, 用本征矢的字符串边际权重 (Σ|c|² 行/列和) 排序,
+    # 每自旋保留 top ceil(prune_keep × n) 个字符串, 剪掉低权重尾再重对角化。
+    # 被剪 det 移出子空间 → 自动进入下方最终轨迹点的 PT2 和式 (二阶回补, §1.2)。
+    # prune_keep=1.0 (默认) 时本块整体跳过 → 与改动前逐位一致 (P0' 零回归)。
+    if prune_keep < 1.0:
+        nA, nB = c2d.shape
+        w_a = (c2d ** 2).sum(axis=1)            # α 行和 (边际权重)
+        if open_shell:
+            w_b = (c2d ** 2).sum(axis=0)        # β 列和 (α/β 独立剪)
+            ka = max(1, int(math.ceil(prune_keep * nA)))
+            kb = max(1, int(math.ceil(prune_keep * nB)))
+            keep_a = set(np.argsort(w_a)[::-1][:ka])
+            keep_b = set(np.argsort(w_b)[::-1][:kb])
+            str_a = sorted(x for i, x in enumerate(sa) if i in keep_a)
+            str_b = sorted(x for i, x in enumerate(sb) if i in keep_b)
+        else:
+            # 闭壳层: 合并权重 (行和 + 列和) 剪同一集合 → str_a == str_b 不变式
+            w = w_a + (c2d ** 2).sum(axis=0)
+            k = max(1, int(math.ceil(prune_keep * nA)))
+            keep = set(np.argsort(w)[::-1][:k])
+            str_a = str_b = sorted(x for i, x in enumerate(sa) if i in keep)
+        E, c2d, sa, sb = sub.diag(str_a, str_b)  # 剪后重对角化 (子空间更小)
+
+    # 方向 D: 最终对角化点也进轨迹 (剪枝后 = 最终保留子空间; 方差/PT2 在剪后
+    # 子空间上重算 → 剪枝时 |E_PT2| 增大是预期正信号, 非回归)
     if trajectory is not None:
         idx_a = {int(s): i for i, s in enumerate(sa)}
         idx_b = {int(s): i for i, s in enumerate(sb)}
@@ -1175,6 +1217,8 @@ def solve_sqd_ev(
     tail_n_target_per_round: int = 0,
     # ---- C1 预算随 shots 缩放 (round_002): 透传 ----
     tail_shots_ref: int = 0,
+    # ---- 方向 B: PT2 排序剪枝 (round_007): 透传 ----
+    prune_keep: float = 1.0,
     backend: str = "cpu",
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
@@ -1201,7 +1245,9 @@ def solve_sqd_ev(
     Parameters
     ----------
     其余参数与 :func:`solve_sqd_active` 一致 (``ecore`` 在返回/诊断中计入;
-    轨迹内部不含 ecore)。
+    轨迹内部不含 ecore)。``prune_keep`` (方向 B, round_007) 透传至 active 的
+    最终子空间剪枝 (默认 ``1.0`` = 不剪枝零回归; ``<1.0`` 剪低权重字符串后
+    重对角化, 被剪 det 的关联进入 ``E_PT2`` 回补)。
     correction : {"pt2", "evpt2", "ev"}
         修正方式 (见上)。``"pt2"`` = E+E_PT2 (推荐); ``"evpt2"`` = E_V vs E_PT2
         两点外推 (方向③, 不过冲); ``"ev"`` = σ² 线性外推 (诊断, 可能过冲)。
@@ -1235,6 +1281,7 @@ def solve_sqd_ev(
         tail_max_draw_factor=tail_max_draw_factor,
         tail_n_target_per_round=tail_n_target_per_round,
         tail_shots_ref=tail_shots_ref,
+        prune_keep=prune_keep,
         backend=backend,
     )
     if len(trajectory) < 2:

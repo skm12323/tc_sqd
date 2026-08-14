@@ -547,6 +547,8 @@ def solve_sqd_best(
     tail_max_draw_factor: int = 10,
     tail_n_target_per_round: int = 0,
     tail_shots_ref: int = 0,
+    # ---- 方向 B: PT2 排序剪枝透传 (round_007); 默认全关零回归 ----
+    prune_keep: float = 1.0,
     # ---- GPU hybrid backend (round_005) ----
     backend: str = "cpu",
 ) -> Union[float, dict]:
@@ -585,6 +587,11 @@ def solve_sqd_best(
         C1-v2 预算随 shots 缩放参考 (round_002): >0 时
         n_tgt = clip(ceil(n_active_per_round*n_cur/tail_shots_ref), n_active, 3*n_active)。
         =0 走 round_001 路径 (缩放关)。
+    prune_keep : float
+        方向 B 子空间去稀释透传 (round_007): 与 solve_sqd_active 同语义 ——
+        每个 shots 尺度的 active 最终子空间按字符串边际权重剪枝 (同 ``prune_keep``,
+        保证外推点可比)。默认 ``1.0`` = 不剪枝零回归; 区间 ``(0, 1]``, 越界
+        raise ValueError。
     backend : {"cpu", "gpu"}
         round_005 hybrid 透传: "gpu" 时对角化引擎用 scipy eigsh + GPU matvec。
         默认 "cpu"。
@@ -621,6 +628,7 @@ def solve_sqd_best(
             tail_max_draw_factor=tail_max_draw_factor,
             tail_n_target_per_round=tail_n_target_per_round,
             tail_shots_ref=tail_shots_ref,
+            prune_keep=prune_keep,
             backend=backend)
         return E, (traj[-1] if traj else None)
 
