@@ -1,0 +1,50 @@
+         29717934 function calls (29717914 primitive calls) in 369.752 seconds
+
+   Ordered by: cumulative time
+   List reduced from 453 to 40 due to restriction <40>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+        1    0.006    0.006  369.752  369.752 /mnt/d/tc_sqd/benchmarks/bench_round009_p0a.py:22(run)
+        1    2.072    2.072  369.747  369.747 /mnt/d/tc_sqd/src/tc_sqd/cipsi.py:806(solve_sqd_active)
+       11    0.009    0.001  357.293   32.481 /mnt/d/tc_sqd/src/tc_sqd/cipsi.py:152(diag)
+       11    0.032    0.003  357.163   32.469 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/scipy/sparse/linalg/_eigen/arpack/arpack.py:1359(eigsh)
+     6692   67.951    0.010  357.051    0.053 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/scipy/sparse/linalg/_eigen/arpack/arpack.py:542(iterate)
+     6681    0.112    0.000  289.099    0.043 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/scipy/sparse/linalg/_interface.py:227(matvec)
+     6681    0.025    0.000  288.938    0.043 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/scipy/sparse/linalg/_interface.py:616(_matvec)
+     6681    0.164    0.000  288.912    0.043 /mnt/d/tc_sqd/src/tc_sqd/cipsi.py:218(matvec)
+     6681  264.442    0.040  264.473    0.040 {method 'get' of 'cupy._core.core._ndarray_base' objects}
+     6681    0.193    0.000   24.242    0.004 /mnt/d/tc_sqd/src/tc_sqd/cipsi.py:205(_gpu_sigma)
+     6681    1.313    0.000   20.089    0.003 /mnt/d/tc_sqd/src/tc_sqd/selected_ci_gpu.py:107(sigma_selected_ci_gpu)
+    26724    7.051    0.000   14.161    0.001 /mnt/d/tc_sqd/src/tc_sqd/selected_ci_gpu.py:87(_links_tril)
+   113579    0.086    0.000   11.161    0.000 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/cupy/_creation/from_data.py:59(asarray)
+   113579   10.876    0.000   11.075    0.000 {built-in method cupy._core.core.array}
+     9877    3.350    0.000    4.241    0.000 /mnt/d/tc_sqd/src/tc_sqd/cipsi.py:52(_excited_dets)
+    20043    0.058    0.000    3.128    0.000 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/cupy/_core/_gufuncs.py:611(__call__)
+    20043    0.029    0.000    3.069    0.000 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/cupy/linalg/_product.py:17(_try_fastcall_matmul)
+    20043    2.980    0.000    3.041    0.000 {built-in method cupy._core._routines_linalg.matmul}
+       10    1.615    0.161    2.848    0.285 /mnt/d/tc_sqd/src/tc_sqd/cipsi.py:255(pt2_matrix_elements)
+ 22350750    1.342    0.000    1.342    0.000 {method 'add' of 'set' objects}
+        1    0.000    0.000    1.330    1.330 /mnt/d/tc_sqd/src/tc_sqd/cipsi.py:111(__init__)
+    33405    0.398    0.000    1.107    0.000 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/cupy/_creation/basic.py:233(zeros)
+       10    0.000    0.000    1.046    0.105 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/pyscf/fci/selected_ci.py:758(contract_2e)
+       10    0.962    0.096    1.045    0.105 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/pyscf/fci/selected_ci.py:48(contract_2e)
+    33405    0.709    0.000    0.709    0.000 {method 'memset_async' of 'cupy.cuda.memory.MemoryPointer' objects}
+    26814    0.034    0.000    0.605    0.000 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/numpy/_core/fromnumeric.py:51(_wrapfunc)
+    26870    0.033    0.000    0.498    0.000 {method 'sum' of 'numpy.ndarray' objects}
+    26870    0.018    0.000    0.465    0.000 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/numpy/_core/_methods.py:50(_sum)
+    39620    0.456    0.000    0.456    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+    26724    0.034    0.000    0.441    0.000 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/numpy/_core/fromnumeric.py:462(repeat)
+      168    0.278    0.002    0.375    0.002 {built-in method builtins.sorted}
+    26724    0.365    0.000    0.365    0.000 {method 'repeat' of 'numpy.ndarray' objects}
+    13362    0.016    0.000    0.322    0.000 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/cupy/_creation/from_data.py:111(ascontiguousarray)
+    13362    0.304    0.000    0.306    0.000 {built-in method cupy._core.core.ascontiguousarray}
+       10    0.000    0.000    0.256    0.026 /mnt/d/tc_sqd/src/tc_sqd/fermion.py:112(rdm)
+       10    0.000    0.000    0.256    0.026 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/pyscf/fci/selected_ci.py:506(make_rdm1)
+       10    0.000    0.000    0.256    0.026 /home/lenovo/miniconda/envs/tc/lib/python3.10/site-packages/pyscf/fci/selected_ci.py:484(make_rdm1s)
+       10    0.003    0.000    0.252    0.025 /mnt/d/tc_sqd/src/tc_sqd/tail_sampling.py:187(discover_tail_pool)
+       68    0.014    0.000    0.249    0.004 /mnt/d/tc_sqd/src/tc_sqd/configuration_recovery.py:124(recover_configurations)
+       10    0.220    0.022    0.245    0.024 /mnt/d/tc_sqd/src/tc_sqd/cipsi.py:1092(<dictcomp>)
+
+
+
+=== f_PT2 = 0.001 (PT2 更无关) ===
