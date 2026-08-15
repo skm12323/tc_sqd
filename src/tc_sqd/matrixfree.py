@@ -15,6 +15,14 @@ scatter-add 计算 ``H·v``，绕开逐列构建。
   (α 内部分依赖 i, αβ 部分依赖 j —— 预计算 Fock 型 Fa[i,a,p], Fb[j,a,p])
 - α 双 (p,q→a,b): ``sign·(eri[a,p,b,q]-eri[a,q,b,p])``
 - αβ 交叉 (p→a, q→b): ``sign·eri[a,p,b,q]``
+
+**自旋分辨积分 (round_011, UHF 式 C_α≠C_β 轨道基)**: ``h1e`` 可为
+``(h_alpha, h_beta)`` 形如 ``(2, norb, norb)``; ``eri`` 可为三元组
+``(eri_aa, eri_ab, eri_bb)`` (每块 ``(norb,)*4`` chemist 记号; ``eri_ab``
+前一对指标 = α 轨道、后一对 = β 轨道)——与 ``pyscf.fci.direct_uhf`` 的输入
+约定逐字一致。单块输入 (legacy) 走同一表达式、同一数组引用 → 数值逐位不变。
+组合合法性 (如单块 h1e 配三元组 eri) 由 ``fermion.solve_sci`` 层校验; 本层宽容
+归一化 (见 :func:`_split_spin_integrals`)。
 """
 
 from __future__ import annotations
@@ -94,6 +102,37 @@ def _enumerate_excitations(strs: np.ndarray, norb: int, nelec: int):
 
 
 # --------------------------------------------------------------------------- #
+#  自旋分辨积分归一化 (round_011)
+# --------------------------------------------------------------------------- #
+def _split_spin_integrals(h1e, eri):
+    """归一化 → ``(h_a, h_b, eri_aa, eri_ab, eri_bb)``。
+
+    h1e: ``(norb, norb)`` → ``h_a = h_b`` 同引用; ``(2, norb, norb)`` → 分解。
+    eri : ndarray → 三块同引用; ``(aa, ab, bb)`` 3-seq → 逐块 asarray(float64)。
+    本层宽容 (不做组合合法性检查); ``fermion.solve_sci`` 层负责派发校验。
+    legacy 单块输入下五个返回值中 h_a/h_b 同引用、三 eri 块同引用 →
+    下游 einsum 输入与改动前逐位一致 (零回归的结构保证)。
+    """
+    h1e = np.asarray(h1e, dtype=np.float64)
+    if h1e.ndim == 3:
+        h_a = np.asarray(h1e[0], dtype=np.float64)
+        h_b = np.asarray(h1e[1], dtype=np.float64)
+    else:
+        h_a = h_b = h1e
+    if isinstance(eri, (tuple, list)):
+        if len(eri) != 3:
+            raise ValueError(
+                f"自旋分辨 eri 须为 (eri_aa, eri_ab, eri_bb) 三元组, got len={len(eri)}."
+            )
+        eri_aa, eri_ab, eri_bb = (
+            np.asarray(e, dtype=np.float64) for e in eri)
+    else:
+        e = np.asarray(eri, dtype=np.float64)
+        eri_aa = eri_ab = eri_bb = e
+    return h_a, h_b, eri_aa, eri_ab, eri_bb
+
+
+# --------------------------------------------------------------------------- #
 #  σ-vector
 # --------------------------------------------------------------------------- #
 def prepare_sigma_tables(ci_strs_a: np.ndarray, ci_strs_b: np.ndarray,
@@ -115,7 +154,10 @@ def sigma_vector(v: np.ndarray, ci_strs_a: np.ndarray, ci_strs_b: np.ndarray,
     ----------
     v : ndarray (na, nb)
     ci_strs_a, ci_strs_b, norb, nelec
-    h1e : (norb, norb); eri : (norb,)*4 化学记号
+    h1e : (norb, norb) 或 (2, norb, norb) —— 后者为 (h_alpha, h_beta)
+    eri : (norb,)*4 chemist 记号, 或 (eri_aa, eri_ab, eri_bb) 三元组
+          (每块 (norb,)*4; eri_ab 前对=α 后对=β; 与 pyscf.fci.direct_uhf
+          输入约定一致)。合法组合见 fermion.solve_sci 派发真值表 (本层宽容)。
     tables : 预计算连接表 (可复用)
 
     Returns
@@ -123,8 +165,8 @@ def sigma_vector(v: np.ndarray, ci_strs_a: np.ndarray, ci_strs_b: np.ndarray,
     sigma : ndarray (na, nb)
     """
     v = np.asarray(v, dtype=np.float64)
-    h1e = np.asarray(h1e, dtype=np.float64)
-    eri = np.asarray(eri, dtype=np.float64)
+    h_a, h_b, eri_aa, eri_ab, eri_bb = _split_spin_integrals(h1e, eri)
+    spin_resolved = isinstance(eri, (tuple, list))
     na, nb = v.shape
     if tables is None:
         tables = prepare_sigma_tables(ci_strs_a, ci_strs_b, norb, nelec)
@@ -133,30 +175,36 @@ def sigma_vector(v: np.ndarray, ci_strs_a: np.ndarray, ci_strs_b: np.ndarray,
     # 占据向量 (na,norb), (nb,norb)
     occ_a = np.array([[ (int(s)>>i)&1 for i in range(norb)] for s in ci_strs_a], dtype=float)
     occ_b = np.array([[ (int(s)>>i)&1 for i in range(norb)] for s in ci_strs_b], dtype=float)
-    # Fock 型矩阵 (四块, 下标见各函数):
-    #   Fa_ss[i,a,p] = Σ_k occ_a[i,k](eri[a,p,k,k]-eri[a,k,p,k])   α 单同自旋
-    #   Fb_ab[j,a,p] = Σ_q occ_b[j,q] eri[a,p,q,q]                 α 单 α-β
-    #   Fb_ss[j,b,q] = Σ_k occ_b[j,k](eri[b,q,k,k]-eri[b,k,q,k])   β 单同自旋
-    #   Fa_ab[i,b,q] = Σ_p occ_a[i,p] eri[p,p,b,q]                 β 单 α-β
-    h_diag = np.diag(h1e)
-    Fa_ss = _fock_same_spin(occ_a, eri)
-    Fb_ab = _fock_cross(occ_b, eri)
-    Fb_ss = _fock_same_spin(occ_b, eri)
-    Fa_ab = _fock_cross(occ_a, eri)
+    # Fock 型矩阵 (四块, 下标见各函数) —— 自旋分辨下各通道喂对应块:
+    #   Fa_ss[i,a,p] = Σ_k occ_a[i,k](eri_aa[a,p,k,k]-eri_aa[a,k,p,k])   α 单同自旋
+    #   Fb_ab[j,a,p] = Σ_q occ_b[j,q] eri_ab[a,p,q,q]                    α 单 α-β
+    #   Fb_ss[j,b,q] = Σ_k occ_b[j,k](eri_bb[b,q,k,k]-eri_bb[b,k,q,k])   β 单同自旋
+    #   Fa_ab[i,b,q] = Σ_p occ_a[i,p] eri_ab[p,p,b,q]                    β 单 α-β
+    # (β 单 cross Fock 的正确排布是 "α 对 (p,p) 在前、β 对 (b,q) 在后";
+    #  legacy 单块 8-fold 对称下 _fock_cross(occ_a, eri) 数值等价 —— 为保
+    #  legacy 逐位不变, 单块输入仍走 _fock_cross, 三块输入走 _fock_cross_beta。)
+    h_diag_a = np.diag(h_a)
+    h_diag_b = np.diag(h_b)
+    Fa_ss = _fock_same_spin(occ_a, eri_aa)
+    Fb_ab = _fock_cross(occ_b, eri_ab)
+    Fb_ss = _fock_same_spin(occ_b, eri_bb)
+    Fa_ab = (_fock_cross_beta(occ_a, eri_ab) if spin_resolved
+             else _fock_cross(occ_a, eri_ab))
 
     sigma = np.zeros_like(v)
     # 对角
-    sigma += _diag_energy(occ_a, occ_b, h_diag, eri) * v
+    sigma += _diag_energy(occ_a, occ_b, h_diag_a, h_diag_b,
+                          eri_aa, eri_bb, eri_ab) * v
     # α 单
-    _alpha_singles(sigma, v, sa, Fa_ss, Fb_ab, h1e, norb)
+    _alpha_singles(sigma, v, sa, Fa_ss, Fb_ab, h_a, norb)
     # β 单
-    _beta_singles(sigma, v, sb, Fa_ab, Fb_ss, h1e, norb)
+    _beta_singles(sigma, v, sb, Fa_ab, Fb_ss, h_b, norb)
     # α 双
-    _alpha_doubles(sigma, v, da, eri, norb)
+    _alpha_doubles(sigma, v, da, eri_aa, norb)
     # β 双
-    _beta_doubles(sigma, v, db, eri, norb)
+    _beta_doubles(sigma, v, db, eri_bb, norb)
     # αβ 交叉
-    _cross_doubles(sigma, v, sa, sb, eri, norb)
+    _cross_doubles(sigma, v, sa, sb, eri_ab, norb)
     return sigma
 
 
@@ -166,18 +214,28 @@ def _fock_same_spin(occ, eri):
 
 
 def _fock_cross(occ, eri):
-    """F_ab[j,a,p] = Σ_q occ[j,q] eri[a,p,q,q] (对侧自旋库仑 Fock)。"""
+    """F_ab[j,a,p] = Σ_q occ[j,q] eri[a,p,q,q] (对侧自旋库仑 Fock, α 单方向)。"""
     return np.einsum('jq,apqq->jap', occ, eri)
 
 
-def _diag_energy(occ_a, occ_b, h_diag, eri):
-    """E[I,J] (na,nb)。"""
-    e1 = np.einsum('p,Ip->I', h_diag, occ_a)[:, None] + np.einsum('q,Jq->J', h_diag, occ_b)[None, :]
-    E_aa = 0.5 * (np.einsum('Ip,Iq,ppqq->I', occ_a, occ_a, eri)
-                  - np.einsum('Ip,Iq,pqqp->I', occ_a, occ_a, eri))
-    E_bb = 0.5 * (np.einsum('Jp,Jq,ppqq->J', occ_b, occ_b, eri)
-                  - np.einsum('Jp,Jq,pqqp->J', occ_b, occ_b, eri))
-    E_ab = np.einsum('Ip,Jq,ppqq->IJ', occ_a, occ_b, eri)
+def _fock_cross_beta(occ_a, eri_ab):
+    """F[i,b,q] = Σ_p occ_a[i,p] · eri_ab[p,p,b,q]   (β 单激发的 α-库仑项)。
+
+    round_011 §1.3 陷阱的修正: β 单 cross Fock 需要 "前对 α、后对 β" 的正确
+    排布; 直接把 eri_ab 传进 :func:`_fock_cross` 会静默取错元素 (单块 8-fold
+    对称下的隐性依赖, 自旋分辨下两排布属于不同块)。
+    """
+    return np.einsum('ip,ppbq->ibq', occ_a, eri_ab)
+
+
+def _diag_energy(occ_a, occ_b, h_diag_a, h_diag_b, eri_aa, eri_bb, eri_ab):
+    """E[I,J] (na,nb)。自旋分辨: e1 用 h_α/h_β 对角; E_aa/E_bb/E_ab 用三块 eri。"""
+    e1 = np.einsum('p,Ip->I', h_diag_a, occ_a)[:, None] + np.einsum('q,Jq->J', h_diag_b, occ_b)[None, :]
+    E_aa = 0.5 * (np.einsum('Ip,Iq,ppqq->I', occ_a, occ_a, eri_aa)
+                  - np.einsum('Ip,Iq,pqqp->I', occ_a, occ_a, eri_aa))
+    E_bb = 0.5 * (np.einsum('Jp,Jq,ppqq->J', occ_b, occ_b, eri_bb)
+                  - np.einsum('Jp,Jq,pqqp->J', occ_b, occ_b, eri_bb))
+    E_ab = np.einsum('Ip,Jq,ppqq->IJ', occ_a, occ_b, eri_ab)
     return e1 + E_aa[:, None] + E_bb[None, :] + E_ab
 
 
@@ -285,40 +343,45 @@ def _cross_doubles(sigma, v, sa, sb, eri, norb):
 def prepare_sigma_operators(ci_strs_a, ci_strs_b, norb, nelec, h1e, eri):
     """预计算 σ-vector 的全部算子数据 (CPU, 一次), 供 numpy/cupy 复用。
 
+    ``h1e``/``eri`` 接受单块 (legacy) 或自旋分辨五积分形式 (见模块 docstring);
+    ops dict 的键与形状在两种输入下完全相同 → ``sigma_vector_ops`` /
+    ``eigsh_gpu`` 零改动继承自旋分辨 (GPU 侧属未验证的免费搭车)。
+
     Returns
     -------
     dict with keys:
         diag (na,nb), Ta_s/Tb_s (M,na,nb 的 T 表), c_as (na,M), Fb_ab_s (nb,M),
         c_bs (nb,M), Fa_ab_s (na,M), Ta_d/Tb_d + me_ad/me_bd, Ta_c/Tb_c/eri_apbq
     """
-    h1e = np.asarray(h1e, dtype=np.float64)
-    eri = np.asarray(eri, dtype=np.float64)
+    h_a, h_b, eri_aa, eri_ab, eri_bb = _split_spin_integrals(h1e, eri)
+    spin_resolved = isinstance(eri, (tuple, list))
     ci_a = np.asarray(ci_strs_a); ci_b = np.asarray(ci_strs_b)
     na, nb = len(ci_a), len(ci_b)
     occ_a = np.array([[(int(s) >> i) & 1 for i in range(norb)] for s in ci_a], dtype=float)
     occ_b = np.array([[(int(s) >> i) & 1 for i in range(norb)] for s in ci_b], dtype=float)
     (sa, da), (sb, db) = prepare_sigma_tables(ci_a, ci_b, norb, nelec)
 
-    Fa_ss = _fock_same_spin(occ_a, eri)
-    Fb_ab = _fock_cross(occ_b, eri)
-    Fb_ss = _fock_same_spin(occ_b, eri)
-    Fa_ab = _fock_cross(occ_a, eri)
+    Fa_ss = _fock_same_spin(occ_a, eri_aa)
+    Fb_ab = _fock_cross(occ_b, eri_ab)
+    Fb_ss = _fock_same_spin(occ_b, eri_bb)
+    Fa_ab = (_fock_cross_beta(occ_a, eri_ab) if spin_resolved
+             else _fock_cross(occ_a, eri_ab))
 
     # α 单
     Ta_s, nz_a = _T_single(sa, norb, na)
     a_a, p_a = nz_a // norb, nz_a % norb
-    c_as = h1e[p_a, a_a][None, :] + Fa_ss[:, a_a, p_a]          # (na, M)
+    c_as = h_a[p_a, a_a][None, :] + Fa_ss[:, a_a, p_a]          # (na, M)
     Fb_ab_s = Fb_ab[:, a_a, p_a]                                # (nb, M)
     # β 单
     Tb_s, nz_b = _T_single(sb, norb, nb)
     b_b, q_b = nz_b // norb, nz_b % norb
-    c_bs = h1e[q_b, b_b][None, :] + Fb_ss[:, b_b, q_b]          # (nb, M)
+    c_bs = h_b[q_b, b_b][None, :] + Fb_ss[:, b_b, q_b]          # (nb, M)
     Fa_ab_s = Fa_ab[:, b_b, q_b]                                # (na, M)
     # α/β 双
     Ta_d, ta = _T_double(da, norb, na)
-    me_ad = np.array([eri[a, p, b, q] - eri[a, q, b, p] for (p, q, a, b) in ta])
+    me_ad = np.array([eri_aa[a, p, b, q] - eri_aa[a, q, b, p] for (p, q, a, b) in ta])
     Tb_d, tb = _T_double(db, norb, nb)
-    me_bd = np.array([eri[a, p, b, q] - eri[a, q, b, p] for (p, q, a, b) in tb])
+    me_bd = np.array([eri_bb[a, p, b, q] - eri_bb[a, q, b, p] for (p, q, a, b) in tb])
     # 交叉
     norb2 = norb * norb
     Ta_c = np.zeros((norb2, na, na)); Tb_c = np.zeros((norb2, nb, nb))
@@ -333,9 +396,10 @@ def prepare_sigma_operators(ci_strs_a, ci_strs_b, norb, nelec, h1e, eri):
     Ta_c, Tb_c = Ta_c[nz_ac], Tb_c[nz_bc]
     a_ac = np.array([idx // norb for idx in nz_ac]); p_ac = np.array([idx % norb for idx in nz_ac])
     b_bc = np.array([idx // norb for idx in nz_bc]); q_bc = np.array([idx % norb for idx in nz_bc])
-    eri_apbq = eri[a_ac[:, None], p_ac[:, None], b_bc[None, :], q_bc[None, :]]
+    eri_apbq = eri_ab[a_ac[:, None], p_ac[:, None], b_bc[None, :], q_bc[None, :]]
 
-    diag = _diag_energy(occ_a, occ_b, np.diag(h1e), eri)
+    diag = _diag_energy(occ_a, occ_b, np.diag(h_a), np.diag(h_b),
+                        eri_aa, eri_bb, eri_ab)
     return dict(na=na, nb=nb, diag=diag,
                 Ta_s=Ta_s, c_as=c_as, Fb_ab_s=Fb_ab_s,
                 Tb_s=Tb_s, c_bs=c_bs, Fa_ab_s=Fa_ab_s,
@@ -488,12 +552,22 @@ def sigma_linkstr_gpu(v, ci_strs_a, ci_strs_b, norb, nelec, h1e, eri,
     请用 :func:`sigma_vector_ops` / :func:`eigsh_gpu` (T 表版, 慢但子空间正确)。
     全空间 mid 对大子空间内存爆炸 (t1=norb²·na_full·nb), 故未做子空间修正。
 
+    ⚠ 自旋分辨输入 (eri 为 (aa,ab,bb) 三元组) 不支持: 内部
+    ``direct_spin1.absorb_h1e`` 是 spin1 专用 (raise)。自旋分辨全空间对角化请用
+    :func:`eigsh_gpu` (ops 路径) 或 ``fermion.solve_sci`` CPU matrixfree 路径。
+
     Parameters
     ----------
     v : ndarray (na, nb), numpy 或 cupy
     links : 预计算 (α 连接, β 连接) (可复用); ``None`` 时从 ci_strs 生成
     kernels : 预编译 RawKernel 4-tuple (可复用)
     """
+    if isinstance(eri, (tuple, list)):
+        raise ValueError(
+            "sigma_linkstr_gpu 不支持自旋分辨 eri (aa,ab,bb) 三元组: 内部 "
+            "direct_spin1.absorb_h1e 是 spin1 专用。自旋分辨请用 "
+            "eigsh_gpu (ops 路径) 或 fermion.solve_sci CPU matrixfree 路径。"
+        )
     import cupy as cp
     from pyscf import ao2mo
     from pyscf.fci import direct_spin1
@@ -524,7 +598,14 @@ def eigsh_linkstr_gpu(ci_strs_a, ci_strs_b, norb, nelec, h1e, eri, *,
     """Linkstr GPU matrix-free 本征求解 (cupyx eigsh + RawKernel matvec)。
 
     返回 ``(eigvals, eigvecs)`` (numpy, 已传回 CPU)。3× 快于 CPU direct_spin1。
+    自旋分辨 eri 三元组不支持 (同 :func:`sigma_linkstr_gpu`, raise)。
     """
+    if isinstance(eri, (tuple, list)):
+        raise ValueError(
+            "eigsh_linkstr_gpu 不支持自旋分辨 eri (aa,ab,bb) 三元组: 内部 "
+            "direct_spin1.absorb_h1e 是 spin1 专用。自旋分辨请用 eigsh_gpu "
+            "(ops 路径) 或 fermion.solve_sci CPU matrixfree 路径。"
+        )
     import cupy as cp
     from cupyx.scipy.sparse.linalg import eigsh, LinearOperator
     na, nb = len(ci_strs_a), len(ci_strs_b)

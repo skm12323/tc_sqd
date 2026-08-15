@@ -145,6 +145,12 @@ class _Subspace:
                  gpu_eigsh_mode: str = "hybrid",
                  warm_start: bool = False):
         self.h1e = np.asarray(h1e)
+        if isinstance(eri, (tuple, list)):
+            raise ValueError(
+                "_Subspace 不支持自旋分辨 eri (aa,ab,bb) 三元组 (spin1 "
+                "absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
+                "matrixfree 路径。"
+            )
         self.eri = np.asarray(eri)
         self.norb = norb
         self.nelec = nelec
@@ -426,6 +432,12 @@ def solve_cipsi(
         h1e = np.asarray(one_body_tensor[0])
     else:
         h1e = np.asarray(one_body_tensor)
+    if isinstance(two_body_tensor, (tuple, list)):
+        raise ValueError(
+            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
+            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
+            "matrixfree 路径。"
+        )
     eri = np.asarray(two_body_tensor)
 
     # 种子 -> 字符串集合 (闭壳层合并, 开壳层独立)
@@ -588,6 +600,12 @@ def solve_hci(
         h1e = np.asarray(one_body_tensor[0])
     else:
         h1e = np.asarray(one_body_tensor)
+    if isinstance(two_body_tensor, (tuple, list)):
+        raise ValueError(
+            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
+            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
+            "matrixfree 路径。"
+        )
     eri = np.asarray(two_body_tensor)
     na, nb = nelec
     open_shell = na != nb
@@ -753,6 +771,12 @@ def solve_sqd_adaptive(
         h1e = np.asarray(one_body_tensor[0])
     else:
         h1e = np.asarray(one_body_tensor)
+    if isinstance(two_body_tensor, (tuple, list)):
+        raise ValueError(
+            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
+            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
+            "matrixfree 路径。"
+        )
     eri = np.asarray(two_body_tensor)
     na, nb = nelec
     open_shell = na != nb
@@ -1040,6 +1064,12 @@ def solve_sqd_active(
         h1e = np.asarray(one_body_tensor[0])
     else:
         h1e = np.asarray(one_body_tensor)
+    if isinstance(two_body_tensor, (tuple, list)):
+        raise ValueError(
+            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
+            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
+            "matrixfree 路径。"
+        )
     eri = np.asarray(two_body_tensor)
     na, nb = nelec
     open_shell = na != nb
@@ -1619,6 +1649,12 @@ def solve_sqd_distill(
         h1e = np.asarray(one_body_tensor[0])
     else:
         h1e = np.asarray(one_body_tensor)
+    if isinstance(two_body_tensor, (tuple, list)):
+        raise ValueError(
+            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
+            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
+            "matrixfree 路径。"
+        )
     eri = np.asarray(two_body_tensor)
 
     bsm0 = np.asarray(bitstring_matrix, dtype=bool)

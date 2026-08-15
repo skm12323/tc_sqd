@@ -524,6 +524,42 @@ def build_ci_matrix(
     na_strs = np.asarray(ci_strs_a, dtype=np.int64)
     nb_strs = np.asarray(ci_strs_b, dtype=np.int64)
     na_e, nb_e = nelec
+
+    # ---- 自旋分辨路径 (round_011): ops 逐列 sigma_vector_ops ----------------
+    eri_is_tuple = isinstance(eri, (tuple, list))
+    _h = np.asarray(h1e)
+    h_unequal = _h.ndim == 3 and not np.allclose(_h[0], _h[1])
+    if eri_is_tuple or h_unequal or _h.ndim == 3:
+        if h_unequal and not eri_is_tuple:
+            raise ValueError(
+                "h_alpha != h_beta 需要 eri=(eri_aa, eri_ab, eri_bb) 三元组; "
+                "单块 eri 只能配等块或单个 (norb, norb) h1e。"
+            )
+        if not eri_is_tuple:
+            # 等块 (2,norb,norb) + 单块 eri: legacy collapse, 走下方 spin1 路径
+            pass
+        else:
+            if _h.ndim != 3:
+                raise ValueError(
+                    "eri 三元组 (eri_aa, eri_ab, eri_bb) 须配 h1e "
+                    "(2, norb, norb) = (h_alpha, h_beta)。"
+                )
+            from .matrixfree import (prepare_sigma_operators,
+                                     sigma_vector_ops)
+            na_len, nb_len = len(na_strs), len(nb_strs)
+            dim = na_len * nb_len
+            ops = prepare_sigma_operators(na_strs, nb_strs, norb, nelec,
+                                          _h, eri)
+            H = np.zeros((dim, dim), dtype=np.float64)
+            for i in range(dim):
+                e = np.zeros(dim)
+                e[i] = 1.0
+                H[:, i] = sigma_vector_ops(
+                    np.ascontiguousarray(e, dtype=np.float64)
+                    .reshape(na_len, nb_len), ops).ravel()
+            H += ecore * np.eye(dim)
+            return H
+
     myci = selected_ci.SCI()
     # Set the CI strings on the solver (required by contract_2e / contract_1e)
     myci._strs = (na_strs, nb_strs)
@@ -610,6 +646,37 @@ def build_sparse_hamiltonian(
     from pyscf.fci import direct_spin1
     from pyscf import ao2mo as _ao2mo
 
+    # ---- 自旋分辨路径 (round_011): ops 逐列 sigma_vector_ops (转 CSR) -------
+    if isinstance(eri, (tuple, list)):
+        _h = np.asarray(h1e)
+        if _h.ndim != 3:
+            raise ValueError(
+                "eri 三元组 (eri_aa, eri_ab, eri_bb) 须配 h1e "
+                "(2, norb, norb) = (h_alpha, h_beta)。"
+            )
+        from .matrixfree import prepare_sigma_operators, sigma_vector_ops
+        ci_a = np.asarray(ci_strs_a, dtype=np.int64)
+        ci_b = np.asarray(ci_strs_b, dtype=np.int64)
+        na_len, nb_len = len(ci_a), len(ci_b)
+        dim = na_len * nb_len
+        ops = prepare_sigma_operators(ci_a, ci_b, norb, nelec, _h, eri)
+        rows, cols, vals = [], [], []
+        for col in range(dim):
+            e_col = np.zeros(dim)
+            e_col[col] = 1.0
+            hcol = sigma_vector_ops(
+                np.ascontiguousarray(e_col, dtype=np.float64)
+                .reshape(na_len, nb_len), ops).ravel()
+            nz = np.nonzero(hcol)[0]
+            rows.extend(nz)
+            cols.extend([col] * len(nz))
+            vals.extend(hcol[nz])
+        H = coo_matrix((vals, (rows, cols)), shape=(dim, dim)).tocsr()
+        if ecore != 0.0:
+            from scipy.sparse import identity as _sp_identity
+            H = H + ecore * _sp_identity(dim, format="csr")
+        return H
+
     if h1e.ndim == 3:
         if not np.allclose(h1e[0], h1e[1]):
             raise ValueError(
@@ -673,19 +740,27 @@ def solve_sci(
     ----------
     ci_strings : tuple (ci_strs_a, ci_strs_b)
     one_body_tensor : ndarray, shape (norb, norb) or (2, norb, norb)
-    two_body_tensor : ndarray, shape (norb, norb, norb, norb)
+        ``(2, norb, norb)`` = ``(h_alpha, h_beta)``。等块时 collapse 为单块
+        (legacy); 不等块 (UHF 式) 时须配三元组 ``two_body_tensor`` 走自旋分辨
+        matrixfree 路径 (round_011)。
+    two_body_tensor : ndarray, shape (norb,)*4 | tuple (eri_aa, eri_ab, eri_bb)
+        chemist 记号。三元组形式 (每块 (norb,)*4; eri_ab 前对=α 后对=β, 与
+        ``pyscf.fci.direct_uhf`` 约定一致) = 自旋分辨路径, 须配
+        ``one_body_tensor (2, norb, norb)``。其余组合见派发真值表 (非法即 raise)。
     norb : int
     nelec : tuple(int, int)
     spin_sq : float | None
-        Target S².  ``None`` = no constraint.
+        Target S².  ``None`` = no constraint. (自旋分辨路径首期不支持, raise。)
     n_roots : int | None
         Number of eigenstates to return. ``None``/1 = ground state only
         (returns :class:`SCIResult`); ``>1`` = low-lying excited states
         (returns ``list[SCIResult]`` in ascending energy). 激发态 SQD.
+        (自旋分辨路径首期仅基态, ``>1`` raise。)
     backend : {"cpu", "gpu"}
         对角化后端。``"cpu"`` = scipy eigsh / numpy eigh (默认); ``"gpu"`` =
         matrix-free cupy (``tc_sqd.matrixfree``, 需 cupy + NVIDIA GPU)。仅基态
         分支 (dim>1000) 生效; 小空间仍用 numpy eigh。结果与 CPU 一致 (≤1e-13)。
+        (自旋分辨路径首期仅 ``"cpu"``。)
     **kwargs
         Forwarded to ``pyscf.fci.selected_ci.kernel_fixed_space``.
 
@@ -693,9 +768,109 @@ def solve_sci(
     -------
     SCIResult | list[SCIResult]
         Single result (n_roots=None/1) or list (n_roots>1, 含激发态).
+
+    Notes
+    -----
+    **自旋分辨输入** (``h_α≠h_β`` 或 eri 三元组, round_011) 走本库 matrixfree
+    σ-vector 路径 (round_005 实证与 PySCF contract_2e 一致 ≤1e-13 的同源算法):
+    ``prepare_sigma_operators`` 一次 + ``sigma_vector_ops`` 逐 matvec; dim≤1000
+    稠密 eigh, 否则 scipy eigsh (SA)。S² 仍按共享轨道假设计算 (与
+    ``pyscf.fci.direct_uhf`` 的 ``spin_square`` 行为一致, UHF 轨道下为近似值)。
     """
     ci_strs_a, ci_strs_b = ci_strings
     myci = selected_ci.SCI()
+
+    # ---- 派发真值表 (round_011 §1.4): 按输入形状派发, 零新 kwarg -----------
+    # (2,norb,norb) 不等块 + ndarray eri   → raise (物理矛盾: C_α≠C_β ⟹ eri 三块)
+    # (norb,norb) + 3-seq eri              → raise (单 h 配不同 eri 块无意义)
+    # (2,norb,norb)(任意) + 3-seq eri       → 自旋分辨新路径 (canonical)
+    # 其余                                  → legacy (单块; 等块 collapse)
+    eri_is_tuple = isinstance(two_body_tensor, (tuple, list))
+    _obt = np.asarray(one_body_tensor)
+    h1e_3d = _obt.ndim == 3
+    h_unequal = h1e_3d and not np.allclose(_obt[0], _obt[1])
+    spin_resolved_input = eri_is_tuple or h_unequal
+
+    if spin_resolved_input:
+        if h_unequal and not eri_is_tuple:
+            raise ValueError(
+                "h_alpha != h_beta 需要 eri=(eri_aa, eri_ab, eri_bb) 三元组 "
+                "(UHF 式 C_alpha != C_beta 下三块 eri 必不同); 单块 eri 只能配 "
+                "等块 (2, norb, norb) 或单个 (norb, norb) h1e。"
+            )
+        if not h1e_3d:
+            raise ValueError(
+                "eri 三元组 (eri_aa, eri_ab, eri_bb) 须配 h1e (2, norb, norb) "
+                "= (h_alpha, h_beta); 单块 h1e 配三块 eri 无自洽物理意义。"
+            )
+        if spin_sq is not None:
+            raise ValueError(
+                "自旋分辨路径首期不支持 spin_sq 约束 (kernel_fixed_space 是 "
+                "spin1); 用 spin_sq=None 后自行筛 S²。"
+            )
+        if n_roots is not None and n_roots > 1:
+            raise ValueError(
+                "自旋分辨路径首期仅基态 (n_roots>1 列后续轮)。"
+            )
+        if backend != "cpu":
+            raise ValueError(
+                "自旋分辨路径首期仅 backend='cpu' (GPU 3-contraction 需 UHF "
+                "absorb + 三块 eri1_*, 列后续轮)。"
+            )
+
+        # ops 路径 (prepare_sigma_operators 一次 + sigma_vector_ops 逐 matvec);
+        # 不走 sigma_vector(tables=) (每 matvec 重建 T 表)。自旋分辨不 absorb
+        # h1e (matrixfree 从不 absorb), diag 由 _diag_energy 用五块直接算。
+        from scipy.sparse.linalg import eigsh as _eigsh, LinearOperator as _LO
+        from .matrixfree import prepare_sigma_operators, sigma_vector_ops
+        ci_a = np.asarray(ci_strs_a)
+        ci_b = np.asarray(ci_strs_b)
+        na, nb = len(ci_a), len(ci_b)
+        dim = na * nb
+        ops = prepare_sigma_operators(ci_a, ci_b, norb, nelec,
+                                      _obt, two_body_tensor)
+
+        def _hop(v):
+            v2 = np.ascontiguousarray(v, np.float64).reshape(na, nb)
+            return np.ascontiguousarray(sigma_vector_ops(v2, ops)).ravel()
+
+        if dim <= 1000:
+            # 小空间: 显式构建 H + numpy eigh (无 ARPACK k>=N 限制, 绝对可靠)
+            H = np.zeros((dim, dim))
+            for col in range(dim):
+                e_col = np.zeros(dim)
+                e_col[col] = 1.0
+                H[:, col] = _hop(e_col)
+            e_vals, c_vec = np.linalg.eigh(H)
+        else:
+            op = _LO((dim, dim), matvec=_hop, dtype=np.float64)
+            e_vals, c_vec = _eigsh(op, k=1, which="SA", tol=1e-10,
+                                   maxiter=2000)
+        e_tot = float(e_vals[0])
+        c_1d = np.asarray(c_vec).ravel() if dim > 1000 else np.asarray(c_vec)[:, 0]
+        civec = selected_ci._as_SCIvector(
+            c_1d.reshape(na, nb), (ci_a, ci_b))
+        # S² 按共享轨道假设计算 (与 pyscf direct_uhf 的 spin_square 同行为;
+        # UHF 轨道下为近似值, 见 docstring Notes)。
+        try:
+            s2 = float(selected_ci.spin_square(civec, norb, nelec)[0])
+        except Exception:
+            s2 = 0.0
+
+        state = SCIState(
+            amplitudes=civec,
+            ci_strs_a=ci_a,
+            ci_strs_b=ci_b,
+            norb=norb,
+            nelec=nelec,
+        )
+        occ_a, occ_b = state.orbital_occupancies()
+        return SCIResult(
+            energy=float(e_tot),
+            sci_state=state,
+            avg_orb_occupancies=(occ_a, occ_b),
+            spin_square=s2,
+        )
 
     # Prepare h1e in PySCF format: direct_spin1 expects a single (norb, norb)
     # matrix (not spin-separated).
@@ -974,6 +1149,11 @@ def solve_sci_csf(
         h1e = np.asarray(one_body_tensor[0])
     else:
         h1e = np.asarray(one_body_tensor)
+    if isinstance(two_body_tensor, (tuple, list)):
+        raise ValueError(
+            "solve_sci_csf 不支持自旋分辨 eri 三元组 (S² 矩阵构建经 spin1 "
+            "contract_2e); 自旋分辨请用 solve_sci CPU matrixfree 路径。"
+        )
     eri = np.asarray(two_body_tensor)
 
     ci_a = np.asarray(ci_strs_a, dtype=np.int64)
@@ -1235,7 +1415,11 @@ def diagonalize_fermionic_hamiltonian(
             f"max_iterations must be >= 1, got {max_iterations}."
         )
     # Consistency checks between norb, integrals and bitstring width.
-    if one_body_tensor.shape[0] != norb:
+    # (2, norb, norb) 自旋分辨 h1e 合法 (round_011): 修掉原先只放行
+    # one_body_tensor.shape[0] == norb 的隐性误 raise。
+    _h1_shape = one_body_tensor.shape
+    if not ((_h1_shape == (norb, norb))
+            or (_h1_shape == (2, norb, norb))):
         raise ValueError(
             f"norb={norb} does not match one_body_tensor shape "
             f"{one_body_tensor.shape}."
@@ -1658,7 +1842,25 @@ def compute_ground_state_energy(
         适合快速拿能量/对比方法; 要状态/迭代/从电路出发用 ``solve_sqd``。
     """
     h1e_arr = np.asarray(h1e, dtype=np.float64)
-    eri_arr = np.asarray(eri, dtype=np.float64)
+    if isinstance(eri, (tuple, list)):
+        eri_arr = tuple(np.asarray(e, dtype=np.float64) for e in eri)
+    else:
+        eri_arr = np.asarray(eri, dtype=np.float64)
+    # 派发真值表 (round_011 §1.4, 与 solve_sci 一致)
+    eri_is_tuple = isinstance(eri, (tuple, list))
+    h1_3d = h1e_arr.ndim == 3
+    h_unequal = h1_3d and not np.allclose(h1e_arr[0], h1e_arr[1])
+    if h_unequal and not eri_is_tuple:
+        raise ValueError(
+            "h_alpha != h_beta 需要 eri=(eri_aa, eri_ab, eri_bb) 三元组; "
+            "单块 eri 只能配等块或单个 (norb, norb) h1e。"
+        )
+    if eri_is_tuple and not h1_3d:
+        raise ValueError(
+            "eri 三元组 (eri_aa, eri_ab, eri_bb) 须配 h1e (2, norb, norb) "
+            "= (h_alpha, h_beta)。"
+        )
+    spin_resolved = eri_is_tuple or h_unequal
     na_e, nb_e = nelec
 
     # ---- FCI: exact diagonalisation via PySCF -----------------------------
@@ -1668,6 +1870,16 @@ def compute_ground_state_energy(
         if verbose:
             print(f"[FCI] Full space: {len(ci_strs_a)} x {len(ci_strs_b)} "
                   f"= {len(ci_strs_a) * len(ci_strs_b)} determinants")
+        if spin_resolved:
+            # UHF 式五积分 → pyscf.fci.direct_uhf (C 核, 与本库实现完全独立;
+            # h1e=(h_a,h_b), eri=(aa,ab,bb), 全数组 chemist 记号, round_011)。
+            from pyscf.fci import direct_uhf
+            kw = dict(kwargs)
+            kw.setdefault("conv_tol", 1e-12)
+            kw.setdefault("max_cycle", 1000)
+            e_elec = direct_uhf.kernel(
+                (h1e_arr[0], h1e_arr[1]), eri_arr, norb, nelec, **kw)[0]
+            return float(e_elec) + ecore
         if spin_sq is None:
             # 用 PySCF 标准 FCI (direct_spin1), 精确: selected_ci.kernel_fixed_space
             # 对不等 nelec 的全空间 Davidson 可能陷于局部根 (P2-1b 实测 CH (4,3)

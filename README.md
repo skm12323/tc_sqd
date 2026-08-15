@@ -35,8 +35,8 @@ numpy≥2 / jax 的硬性要求**。
 - **噪声容限预测器**（`predict`）：输入 T₁/电路/shots → 预测 SQD 基态/激发态精度；
   `depth_budget` 结构化深度预算；`plan_sampling` 自动找最优 (shots, depth) 采样方案
 - **一键分子接口**（`molecule`）：`from_pyscf(mol_or_mf)` 自动算 MO 基
-  h1e/eri/ecore/norb/nelec，支持活性空间（冻结 core）与**开壳层**（ROHF，`n_α≠n_β`；
-  UHF 显式拒，需 spin-resolved 积分）
+  h1e/eri/ecore/norb/nelec，支持活性空间（冻结 core）与**开壳层**（ROHF，`n_α≠n_β`）
+  以及 **UHF**（五积分 `h1e (2,norb,norb)` + `eri (aa,ab,bb)`，round_011）
 - **UCJ 精确化**（`lucj`）：`ucj_decomposition` t2→SVD→多层 (κ, J)（简化 UCJ，
   诚实标注非 ffsim 精确）+ `build_ucj_circuit` Û Givens 电路 + `ucj_subspace_energy`
   确定性 SQD 验证——LiH 误差 简化 LUCJ 7.5e-4 → **~2e-4**
@@ -295,8 +295,9 @@ PYTHONPATH=src python examples/ucj_demo.py          # UCJ 全链 (分解 → 确
 
 ## 限制与已知边界
 
-- **开壳层**：SQD 核心（`solve_sci`/三路径）与 `recover_configurations`/`estimate_true_occupancies` 原生支持 `n_α≠n_β`；`from_pyscf` 支持 ROHF（`mol.spin!=0` 自动）；**UHF 不支持**（自旋分辨轨道，显式拒）；`build_lucj_circuit`/`build_ucj_circuit` 仍闭壳层（开壳层用 HF 电路采样）。
-- **一电子积分**：需为单个 `(norb, norb)`（或两块相同的 `(2, norb, norb)`）；`h_alpha ≠ h_beta` 的自旋分辨积分会显式拒绝。
+- **开壳层 / UHF**：SQD 核心（`solve_sci`/三路径）与 `recover_configurations`/`estimate_true_occupancies` 原生支持 `n_α≠n_β`；`from_pyscf` 支持 ROHF（`mol.spin!=0` 自动）；**UHF 支持**（round_011：`from_pyscf`/`solve_sci`/`build_ci_matrix`/`compute_ground_state_energy(method="fci")` 走自旋分辨 matrixfree / `pyscf.fci.direct_uhf` 路径，全空间与任意子空间，CPU；active/PT2/HCI/CIPSI、CSF、GPU、linkstr、UHF+frozen-core 首期 raise）；UHF 轨道基下的 S² 为共享轨道近似（与 `direct_uhf` 行为一致）；UHF 基下的采样/电路恢复行为未验证（实验性）。`build_lucj_circuit`/`build_ucj_circuit` 仍闭壳层（开壳层用 HF 电路采样）。
+- **一电子积分**：单个 `(norb, norb)`（或两块相同的 `(2, norb, norb)`，collapse）；
+  自旋分辨 `h_alpha ≠ h_beta` 须配 `eri (aa,ab,bb)` 三元组（round_011 新路径），非法组合显式 raise。
 - **`max_dim`**：已实现（`limit_subspace` 按概率贪心裁剪；int=总行列式数、tuple=(na, nb)）。`include_configurations` / carryover 强制配置不受裁剪。
 - **`spin_sq`**：在 `solve_sci` / `fci` 路径通过多根 S² 匹配实现真正的目标自旋选态（不可达时 raise）；`sqd` / `direct` 路径显式拒绝。
 - **状态持久化**：`SCIState.save/load` 后通过 `_as_scivector` 重建 PySCF `SCIvector` 元数据，`rdm` / `spin_square` 在加载后仍可用。

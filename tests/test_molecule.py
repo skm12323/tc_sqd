@@ -102,26 +102,30 @@ def test_from_pyscf_validation():
 
 
 def test_from_pyscf_open_shell_ch():
-    """P2-1b: CH/STO-3G (4,3) 一键 from_pyscf, fci = PySCF FCI; UHF reject。"""
+    """P2-1b: CH/STO-3G (4,3) 一键 from_pyscf, fci = PySCF FCI; UHF 支持 (round_011)。"""
     from pyscf import fci as fci_mod
 
     mol = gto.M(atom="C 0 0 0; H 0 0 1.1", basis="sto-3g", spin=1, verbose=0)
     data = tc_sqd.from_pyscf(mol)
     assert data.nelec == (4, 3)               # CH 7e, 双自由基 (2S=1)
     assert type(data.mf).__name__ == "ROHF"   # spin!=0 自动 ROHF
+    assert not data.spin_resolved             # ROHF 单块 (round_011)
 
     e = data.solve(method="fci")
     e_ref = fci_mod.direct_spin1.kernel(
         data.h1e, data.eri, data.norb, data.nelec)[0] + data.ecore
     assert abs(e - e_ref) < 1e-8
 
-    # UHF 显式 reject
+    # UHF: round_011 起支持 —— 五积分 + spin_resolved, fci 走 direct_uhf
     mf_u = scf.UHF(mol).run()
-    try:
-        tc_sqd.from_pyscf(mf_u)
-        assert False, "UHF 应显式 reject"
-    except ValueError:
-        pass
+    data_u = tc_sqd.from_pyscf(mf_u)
+    assert data_u.spin_resolved
+    assert data_u.nelec == (4, 3)
+    e_u = data_u.solve(method="fci")
+    e_u_ref = fci_mod.direct_uhf.kernel(
+        (data_u.h1e[0], data_u.h1e[1]), tuple(data_u.eri),
+        data_u.norb, data_u.nelec, conv_tol=1e-12)[0] + data_u.ecore
+    assert abs(e_u - e_u_ref) < 1e-8
 
 
 def test_from_pyscf_open_shell_frozen():

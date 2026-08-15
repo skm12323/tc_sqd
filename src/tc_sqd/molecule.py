@@ -28,10 +28,12 @@ class MolecularData:
 
     Attributes
     ----------
-    h1e : ndarray, shape (norb, norb)
-        MO 基一电子积分 (空间轨道)。
-    eri : ndarray, shape (norb, norb, norb, norb)
-        MO 基双电子积分 (chemist's notation, 空间)。
+    h1e : ndarray, shape (norb, norb) | (2, norb, norb)
+        MO 基一电子积分 (空间轨道)。UHF 式 ``(2, norb, norb)`` = (h_alpha, h_beta)
+        (round_011; 见 ``spin_resolved``)。
+    eri : ndarray, shape (norb,)*4 | tuple (eri_aa, eri_ab, eri_bb)
+        MO 基双电子积分 (chemist's notation, 空间)。UHF 式三块 (与
+        ``pyscf.fci.direct_uhf`` 输入约定一致; ``eri_ab`` 前对=α 后对=β)。
     ecore : float
         核排斥能 + 冻结核修正 (直接用作 SQD 的 ecore)。
     norb : int
@@ -71,7 +73,9 @@ class MolecularData:
         """一键求基态能量 (内部转 ``compute_ground_state_energy``)。
 
         ``method`` = ``"fci"`` / ``"sqd"`` / ``"direct"``; ``method="sqd"``
-        时需传 ``bitstring_matrix`` (采样比特串)。
+        时需传 ``bitstring_matrix`` (采样比特串)。自旋分辨数据 (UHF 来源) 的
+        ``method="fci"`` 走 ``pyscf.fci.direct_uhf``, ``"sqd"``/``"direct"``
+        走本库 matrixfree 路径 (round_011)。
         """
         from .fermion import compute_ground_state_energy
 
@@ -81,6 +85,11 @@ class MolecularData:
                 ecore=self.ecore, method=method, **kwargs,
             )
         )
+
+    @property
+    def spin_resolved(self) -> bool:
+        """h1e 是否为自旋分辨五积分形式 (UHF 来源, ``(2, norb, norb)``)。"""
+        return np.asarray(self.h1e).ndim == 3
 
 
 def _frozen_core_energy(h1e: np.ndarray, eri: np.ndarray, n_core: int) -> float:
@@ -122,6 +131,85 @@ def _frozen_core_potential(eri_full: np.ndarray, n_core: int, n_virtual: int = 0
     return pot
 
 
+def _from_pyscf_uhf(mf, mol, mo, *, n_active=None, n_core=None,
+                    n_virtual=None) -> MolecularData:
+    """UHF / UKS 分支 (round_011): C_α/C_β → 五积分 (与 direct_uhf 约定对齐)。
+
+    h^α = C_α† h_AO C_α, h^β 同理; eri_αα/eri_ββ/eri_αβ 用与 RHF 分支同风格的
+    einsum 混合基变换 (eri_αβ 前对=α 后对=β, chemist 记号)。
+
+    frozen-core (n_core>0 / n_active) 首期 raise: UHF 下 core 轨道自旋分化,
+    ``_frozen_core_energy`` / ``_frozen_core_potential`` 的闭壳层公式需按
+    (στ) 分块重写才闭合 (独立验证面, round_011 范围外)。n_virtual 仅切片
+    (冻虚轨道为空, 无能量/平均场修正), 可用。
+    """
+    mo_a, mo_b = mo[0], mo[1]
+    norb_full = mo_a.shape[1]
+
+    mf_nelec = getattr(mf, "nelec", None)
+    if mf_nelec is not None:
+        na, nb = int(mf_nelec[0]), int(mf_nelec[1])
+    else:
+        spin = int(getattr(mol, "spin", 0))
+        na = (mol.nelectron + spin) // 2
+        nb = (mol.nelectron - spin) // 2
+
+    # 活性区间解析 (与 RHF 分支同一套互斥/区间规则)
+    if n_active is not None and (n_core is not None or n_virtual is not None):
+        raise ValueError(
+            "n_active 与 n_core/n_virtual 互斥: n_active=N 等价于 "
+            "n_core=norb_full-N, n_virtual=0; 需要折叠虚轨道请用 n_core+n_virtual。"
+        )
+    if n_active is not None:
+        n_core = norb_full - n_active
+        n_virtual = 0
+    else:
+        n_core = 0 if n_core is None else int(n_core)
+        n_virtual = 0 if n_virtual is None else int(n_virtual)
+    if n_core < 0 or n_virtual < 0 or n_core + n_virtual >= norb_full:
+        raise ValueError(
+            f"n_core+n_virtual 必须 < norb_full={norb_full} (至少留 1 个活性轨道), "
+            f"got n_core={n_core}, n_virtual={n_virtual}."
+        )
+    if n_core > 0:
+        raise ValueError(
+            "UHF + frozen-core (n_core>0 / n_active 冻结占据) 首期不支持: "
+            "UHF 下 core 轨道自旋分化, 闭壳层 core 能量/平均场公式需按 (στ) "
+            "分块重写。用全空间 (n_core=0) 或 n_virtual 冻结虚轨道。"
+        )
+
+    start, end = n_core, norb_full - n_virtual
+    n_act = end - start
+
+    # 五积分 (无磁场时 hcore 两自旋同 AO 矩阵)
+    hcore = mf.get_hcore()
+    h_a = mo_a.T @ hcore @ mo_a
+    h_b = mo_b.T @ hcore @ mo_b
+    eri_ao = mol.intor("int2e_sph")
+    eri_aa = np.einsum("pqrs,pi,qj,rk,sl->ijkl",
+                       eri_ao, mo_a, mo_a, mo_a, mo_a, optimize=True)
+    eri_ab = np.einsum("pqrs,pi,qj,rk,sl->ijkl",
+                       eri_ao, mo_a, mo_a, mo_b, mo_b, optimize=True)
+    eri_bb = np.einsum("pqrs,pi,qj,rk,sl->ijkl",
+                       eri_ao, mo_b, mo_b, mo_b, mo_b, optimize=True)
+
+    sl = np.s_[start:end]
+    return MolecularData(
+        h1e=np.stack([h_a[sl, sl], h_b[sl, sl]]).astype(np.float64),
+        eri=(np.asarray(eri_aa[sl, sl, sl, sl], dtype=np.float64),
+             np.asarray(eri_ab[sl, sl, sl, sl], dtype=np.float64),
+             np.asarray(eri_bb[sl, sl, sl, sl], dtype=np.float64)),
+        ecore=float(mf.energy_nuc()),
+        norb=int(n_act),
+        nelec=(na, nb),
+        n_core=int(n_core),
+        n_virtual=int(n_virtual),
+        mo_coeff=mo[:, :, start:end],
+        nuc_energy=float(mf.energy_nuc()),
+        mf=mf,
+    )
+
+
 def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None,
                n_core: Optional[int] = None,
                n_virtual: Optional[int] = None) -> MolecularData:
@@ -161,8 +249,12 @@ def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None,
     ``mf.nelec`` / ``mol.spin`` 推断 ``(na,nb)``。frozen-core 下 core 双占,
     活性 ``nelec = (na-n_core, nb-n_core)`` (与 ``n_virtual`` 无关)。
 
-    **不支持 UHF** (自旋分辨轨道, ``mo_coeff`` 形如 ``(2,norb,norb)``): SQD 后端
-    拒 ``h_alpha != h_beta``, 请用 ROHF。UHF mf 会显式 raise。
+    **UHF (round_011)**: 已收敛 UHF/UKS (``mo_coeff`` 形如 ``(2, nao, nmo)``)
+    产出**五积分** ``h1e (2, norb, norb)`` + ``eri (eri_aa, eri_ab, eri_bb)``
+    (与 ``pyscf.fci.direct_uhf`` 输入约定逐字一致), ``MolecularData.spin_resolved
+    = True``; 下游 ``solve(method="fci")`` 走 direct_uhf, ``solve_sci`` /
+    ``build_ci_matrix`` 走本库 matrixfree 自旋分辨路径。frozen-core
+    (``n_core>0``/``n_active``) 首期 raise; ``n_virtual`` 仅切片、可用。
     """
     from pyscf import gto, scf
 
@@ -179,17 +271,14 @@ def from_pyscf(mf_or_mol, *, n_active: Optional[int] = None,
         if mol is None or not isinstance(mf, scf.hf.SCF):
             raise ValueError(
                 "mf_or_mol 必须是 pyscf gto.Mole 或已构建的 scf 对象 "
-                "(RHF/ROHF); got {type(mf_or_mol).__name__}."
-            )
-        # UHF 显式拒绝: 自旋分辨轨道 (α/β 不同 h1e), SQD 后端不支持
-        if isinstance(mf, scf.uhf.UHF):
-            raise ValueError(
-                "from_pyscf 不接受 UHF (自旋分辨轨道, mo_coeff 形如 (2,norb,norb)): "
-                "SQD 后端 (fermion.solve_sci) 拒 h_alpha != h_beta, 请用 ROHF "
-                "(单 mo_coeff, 空间共用轨道)。"
+                "(RHF/ROHF/UHF); got {type(mf_or_mol).__name__}."
             )
 
     mo = np.asarray(mf.mo_coeff, dtype=np.float64)
+    if mo.ndim == 3:
+        # UHF / UKS (mo_coeff 形如 (2, nao, nmo)): 自旋分辨五积分分支 (round_011)
+        return _from_pyscf_uhf(mf, mol, mo, n_active=n_active,
+                               n_core=n_core, n_virtual=n_virtual)
     if mo.ndim != 2:
         raise ValueError(
             "mo_coeff 必须是单空间基 (RHF/ROHF), got ndim={mo.ndim} "
