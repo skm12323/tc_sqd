@@ -1742,3 +1742,34 @@ warm_start 透传（active/ev/best，默认 False 零回归）。7 新测试 + �
 
 **幂等恢复验证**：R3 网络断连后重新唤起，检查断连前代码完整正确（仅修 2 个测试期望值），
 66min 完成收尾——SQUAD 幂等设计的实战验证。
+
+## 自旋分辨积分支持（round_011 已验证，2026-08-16）
+
+**路径**（方案 C，matrixfree 扩展——性价比/风险评估后选定）：`matrixfree.sigma_vector` 是
+库自有 Slater-Condon（单激发本分 α/β 通道），扩展为五积分（h_α, h_β, eri_αα, eri_αβ,
+eri_ββ）通道分解——**数据结构与 PySCF `direct_uhf` 约定逐字对齐**（免费独立参考锚）。
+
+**实现**（commit `49b0175`）：
+- matrixfree：`_split_spin_integrals`（归一化，legacy 同引用零回归）+ `_fock_cross_beta`
+  （αβ 基 Fock）+ 六通道换块（einsum 表达式逐字未动）
+- fermion：`solve_sci` 自旋分辨分支（稠密/eigsh 走 matrixfree matvec）+ 派发真值表 +
+  修 `diagonalize_fermionic_hamiltonian` shape 校验隐性 bug；`compute_ground_state_energy
+  (method="fci")` → direct_uhf
+- molecule：`from_pyscf` UHF/UKS 分支（五积分 einsum，direct_uhf 约定），`spin_resolved` 属性
+- cipsi：5 入口 + _Subspace tuple-eri 守卫（范围外功能对自旋分辨 raise）
+- **零新 kwarg**：按输入形状派发，签名不变
+
+**验证**：
+- P0：N₂ + CH UHF vs PySCF direct_uhf（conv_tol=1e-12）**≤1e-10**（10 新测试）
+- P1：legacy 逐位一致（跨版本 golden 实测 np.array_equal；Fa_ab 分支保护使其结构保证）
+- P2：from_pyscf(UHF) 五积分 vs 手工 einsum ≤1e-12
+- **端到端**（R5）：stretched N₂ UHF（h_α≠h_β 对称破缺）→ from_pyscf →
+  `compute_ground_state_energy(method="fci")` vs direct_uhf 严格收敛 **diff = 0**（逐位）
+- 全库 209 passed 0 failed
+
+**口径发现**（PySCF 2.14 坑）：`direct_uhf.contract_1e + contract_2e(raw)` 组合与 kernel
+不自洽（差 ~1.2 Ha）；正确参考是 `contract_2e(absorb_h1e(...))`。且默认 kernel 收敛参数
+在近简并体系差 ~2e-5——参考须显式 conv_tol=1e-12。
+
+**首期范围外**（文档已标注）：_Subspace（solve_sqd_active/ev/best/HCI/CIPSI）与
+selected_ci_gpu/linkstr 对自旋分辨输入 raise——后续如需在 active 闭环中用 UHF 再扩展。
