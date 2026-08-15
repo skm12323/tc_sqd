@@ -103,6 +103,38 @@ def _single_excited_strings(s: int, norb: int):
 
 
 # --------------------------------------------------------------------------- #
+#  warm-start v0 构造 (round_010): 旧解态投影到新子空间作 ARPACK 初始向量
+# --------------------------------------------------------------------------- #
+def _project_v0(sa_old, sb_old, c2d_old, sa_new, sb_new):
+    """旧解态投影到新子空间作 eigsh 的 ``v0`` (round_010 迭代减少)。
+
+    solve_sqd_active 的收敛循环里子空间**单调增长** (旧字符串 ⊂ 新字符串),
+    上一轮解态投影到新子空间 (旧字符串索引映射 + 新字符串振幅**置零** +
+    归一化) 与新基态余弦 ≥ √(1−w_new) ≈ 0.99+, 是高质量 Krylov 初猜。
+
+    - prune 收缩等场景旧串可能已不在新集合 -> searchsorted 越界/错配必须
+      mask (交集投影, 正常轮次 mask 全 True 零成本)。
+    - 新字符串振幅**置零** (不均匀小值): 第一次 matvec H·v0 自然生成新 det
+      方向的修正分量; 均匀小值反而注入随机噪声压低余弦。
+    - 全零 (‖P·c_old‖ < 1e-300) 返回 None -> 调用方不传 v0 (随机, 现状行为)。
+
+    返回展平归一化 float64 向量 (长度 nA_new × nB_new) 或 None。O(dim)。
+    """
+    sa_old = np.asarray(sa_old, dtype=np.int64)
+    sb_old = np.asarray(sb_old, dtype=np.int64)
+    c2d_old = np.asarray(c2d_old, dtype=np.float64)
+    ia = np.searchsorted(sa_new, sa_old)          # 旧字符串在新数组中的行号候选
+    ib = np.searchsorted(sb_new, sb_old)
+    # 交集 mask: 越界或 searchsorted 停在插入点 (值不匹配) 的都剔除
+    ma = (ia < len(sa_new)) & (sa_new[np.minimum(ia, len(sa_new) - 1)] == sa_old)
+    mb = (ib < len(sb_new)) & (sb_new[np.minimum(ib, len(sb_new) - 1)] == sb_old)
+    v0 = np.zeros((len(sa_new), len(sb_new)))
+    v0[np.ix_(ia[ma], ib[mb])] = c2d_old[np.ix_(np.where(ma)[0], np.where(mb)[0])]
+    n = float(np.linalg.norm(v0))
+    return None if n < 1e-300 else (v0 / n).ravel()
+
+
+# --------------------------------------------------------------------------- #
 #  子空间对角化 (与 solve_sci 相同的稳健路径)
 # --------------------------------------------------------------------------- #
 class _Subspace:
@@ -110,7 +142,8 @@ class _Subspace:
 
     def __init__(self, h1e, eri, norb, nelec, *,
                  backend: str = "cpu",
-                 gpu_eigsh_mode: str = "hybrid"):
+                 gpu_eigsh_mode: str = "hybrid",
+                 warm_start: bool = False):
         self.h1e = np.asarray(h1e)
         self.eri = np.asarray(eri)
         self.norb = norb
@@ -129,6 +162,15 @@ class _Subspace:
         #   "cpu_fallback" (逃生舱): scipy eigsh + contract_2e (GPU 不参与 matvec),
         #                   隔离 "慢在 eigsh 还是 init" 用。默认 backend="cpu" 不读此参数。
         self.gpu_eigsh_mode = gpu_eigsh_mode
+        # round_010 warm-start v0: 默认 False = 不读不写缓存, 三处 eigsh 逐字
+        # 一致 (零回归)。True 时缓存上次成功 diag 的 (sa, sb, c2d), 下次 diag 经
+        # _project_v0 投影作 eigsh v0 —— 只减少 ARPACK 迭代, 收敛值不变
+        # (E diff ≤ 1e-10, round_010 P1)。缓存生命周期 = 实例生命周期:
+        # solve_sqd_adaptive 换基重建 _Subspace -> 缓存自动失效 (旧基 c2d 对
+        # 新基是错误初猜, 结构上排除跨基污染)。
+        self.warm_start = warm_start
+        self._warm = None                  # (sa, sb, c2d) 上次成功 diag 的缓存
+        self.last_n_mv = 0                 # 最近一次 diag 的 matvec 次数 (诊断仪表)
         # round_004 方式 C: 实例级 eri 缓存 (cupy 常驻 GPU, 一次)。
         # _eri1_aaaa/_bbaa 与 self.h2e 同生命周期 (init 固定); solve_sqd_adaptive 换基
         # 重建 _Subspace (cipsi.py:675) -> 新 h1e/eri -> 新 self.h2e -> 新缓存, 语义自洽。
@@ -155,6 +197,27 @@ class _Subspace:
         sb = np.asarray(sorted(str_b), dtype=np.int64)
         nA, nB = len(sa), len(sb)
         dim = nA * nB
+
+        # round_010 warm-start v0: 上次成功 diag 的解态投影到本子空间 (§1.1)。
+        # 默认 warm_start=False 时既不读也不写缓存, v0 恒 None -> kw={} ->
+        # 三处 eigsh 调用与改动前逐字一致 (零回归)。dim≤1000 走 dense eigh
+        # (分支 ①), 不需要 v0, 不触及。
+        v0 = None
+        if self.warm_start and self._warm is not None and dim > 1000:
+            sa_o, sb_o, c2d_o = self._warm
+            v0 = _project_v0(sa_o, sb_o, c2d_o, sa, sb)
+        # v0=None 必须不传该 kwarg (scipy 显式 v0=None 与省略语义可能不同):
+        kw = {"v0": v0} if v0 is not None else {}
+
+        # round_010 仪表: 本次 diag 的 matvec 次数 (每 diag 清零, matvec 闭包自增;
+        # P0'/P2 验收锚)。纯整数自增, 不触数值路径。
+        self.last_n_mv = 0
+
+        def _counted(fn):
+            def _mv(v):
+                self.last_n_mv += 1
+                return fn(v)
+            return _mv
 
         # round_004 方式 B: hop / link 懒构到 _build_cpu_hop 闭包。
         # GPU 成功路径完全不付 _all_linkstr_index (CPU 合并索引) 的构建税;
@@ -215,10 +278,12 @@ class _Subspace:
                     # matvec(v): v numpy (scipy 给) -> cp.asarray H2D -> sigma GPU ->
                     # .get() D2H 回 numpy 给 scipy。引擎 == CPU else 分支的同一个
                     # scipy.sparse.linalg.eigsh -> N_matvec 同分布 (~700-811, theory §1.2)。
+                    # round_010: v0 经 _project_v0 投影 (含 except 回退共用同一 v0)。
                     def matvec(v):
+                        self.last_n_mv += 1
                         return np.asarray(_gpu_sigma(v).get()).ravel()
                     op = LinearOperator((dim, dim), matvec=matvec, dtype=np.float64)
-                    ev, cv = eigsh(op, k=1, which="SA", tol=1e-10, maxiter=3000)
+                    ev, cv = eigsh(op, k=1, which="SA", tol=1e-10, maxiter=3000, **kw)
                     E, c1d = float(ev[0]), np.asarray(cv).ravel()
                 elif self.gpu_eigsh_mode == "cupyx":
                     # round_004 现状 (诊断/调参/方向 B 基线) + 方向 C maxiter 护栏。
@@ -228,29 +293,35 @@ class _Subspace:
                     from cupyx.scipy.sparse.linalg import eigsh as cp_eigsh
                     from cupyx.scipy.sparse.linalg import LinearOperator as cp_LO
                     def matvec(v):
+                        self.last_n_mv += 1
                         return _gpu_sigma(v).reshape(-1)
                     A = cp_LO((dim, dim), matvec=matvec, dtype=np.float64)
-                    ev, cv = cp_eigsh(A, k=1, which="SA", tol=1e-10, maxiter=3000)
+                    ev, cv = cp_eigsh(A, k=1, which="SA", tol=1e-10, maxiter=3000, **kw)
                     E, c1d = float(ev[0]), np.asarray(cv).ravel()
                 else:  # "cpu_fallback" (逃生舱: scipy eigsh + contract_2e, GPU 不参与)
                     _build_cpu_hop()
-                    op = LinearOperator((dim, dim), matvec=hop, dtype=np.float64)
-                    ev, cv = eigsh(op, k=1, which="SA", tol=1e-10, maxiter=3000)
+                    op = LinearOperator((dim, dim), matvec=_counted(hop), dtype=np.float64)
+                    ev, cv = eigsh(op, k=1, which="SA", tol=1e-10, maxiter=3000, **kw)
                     E, c1d = float(ev[0]), np.asarray(cv).ravel()
             except Exception:
                 # OOM / cupyx 不收敛 (maxiter 触发 ArpackNoConvergence) / scipy 不收敛
                 # -> 懒构 hop + scipy eigsh 回退 (round_004 护栏, 三模式共用)。
+                # round_010: 同一 v0 照样有效 (同矩阵同子空间), 不浪费。
                 _build_cpu_hop()
-                op = LinearOperator((dim, dim), matvec=hop, dtype=np.float64)
-                ev, cv = eigsh(op, k=1, which="SA", maxiter=3000)
+                op = LinearOperator((dim, dim), matvec=_counted(hop), dtype=np.float64)
+                ev, cv = eigsh(op, k=1, which="SA", maxiter=3000, **kw)
                 E, c1d = float(ev[0]), np.asarray(cv).ravel()
         else:
             # 分支 ②-CPU: scipy eigsh (默认, 与改造前逐字一致, L1 零回归)
             _build_cpu_hop()
-            op = LinearOperator((dim, dim), matvec=hop, dtype=np.float64)
-            ev, cv = eigsh(op, k=1, which="SA", maxiter=3000)
+            op = LinearOperator((dim, dim), matvec=_counted(hop), dtype=np.float64)
+            ev, cv = eigsh(op, k=1, which="SA", maxiter=3000, **kw)
             E, c1d = float(ev[0]), np.asarray(cv).ravel()
-        return E, c1d.reshape(nA, nB), sa, sb
+        c2d = c1d.reshape(nA, nB)
+        # round_010: diag 成功后缓存 (gate 在 warm_start 上; 含 prune 收缩后的新态)
+        if self.warm_start:
+            self._warm = (sa, sb, np.array(c2d, copy=True))
+        return E, c2d, sa, sb
 
     def pt2_matrix_elements(self, str_a, str_b, cand, c2d, sa, sb):
         """扩展空间 (str_a∪cand_α, str_b∪cand_β) 上算各候选的 <a|H|Psi> 与对角元。
@@ -840,6 +911,8 @@ def solve_sqd_active(
     # ---- 方向 C: 三激发定向注入 (round_008); 默认全关零回归 ----
     triple_injection: bool = False,
     n_triples_per_round: int = 0,
+    # ---- round_010: warm-start v0 (默认关零回归) ----
+    warm_start: bool = False,
     backend: str = "cpu",
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
@@ -947,6 +1020,12 @@ def solve_sqd_active(
         每迭代注入的新字符串数上限; ``0`` = 无 cap (注入所有 ``|pt2|>pt2_floor``
         的新字符串, 到 fixpoint); ``>0`` = 每迭代取 top-N (大空间定向注入)。
         仅在 ``triple_injection=True`` 时读取。
+    warm_start : bool
+        **round_010 对角化迭代减少**: ``True`` 时缓存上次成功 diag 的解态,
+        下次 diag 经 ``_project_v0`` 投影作 eigsh ``v0`` (子空间单调增长,
+        旧字符串 ⊆ 新字符串)。只减少 ARPACK 迭代次数, 收敛值不变
+        (E diff ≤ 1e-10)。缓存生命周期 = ``_Subspace`` 实例生命周期。
+        默认 ``False`` 零回归。
 
     Returns
     -------
@@ -991,7 +1070,8 @@ def solve_sqd_active(
     if max_strings is None:
         max_strings = full_size
 
-    sub = _Subspace(h1e, eri, norb, nelec, backend=backend)
+    sub = _Subspace(h1e, eri, norb, nelec, backend=backend,
+                    warm_start=warm_start)
     str_a: list = []
     str_b: list = []
     e_prev = np.inf
@@ -1312,6 +1392,8 @@ def solve_sqd_ev(
     # ---- 方向 C: 三激发定向注入 (round_008): 透传 ----
     triple_injection: bool = False,
     n_triples_per_round: int = 0,
+    # ---- round_010: warm-start v0 透传 (默认关零回归) ----
+    warm_start: bool = False,
     backend: str = "cpu",
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
@@ -1379,6 +1461,7 @@ def solve_sqd_ev(
         prune_keep=prune_keep,
         triple_injection=triple_injection,
         n_triples_per_round=n_triples_per_round,
+        warm_start=warm_start,
         backend=backend,
     )
     if len(trajectory) < 2:

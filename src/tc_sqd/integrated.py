@@ -554,6 +554,8 @@ def solve_sqd_best(
     n_triples_per_round: int = 0,
     # ---- GPU hybrid backend (round_005) ----
     backend: str = "cpu",
+    # ---- round_010: warm-start v0 透传 (默认关零回归) ----
+    warm_start: bool = False,
 ) -> Union[float, dict]:
     """当前最优 SQD 配置 (2026-08-10 跨体系实测最优; benchmark/测试用)。
 
@@ -605,6 +607,12 @@ def solve_sqd_best(
     backend : {"cpu", "gpu"}
         round_005 hybrid 透传: "gpu" 时对角化引擎用 scipy eigsh + GPU matvec。
         默认 "cpu"。
+    warm_start : bool
+        round_010 warm-start v0 透传 (与 solve_sqd_active 同语义): ``True`` 时各
+        active (baseline 与各 evpt2 scale) 内部相邻轮子空间增长用上轮解态
+        warm-start 对角化, 只减迭代不改收敛值 (E diff ≤ 1e-10)。默认 ``False``
+        零回归。跨 scale 的 active 之间**不做**跨 run warm start (各首轮随机 v0
+        是预期行为)。
 
     Returns
     -------
@@ -641,6 +649,7 @@ def solve_sqd_best(
             prune_keep=prune_keep,
             triple_injection=triple_injection,
             n_triples_per_round=n_triples_per_round,
+            warm_start=warm_start,
             backend=backend)
         return E, (traj[-1] if traj else None)
 
