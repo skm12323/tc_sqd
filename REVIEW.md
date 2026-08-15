@@ -104,7 +104,7 @@ pyscf 2.14.0 / tensorcircuit 0.12.0。
 
 密度矩阵构造 + 退相干/振幅阻尼/去极化 Kraus 通道 + `diag→bsm` 采样。`gpu=True` 走 cupy。
 
-机制（D:\explore 方向1/2 验证）：**退相干 diag 不变（SQD 免疫）**，振幅阻尼改 diag（T₁ 主导误差），
+机制（早期方向 1/2 验证）：**退相干 diag 不变（SQD 免疫）**，振幅阻尼改 diag（T₁ 主导误差），
 去极化保迹。`has_gpu()` 探测 cupy 可用性。
 
 6 个测试全 PASS（`tests/test_noise.py`）：密度矩阵构造、退相干 diag 不变、振幅阻尼改 diag、
@@ -124,7 +124,7 @@ vs 实测 3.04e-3**（几乎完美）。
 5 个测试全 PASS（`tests/test_predict.py`）：γ_T1 边界/单调、预测结构、激发态 ~3×、
 shots 增采样误差降、max_depth 激发态更严。
 
-### hardware 模块（腾讯 qcloud 真机一站式，整合 D:\qubit_toolkit + D:\exp）
+### hardware 模块（腾讯 qcloud 真机一站式，整合早期 qubit_toolkit 与噪声实验代码）
 
 - `load_calibration`：从 tc qcloud 设备读校准快照（T₁/T₂/读出/CZ/拓扑）。
 - `select_qubits`：多起点贪心选最优 nq 物理 qubit 子图（min T₂ 最大化 + 连通 + BFS 序映射）。

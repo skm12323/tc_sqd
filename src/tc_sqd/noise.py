@@ -11,7 +11,7 @@ GPU: cupy 可选。gpu=True 且装了 cupy 时, 密度矩阵运算走 GPU (大�
   - qiskit Aer 的噪声模拟能力 (密度矩阵 Kraus 通道)
   - tc 的 GPU 优势 (cupy 后端)
 
-参考: D:\\explore 的方向1/2 (SQD 噪声鲁棒性) 验证了这些通道对 SQD 的影响。
+参考: 早期方向 1/2 的 SQD 噪声鲁棒性实验验证了这些通道对 SQD 的影响。
 
 **内存边界**: 密度矩阵是 2^nq × 2^nq 的复数矩阵 (complex128 约 16·4^nq 字节):
 nq=10 约 16 MiB, nq=12 约 0.25 GiB, nq=14 约 4 GiB, nq=16 约 68 GiB。

@@ -1,6 +1,6 @@
 """tc_sqd.hardware —— 腾讯 qcloud 真机 SQD 一站式工具。
 
-整合 D:\\qubit_toolkit (select_qubits) + D:\\exp (真机 SQD 流水线) 到 tc_sqd,
+整合早期 select_qubits 与真机 SQD 流水线代码到 tc_sqd,
 使其成为腾讯真机 SQD 的全栈工具 (qiskit 生态没有针对腾讯硬件的整合):
 
   - ``load_calibration``    从 tc qcloud 设备读校准快照 (T1/T2/读出/CZ/拓扑)

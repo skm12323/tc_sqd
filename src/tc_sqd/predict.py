@@ -1,7 +1,7 @@
 """tc_sqd.predict —— SQD 噪声容限预测器 (基于已验证的噪声鲁棒性机制)。
 
 给定真机校准 (T1) + 电路 (depth/单门时间) + shots, 解析预测 SQD 基态/激发态可达精度。
-这是 tc_sqd 的独有工具 (qiskit-addon-sqd 没有), 来自 D:\\explore 方向1/2 的机制发现。
+这是 tc_sqd 的独有工具 (qiskit-addon-sqd 没有), 来自早期方向 1/2 的机制发现。
 
 模型 (误差 vs FCI, Ha):
   ε_SQD = ε_sample + ε_T1 + ε_T2(=0) + ε_readout(=0)
@@ -11,7 +11,7 @@
     γ_T1        = 1 - exp(-depth × t_gate / T1)
     T2 (退相干) = 免疫 (方向1: 计算基 diag 不变); 读出 = recover 纠正 (CAR)
 
-校准: KS, KT1 从 H4 (norb=4) 数据最小二乘。**注意**: KT1 是 shots 依赖的 (D:\\explore
+校准: KS, KT1 从 H4 (norb=4) 数据最小二乘。**注意**: KT1 是 shots 依赖的 (早期实验
 calibrate_kt1 发现高 shots 下 KT1->0, recover 吸收 T1), 本模型适用于子空间未饱和的
 中低 shots 区间; 高 shots 时实际 T1 误差会小于预测 (更乐观)。
 """
