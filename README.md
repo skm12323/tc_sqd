@@ -323,3 +323,12 @@ tc_sqd/
 ```
 
 > 审查与验证历史（4 轮）见 [`REVIEW.md`](REVIEW.md)。
+
+## License
+
+Apache License 2.0（见 [LICENSE](LICENSE)）。
+
+**Attribution**：`tc_sqd.selected_ci_gpu` 的 GPU RawKernel 派生自
+[PySCF](https://github.com/pyscf/pyscf)（Apache 2.0）`pyscf/fci/select_ci.c` 的
+selected-CI contraction 算法逻辑；`tc_sqd.matrixfree` 的 linkstr 算法参考其
+`direct_spin1.c` 实现。

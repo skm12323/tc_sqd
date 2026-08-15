@@ -7,6 +7,7 @@ name = "tc_sqd"
 version = "0.1.0"
 description = "Sample-based Quantum Diagonalization (SQD) for TensorCircuit"
 readme = "README.md"
+license = "Apache-2.0"
 requires-python = ">=3.10,<3.13"
 dependencies = [
     "tensorcircuit==0.12.0",
