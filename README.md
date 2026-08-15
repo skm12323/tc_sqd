@@ -79,7 +79,7 @@ pip install -e .          # editable 安装, 之后任何目录都可 import tc_
 
 `pip install -e .` 以 editable 模式安装 tc_sqd（源码改动即时生效，无需 PYTHONPATH）。
 也可仅装依赖：`pip install -r requirements.txt`，但运行范例时需手动设置
-`PYTHONPATH=/mnt/d/tc_sqd/src`。
+`PYTHONPATH=/path/to/tc_sqd/src`。
 
 依赖：`tensorcircuit==0.12.0`、`numpy>=1.17`、`scipy>=1.10`、`pyscf>=2.0`。
 
