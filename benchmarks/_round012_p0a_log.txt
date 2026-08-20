@@ -1,0 +1,35 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+
+=== baseline_no_triple ===
+  E=-108.768685373989  err=3.63e-07  dim=824464  n_str=908  max_str=908  sigma2=6.87e-06  wall=114s  n_mv=2631  n_diag=11
+  diag str_a 序列(前12): [154, 342, 467, 593, 682, 775, 853, 883, 900, 908, 908] ... 末3: [900, 908, 908]
+
+=== triple_floor1e-7 ===
+  E=-108.768685373989  err=3.63e-07  dim=824464  n_str=908  max_str=908  sigma2=6.87e-06  wall=113s  n_mv=2572  n_diag=12
+  diag str_a 序列(前12): [154, 342, 467, 593, 682, 775, 853, 883, 900, 908, 908, 908] ... 末3: [908, 908, 908]
+
+=== triple_floor1e-12 ===
+  E=-108.768685737689  err=2.25e-10  dim=853776  n_str=924  max_str=924  sigma2=0.00e+00  wall=116s  n_mv=2563  n_diag=13
+  diag str_a 序列(前12): [154, 342, 467, 593, 682, 775, 853, 884, 903, 914, 915, 924] ... 末3: [915, 924, 924]
+
+=== triple_floor0 ===
+  E=-108.768685737689  err=2.25e-10  dim=853776  n_str=924  max_str=924  sigma2=0.00e+00  wall=114s  n_mv=2583  n_diag=13
+  diag str_a 序列(前12): [154, 342, 467, 593, 682, 775, 853, 884, 903, 914, 915, 924] ... 末3: [915, 924, 924]
+
+
+==============================================================================
+=== P0a 诊断汇总 ===
+label                  pt2_floor        dim  n_str        err     sigma2   wall
+------------------------------------------------------------------------------
+baseline_no_triple     off           824464    908   3.63e-07   6.87e-06  113.6
+triple_floor1e-7       1e-07         824464    908   3.63e-07   6.87e-06  112.5
+triple_floor1e-12      1e-12         853776    924   2.25e-10   0.00e+00  115.9
+triple_floor0          0e+00         853776    924   2.25e-10   0.00e+00  114.2
+
+全空间 FCI: dim=853776, n_str=924, err=0 (精确)
+当前覆盖:   dim=824464, n_str=908 (缺 16)
+E_FCI(e_ref) = -108.768685737464
+
+[P0a 判定] dim 补全到全空间（triple_floor1e-12）——覆盖断链被 pt2_floor 门控修复；err=2.25e-10（应≈0）
+
+saved /mnt/d/tc_sqd/benchmarks/_round012_p0a_coverage.json
