@@ -53,6 +53,11 @@ numpy≥2 / jax 的硬性要求**。
   收敛仅 1.7×）；distill 依赖首轮 |Ψ⟩ 质量（近收敛边际、远未收敛有害）；PT2 修正普适。
   adaptive NO 换基在大体系默认参数下差于 active（子空间缩）；UCJ 采样需 CCSD 收敛
   （强关联 R=3.0 不收敛则失效）。详见 REVIEW「L1/L2 改进实验」
+  **BFS 覆盖闭包**（`coverage_closure=True`，2026-08-20 round_012）：采样得高权重字符串后，
+  单激发 BFS 确定性补全到 `max_strings` 上限（默认全空间）。N₂/cc-pVDZ (12,12) @500 shots
+  采得 908/924 串（97.8%），BFS 补全缺 16 串 → 全空间 FCI（err 3.6e-7→2.25e-10，1600×，
+  sigma²→0，wall 1.1×，**3 seed 无关**）。修复 round_008 triple 注入的 `pt2_floor` 断链
+  （默认门控 1e-7 过滤低分中间父串→BFS 断）。大体系全空间不可对角化时给较小 `max_strings`。
 - **OBMP2 自洽方法 + OBDF 下折叠**（`obmp2`，2026-08-10）：自旋轨道显式实现 Tran 2021
   一体相关势（1st+2nd BCH、Ω̂ 对称化），`solve_obmp2` 自洽收敛 E≈CCSD（N₂/STO-3G 平衡差
   0.3 mHa）。`obdf_downfold` 把外部相关折叠进活性 h1e（`H_OBDF=H_CAS+scale·v^ext`，仅改

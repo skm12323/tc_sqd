@@ -1773,3 +1773,58 @@ eri_ββ）通道分解——**数据结构与 PySCF `direct_uhf` 约定逐字�
 
 **首期范围外**（文档已标注）：_Subspace（solve_sqd_active/ev/best/HCI/CIPSI）与
 selected_ci_gpu/linkstr 对自旋分辨输入 raise——后续如需在 active 闭环中用 UHF 再扩展。
+
+---
+
+## Round 012：BFS 覆盖闭包 coverage_closure（2026-08-20，已验证）
+
+### 问题与根因
+
+round_008 triple_injection=True 但 12,12 dim 不变（824,464 = 908²，缺 16 字符串）。
+**根因定位**：`cipsi.py` triple pass 的 `if abs(v) < pt2_floor: break`（默认
+`pt2_floor=1e-7`）过滤掉低分**中间父串**，单激发 BFS 链断裂，永远到不了由低分
+中间串连接的缺失字符串。round_008 从未扫 `pt2_floor`——这是未验证的缺口。
+
+### P0a 零代码参数门控（4 配置，12,12 @500 warm GPU）
+
+| pt2_floor | dim | n_str | err | sigma² | wall |
+|---|---|---|---|---|---|
+| off (no triple) | 824,464 | 908 | 3.63e-7 | 6.87e-6 | 114s |
+| 1e-7 (=round008) | 824,464 | 908 | 3.63e-7 | 6.87e-6 | 113s |
+| **1e-12** | **853,776** | **924** | **2.25e-10** | **0** | 116s |
+| **0** | **853,776** | **924** | **2.25e-10** | **0** | 114s |
+
+降 floor 后 BFS 从 908 单激发可达全部 924（缺 16），dim 补全到全空间 FCI。
+err 3.63e-7 → 2.25e-10 = **1600×**，wall 1.02×（仅补 16 串 +1-2 次 diag）。
+
+### coverage_closure 特性（commit 325c25d）
+
+把"pt2_floor 调到 0"封装为自描述 API：`coverage_closure=True` 时 ① 强制
+`triple_injection=True`；② triple pass 用 `_triple_floor=0`（`abs(v)<0` 永不 break）。
+主循环 PT2 选态仍用 `pt2_floor`（两个 floor 解耦）。护栏：`max_strings` 上界
+（默认全空间，不超界枚举）。默认 `False` 零回归。透传 active/ev/best/improved。
+
+### R5 跑分（3 seed + 体系矩阵）
+
+| 体系 | seed | dim | err | wall |
+|---|---|---|---|---|
+| 12,12 baseline | 0 | 824,464 | 3.63e-7 | 115s |
+| 12,12 closure | 0/1/2 | 853,776 (全空间) | 2.25e-10 | 124-132s |
+| 10o closure | 0 | 63,504 (全空间) | 1.58e-10 | 4.1s |
+| STO-3G closure | 0 | 14,400 (全空间) | 4.87e-9 | 11.2s |
+
+- P0：err≤1e-9 ✅、dim=全空间 ✅、wall≤1.5× ✅
+- P0' 零回归：R4 全库 228 收集 0 失败（217+9 passed + 1xfail + 1xpass）
+- P1：10o/STO-3G 补全到全空间=FCI ✅
+- **seed 无关**：3 seed 全部 dim=853,776 + err=2.25e-10（BFS 确定性）
+
+### 认知更新
+
+- 12,12 的全部残余误差（3.63e-7）来自**覆盖缺口**（缺失 16 串），非对角化容差或 PT2。
+- closure 补全到全空间 = FCI：是"采样（得 908 高权重串）+ 确定性 BFS 闭包（补 16 串）"
+  的混合方案，比冷启动 FCI 快 ~1.4×（warm 增量 diag）。
+- **北极星对照**：闭包后 err 2.25e-10 远超 SHCI 同维度（3.8e-11 量级）——但因补全到
+  全空间=FCI，这不是纯采样式覆盖突破。纯采样式（不闭包）仍 3.63e-7，采样式 vs SHCI
+  确定性选态的本质差距仍在（round_008 结论维持）。
+- **证伪更新**：round_008 的"triple BFS 不可补全全空间"结论需修正——不是图不连通，
+  是 `pt2_floor` 门控断链；降为 0 后单激发图连通性成立。
