@@ -1,0 +1,20 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+============================= test session starts ==============================
+platform linux -- Python 3.10.20, pytest-9.1.1, pluggy-1.6.0 -- /home/lenovo/miniconda/envs/tc/bin/python
+rootdir: /mnt/d/tc_sqd
+configfile: pyproject.toml
+collecting ... collected 11 items
+
+tests/test_subspace_gpu.py::test_subspace_default_backend_cpu PASSED     [  9%]
+tests/test_subspace_gpu.py::test_subspace_small_dim_always_cpu PASSED    [ 18%]
+tests/test_subspace_gpu.py::test_solve_sqd_active_default_cpu_smoke PASSED [ 27%]
+tests/test_subspace_gpu.py::test_gpu_graceful_fallback_no_cupy PASSED    [ 36%]
+tests/test_subspace_gpu.py::test_gpu_correctness_large_subspace PASSED   [ 45%]
+tests/test_subspace_gpu.py::test_gpu_performance_large_subspace XPASS    [ 54%]
+tests/test_subspace_gpu.py::test_sigma_cached_eri_correctness PASSED     [ 63%]
+tests/test_subspace_gpu.py::test_subspace_gpu_lazy_hop_fallback_cupyx PASSED [ 72%]
+tests/test_subspace_gpu.py::test_subspace_gpu_lazy_hop_fallback_hybrid PASSED [ 81%]
+tests/test_subspace_gpu.py::test_three_gpu_eigsh_modes_energy_consistency PASSED [ 90%]
+tests/test_subspace_gpu.py::test_p0_prime_per_matvec_eri_cache_isolation XFAIL [100%]
+
+============= 9 passed, 1 xfailed, 1 xpassed in 366.55s (0:06:06) ==============
