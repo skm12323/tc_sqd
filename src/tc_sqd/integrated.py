@@ -556,6 +556,8 @@ def solve_sqd_best(
     backend: str = "cpu",
     # ---- round_010: warm-start v0 透传 (默认关零回归) ----
     warm_start: bool = False,
+    # ---- round_012: BFS 覆盖闭包透传 (默认关零回归) ----
+    coverage_closure: bool = False,
 ) -> Union[float, dict]:
     """当前最优 SQD 配置 (2026-08-10 跨体系实测最优; benchmark/测试用)。
 
@@ -613,6 +615,12 @@ def solve_sqd_best(
         warm-start 对角化, 只减迭代不改收敛值 (E diff ≤ 1e-10)。默认 ``False``
         零回归。跨 scale 的 active 之间**不做**跨 run warm start (各首轮随机 v0
         是预期行为)。
+    coverage_closure : bool
+        round_012 BFS 覆盖闭包透传 (与 solve_sqd_active 同语义): ``True`` 时对每个
+        shots 尺度的 active 强制启用 triple 注入并把 PT2 门控降为 0, 使单激发 BFS
+        从采样得到的高权重字符串补全到 ``max_strings`` 上限 (默认全空间)。12,12
+        实测: 采样得 908/924 串, BFS 补全到全 924 → dim 853,776 (全空间 FCI),
+        err 3.6e-7→2.3e-10, sigma²→0, wall 仅 1.02×。默认 ``False`` 零回归。
 
     Returns
     -------
@@ -650,7 +658,8 @@ def solve_sqd_best(
             triple_injection=triple_injection,
             n_triples_per_round=n_triples_per_round,
             warm_start=warm_start,
-            backend=backend)
+            backend=backend,
+            coverage_closure=coverage_closure)
         return E, (traj[-1] if traj else None)
 
     # baseline (n_shots): active 变分 + PT2

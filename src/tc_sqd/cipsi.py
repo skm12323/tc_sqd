@@ -938,6 +938,8 @@ def solve_sqd_active(
     # ---- round_010: warm-start v0 (默认关零回归) ----
     warm_start: bool = False,
     backend: str = "cpu",
+    # ---- round_012: BFS 覆盖闭包 (默认关零回归) ----
+    coverage_closure: bool = False,
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
 
@@ -1050,6 +1052,22 @@ def solve_sqd_active(
         旧字符串 ⊆ 新字符串)。只减少 ARPACK 迭代次数, 收敛值不变
         (E diff ≤ 1e-10)。缓存生命周期 = ``_Subspace`` 实例生命周期。
         默认 ``False`` 零回归。
+    coverage_closure : bool
+        **round_012 BFS 覆盖闭包**: ``True`` 时强制启用 ``triple_injection`` 并将
+        triple pass 的 PT2 门控降为 0 (``abs(v) < 0`` 永不成立 → 不 break),
+        使单激发 BFS 从已选字符串出发补全到 ``max_strings`` 上限 (默认全空间)。
+
+        **动机**: round_008 ``triple_injection=True`` 但 dim 不变 (824,464)，
+        根因是默认 ``pt2_floor=1e-7`` 在本函数 :py:obj:`triple` pass 的
+        ``if abs(v) < pt2_floor: break`` 处过滤掉低分**中间父串**，BFS 链断裂
+        永远到不了缺失字符串。round_012 P0a 实测：``pt2_floor≤1e-12`` 后 BFS
+        从 908 单激发可达全部 924 → dim 853,776 (全空间 FCI), err 3.6e-7→2.3e-10
+        (1600×), sigma²→0, wall 1.02× (仅补 16 串 +1-2 次 diag)。
+
+        ``coverage_closure`` 是此修复的显式开关 (比 "把 pt2_floor 调到 0" 更
+        自描述)。护栏: BFS 补全受 ``max_strings`` 上界约束 (默认 = ``C(norb,na)``，
+        不会超全空间); 大体系全空间不可对角化时给较小 ``max_strings``。
+        默认 ``False`` 零回归 (triple pass 仍用 ``pt2_floor`` 门控)。
 
     Returns
     -------
@@ -1266,6 +1284,11 @@ def solve_sqd_active(
     # 打分复用 pt2_matrix_elements 一次 contract_2e 得全部候选 <a|H|Ψ>, 按新字符串
     # 聚合 EN-PT2, 注入 top-N。默认 triple_injection=False 整块跳过 = 零回归。
     # 注入在 prune 之前 (剪枝会剪掉高阶字符串的父串, theory §1.4)。
+    # round_012: coverage_closure 强制启用 triple 并把门控降为 0 (BFS 全空间闭包)。
+    # 默认 (coverage_closure=False) _triple_floor=pt2_floor → 与改动前逐位一致。
+    if coverage_closure:
+        triple_injection = True
+    _triple_floor = 0.0 if coverage_closure else pt2_floor
     if triple_injection:
         E, c2d, sa, sb = sub.diag(str_a, str_b)  # 种子 c2d (当前最好波函数)
         set_a = set(int(x) for x in sa)
@@ -1298,7 +1321,7 @@ def solve_sqd_active(
             ranked = sorted(agg.items(), key=lambda kv: -abs(kv[1]))
             add = []
             for s_new, v in ranked:
-                if abs(v) < pt2_floor:
+                if abs(v) < _triple_floor:
                     break
                 if n_triples_per_round > 0 and len(add) >= n_triples_per_round:
                     break
@@ -1425,6 +1448,8 @@ def solve_sqd_ev(
     # ---- round_010: warm-start v0 透传 (默认关零回归) ----
     warm_start: bool = False,
     backend: str = "cpu",
+    # ---- round_012: BFS 覆盖闭包透传 (默认关零回归) ----
+    coverage_closure: bool = False,
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
 
@@ -1454,7 +1479,8 @@ def solve_sqd_ev(
     最终子空间剪枝 (默认 ``1.0`` = 不剪枝零回归; ``<1.0`` 剪低权重字符串后
     重对角化, 被剪 det 的关联进入 ``E_PT2`` 回补)。``triple_injection`` /
     ``n_triples_per_round`` (方向 C, round_008) 透传至 active 的末轮三激发
-    定向注入 (默认关零回归)。
+    定向注入 (默认关零回归)。``coverage_closure`` (round_012) 透传至 active 的
+    BFS 覆盖闭包 (默认关零回归)。
     correction : {"pt2", "evpt2", "ev"}
         修正方式 (见上)。``"pt2"`` = E+E_PT2 (推荐); ``"evpt2"`` = E_V vs E_PT2
         两点外推 (方向③, 不过冲); ``"ev"`` = σ² 线性外推 (诊断, 可能过冲)。
@@ -1493,6 +1519,7 @@ def solve_sqd_ev(
         n_triples_per_round=n_triples_per_round,
         warm_start=warm_start,
         backend=backend,
+        coverage_closure=coverage_closure,
     )
     if len(trajectory) < 2:
         raise ValueError(f"轨迹点不足 (<2), 无法修正: got {len(trajectory)}.")
