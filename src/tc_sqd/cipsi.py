@@ -169,11 +169,11 @@ class _Subspace:
         #   "cpu_fallback" (逃生舱): scipy eigsh + contract_2e (GPU 不参与 matvec),
         #                   隔离 "慢在 eigsh 还是 init" 用。默认 backend="cpu" 不读此参数。
         self.gpu_eigsh_mode = gpu_eigsh_mode
-        # round_013 eigsh tol 覆盖: None = 原逐分支硬编码行为 (hybrid/cupyx/
-        # cpu_fallback 用 tol=1e-10; except 回退与 CPU 分支不传 tol=0), 零回归。
-        # 设置数值后**所有** eigsh 调用统一用该 tol (含 except/CPU 分支)。
-        # 动机: round_005 实证 cpu_fallback tol=1e-10 vs tol=0 在 dim 1e5/5e5
-        # 快 1.46× (E diff ~1e-13); round_013 消融 GPU hybrid 1e-10 vs 1e-8。
+        # round_013 eigsh tol 覆盖: None = 逐分支默认 (hybrid/cupyx/cpu_fallback
+        # 与 except/CPU 分支全用 tol=1e-10)。设置数值后**所有** eigsh 调用统一
+        # 用该 tol。默认值来历: round_005 实证 cpu_fallback tol=1e-10 vs 0 在
+        # dim 1e5/5e5 快 1.46× (E diff ~1e-13); round_013 消融 (10o closure)
+        # tol=0→1e-10 快 1.8×、→1e-8 快 3.6×, err 均不变 (1.58e-10)。
         self.eigsh_tol = eigsh_tol
         # round_010 warm-start v0: 默认 False = 不读不写缓存, 三处 eigsh 逐字
         # 一致 (零回归)。True 时缓存上次成功 diag 的 (sa, sb, c2d), 下次 diag 经
@@ -222,12 +222,14 @@ class _Subspace:
         # v0=None 必须不传该 kwarg (scipy 显式 v0=None 与省略语义可能不同):
         kw = {"v0": v0} if v0 is not None else {}
 
-        # round_013: eigsh_tol 覆盖 (None = 原逐分支行为, 零回归)。
-        # _tol_fix: hybrid/cupyx/cpu_fallback 分支用 (原硬编码 1e-10)。
-        # _kw_tol:  except 回退与 CPU 分支用 (原不传 tol=0; 设置后传)。
+        # round_013: eigsh_tol 覆盖 (None = 逐分支默认, 见 __init__ 注释)。
+        # _tol_fix: hybrid/cupyx/cpu_fallback 分支用 (默认 1e-10)。
+        # _kw_tol:  except 回退与 CPU 分支用 (round_013 起默认 1e-10;
+        #           原为不传 tol=0 机器精度 —— round_005/round_013 双实验
+        #           实证 1e-10 快 1.46-1.8× 且 E diff ≤1e-13, P0 门槛满足)。
         _t = self.eigsh_tol
         _tol_fix = _t if _t is not None else 1e-10
-        _kw_tol = {} if _t is None else {"tol": _t}
+        _kw_tol = {"tol": (_t if _t is not None else 1e-10)}
 
         # round_010 仪表: 本次 diag 的 matvec 次数 (每 diag 清零, matvec 闭包自增;
         # P0'/P2 验收锚)。纯整数自增, 不触数值路径。
@@ -1086,14 +1088,17 @@ def solve_sqd_active(
         不会超全空间); 大体系全空间不可对角化时给较小 ``max_strings``。
         默认 ``False`` 零回归 (triple pass 仍用 ``pt2_floor`` 门控)。
     eigsh_tol : float | None
-        **round_013 eigsh 收敛容差覆盖**: ``None`` (默认) = 原逐分支行为
-        (GPU hybrid/cupyx/cpu_fallback 用 ``tol=1e-10``; except 回退与 CPU
-        分支不传 ``tol`` = 0 机器精度), 零回归。设置数值后**所有** eigsh
-        调用统一用该 tol。动机: round_005 实证 CPU 路径 ``tol=1e-10`` vs
-        ``tol=0`` 在 dim 1e5/5e5 快 **1.46×** (E diff ~1e-13); round_013
-        消融 GPU hybrid ``1e-10`` vs ``1e-8``。注意 tol 是**相对**容差
-        (ARPACK 停机准则 ``|Ritz 估计| ≤ tol·|E|``), 放松会减 matvec 次数
-        但终态能量精度同步下降, 最终 diag 前请核对 err 需求。
+        **round_013 eigsh 收敛容差覆盖**: ``None`` (默认) = 逐分支默认,
+        **所有分支都用 ``tol=1e-10``** (round_013 起 CPU/except 分支原为
+        ``tol=0`` 机器精度 —— round_005/013 双实验实证 1e-10 快 1.46-1.8×
+        且 E diff ≤1e-13, P0 门槛满足后已改为默认)。设置数值后**所有**
+        eigsh 调用统一用该 tol。**加速配方** (round_013 消融实测, err 均不变):
+        - 闭包路径 (coverage_closure=True): GPU 可 ``eigsh_tol=1e-6``
+          (n_mv 2.2×, wall 0.54×) + ``n_active_per_round=90`` (n_mv 1.9×);
+        - CPU 路径可 ``eigsh_tol=1e-8`` (10o wall 0.27×, 3.6× 加速)。
+        注意 tol 是**相对**容差 (ARPACK 停机准则 ``|Ritz 估计| ≤ tol·|E|``),
+        放松会减 matvec 次数; 实测 ARPACK 实际收敛远好于停机界, 但非闭包
+        路径 (残余误差由缺串主导) 与大体系请自行核对 err 需求。
 
     Returns
     -------

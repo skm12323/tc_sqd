@@ -4,7 +4,7 @@
   - P0' 零回归: eigsh_tol=None (默认) 与不传代码路径等价 (LiH dense 锚 +
     active 层 E 一致)。
   - 功能 (CPU 分支, dim>1000 eigsh 路径): _Subspace.diag 直接消融 ——
-    松 tol (1e-4) 比紧 tol (None=tol 0) 少 matvec 且 E 在合理精度内;
+    松 tol (1e-4) 比紧 tol (None=默认 1e-10) 少 matvec 且 E 在合理精度内;
     eigsh_tol=1e-12 与 None E 一致 (都近机器精度)。
   - 透传: solve_sqd_active / solve_sqd_ev / solve_sqd_best 接 eigsh_tol
     生效 (完成 + E 与默认一致)。
@@ -66,14 +66,14 @@ def test_eigsh_tol_default_none_path_equivalent_dense():
 
 def test_eigsh_tol_default_none_path_equivalent_subspace():
     """P0' 锚 (_Subspace 层, CPU eigsh 路径): 不传 vs eigsh_tol=None 同代码
-    路径 (都 tol=0), 同一实例连续两次 diag E 一致 (收敛值 tol=0 稳定)。"""
+    路径 (都 = 默认 1e-10), 同一实例连续两次 diag E 一致 (收敛值稳定)。"""
     data = _n2_data()
     sa, sb = _fixed_strings(data.norb, data.nelec)
     sub = _Subspace(data.h1e, data.eri, data.norb, data.nelec)
     e1, _, _, _ = sub.diag(sa, sb)
     e2, _, _, _ = sub.diag(sa, sb)   # 同实例第二次 (tol 仍 0)
     assert np.isclose(e1, e2, rtol=1e-12, atol=1e-12), (
-        f"tol=0 两次 diag 收敛值应稳定: {e1!r} vs {e2!r}")
+        f"默认 tol 两次 diag 收敛值应稳定: {e1!r} vs {e2!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -87,7 +87,7 @@ def test_subspace_diag_tol_ablation_cpu():
     sa, sb = _fixed_strings(norb, nelec, n_str=60)
     assert len(sa) * len(sb) == 3600 > 1000, "须走 eigsh 分支 (dim>1000)"
 
-    sub_tight = _Subspace(h1e, eri, norb, nelec)                    # tol=0
+    sub_tight = _Subspace(h1e, eri, norb, nelec)          # None = 默认 1e-10
     sub_112 = _Subspace(h1e, eri, norb, nelec, eigsh_tol=1e-12)
     sub_loose = _Subspace(h1e, eri, norb, nelec, eigsh_tol=1e-4)
 
@@ -99,14 +99,15 @@ def test_subspace_diag_tol_ablation_cpu():
     n_loose = sub_loose.last_n_mv
 
     assert np.isclose(e_tight, e_112, rtol=1e-10, atol=1e-10), (
-        f"tol=1e-12 应与 tol=0 一致: {e_tight!r} vs {e_112!r}")
+        f"tol=1e-12 应与默认 1e-10 一致: {e_tight!r} vs {e_112!r}")
     assert abs(e_loose - e_tight) < 1e-3, (
         f"松 tol=1e-4 E 仍应收敛到紧值附近: {e_tight!r} vs {e_loose!r} "
         f"diff={abs(e_loose - e_tight):.2e}")
     assert n_loose < n_tight, (
         f"松 tol 应减少 matvec: loose={n_loose} vs tight={n_tight}")
-    assert n_112 <= n_tight + 50, (          # 1e-12 ≈ tol=0, 允许 v0 涨落
-        f"tol=1e-12 与 tol=0 matvec 同量级: {n_112} vs {n_tight}")
+    assert n_112 + 100 >= n_tight, (       # 1e-12 更紧, 迭代不应显著少于 1e-10
+        f"tol=1e-12 (更紧) 迭代应 ≥ 默认 1e-10 (允许 v0 涨落): "
+        f"{n_112} vs {n_tight}")
 
 
 # --------------------------------------------------------------------------- #
@@ -114,7 +115,7 @@ def test_subspace_diag_tol_ablation_cpu():
 # --------------------------------------------------------------------------- #
 def test_solve_sqd_active_eigsh_tol_plumbing():
     """透传锚: solve_sqd_active(eigsh_tol=1e-10, CPU) 完成且 E 与默认
-    (tol=0) 一致 (rtol 1e-9, ARPACK v0 随机涨落内)。"""
+    (1e-10) 一致 (rtol 1e-9, ARPACK v0 随机涨落内)。"""
     data = _n2_data()
     h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
     bsm = np.random.default_rng(0).random((40, 2 * norb)) > 0.5
