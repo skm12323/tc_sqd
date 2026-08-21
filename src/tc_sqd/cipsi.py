@@ -143,7 +143,8 @@ class _Subspace:
     def __init__(self, h1e, eri, norb, nelec, *,
                  backend: str = "cpu",
                  gpu_eigsh_mode: str = "hybrid",
-                 warm_start: bool = False):
+                 warm_start: bool = False,
+                 eigsh_tol: Optional[float] = None):
         self.h1e = np.asarray(h1e)
         if isinstance(eri, (tuple, list)):
             raise ValueError(
@@ -168,6 +169,12 @@ class _Subspace:
         #   "cpu_fallback" (逃生舱): scipy eigsh + contract_2e (GPU 不参与 matvec),
         #                   隔离 "慢在 eigsh 还是 init" 用。默认 backend="cpu" 不读此参数。
         self.gpu_eigsh_mode = gpu_eigsh_mode
+        # round_013 eigsh tol 覆盖: None = 原逐分支硬编码行为 (hybrid/cupyx/
+        # cpu_fallback 用 tol=1e-10; except 回退与 CPU 分支不传 tol=0), 零回归。
+        # 设置数值后**所有** eigsh 调用统一用该 tol (含 except/CPU 分支)。
+        # 动机: round_005 实证 cpu_fallback tol=1e-10 vs tol=0 在 dim 1e5/5e5
+        # 快 1.46× (E diff ~1e-13); round_013 消融 GPU hybrid 1e-10 vs 1e-8。
+        self.eigsh_tol = eigsh_tol
         # round_010 warm-start v0: 默认 False = 不读不写缓存, 三处 eigsh 逐字
         # 一致 (零回归)。True 时缓存上次成功 diag 的 (sa, sb, c2d), 下次 diag 经
         # _project_v0 投影作 eigsh v0 —— 只减少 ARPACK 迭代, 收敛值不变
@@ -214,6 +221,13 @@ class _Subspace:
             v0 = _project_v0(sa_o, sb_o, c2d_o, sa, sb)
         # v0=None 必须不传该 kwarg (scipy 显式 v0=None 与省略语义可能不同):
         kw = {"v0": v0} if v0 is not None else {}
+
+        # round_013: eigsh_tol 覆盖 (None = 原逐分支行为, 零回归)。
+        # _tol_fix: hybrid/cupyx/cpu_fallback 分支用 (原硬编码 1e-10)。
+        # _kw_tol:  except 回退与 CPU 分支用 (原不传 tol=0; 设置后传)。
+        _t = self.eigsh_tol
+        _tol_fix = _t if _t is not None else 1e-10
+        _kw_tol = {} if _t is None else {"tol": _t}
 
         # round_010 仪表: 本次 diag 的 matvec 次数 (每 diag 清零, matvec 闭包自增;
         # P0'/P2 验收锚)。纯整数自增, 不触数值路径。
@@ -289,7 +303,7 @@ class _Subspace:
                         self.last_n_mv += 1
                         return np.asarray(_gpu_sigma(v).get()).ravel()
                     op = LinearOperator((dim, dim), matvec=matvec, dtype=np.float64)
-                    ev, cv = eigsh(op, k=1, which="SA", tol=1e-10, maxiter=3000, **kw)
+                    ev, cv = eigsh(op, k=1, which="SA", tol=_tol_fix, maxiter=3000, **kw)
                     E, c1d = float(ev[0]), np.asarray(cv).ravel()
                 elif self.gpu_eigsh_mode == "cupyx":
                     # round_004 现状 (诊断/调参/方向 B 基线) + 方向 C maxiter 护栏。
@@ -302,12 +316,12 @@ class _Subspace:
                         self.last_n_mv += 1
                         return _gpu_sigma(v).reshape(-1)
                     A = cp_LO((dim, dim), matvec=matvec, dtype=np.float64)
-                    ev, cv = cp_eigsh(A, k=1, which="SA", tol=1e-10, maxiter=3000, **kw)
+                    ev, cv = cp_eigsh(A, k=1, which="SA", tol=_tol_fix, maxiter=3000, **kw)
                     E, c1d = float(ev[0]), np.asarray(cv).ravel()
                 else:  # "cpu_fallback" (逃生舱: scipy eigsh + contract_2e, GPU 不参与)
                     _build_cpu_hop()
                     op = LinearOperator((dim, dim), matvec=_counted(hop), dtype=np.float64)
-                    ev, cv = eigsh(op, k=1, which="SA", tol=1e-10, maxiter=3000, **kw)
+                    ev, cv = eigsh(op, k=1, which="SA", tol=_tol_fix, maxiter=3000, **kw)
                     E, c1d = float(ev[0]), np.asarray(cv).ravel()
             except Exception:
                 # OOM / cupyx 不收敛 (maxiter 触发 ArpackNoConvergence) / scipy 不收敛
@@ -315,13 +329,14 @@ class _Subspace:
                 # round_010: 同一 v0 照样有效 (同矩阵同子空间), 不浪费。
                 _build_cpu_hop()
                 op = LinearOperator((dim, dim), matvec=_counted(hop), dtype=np.float64)
-                ev, cv = eigsh(op, k=1, which="SA", maxiter=3000, **kw)
+                ev, cv = eigsh(op, k=1, which="SA", maxiter=3000, **_kw_tol, **kw)
                 E, c1d = float(ev[0]), np.asarray(cv).ravel()
         else:
-            # 分支 ②-CPU: scipy eigsh (默认, 与改造前逐字一致, L1 零回归)
+            # 分支 ②-CPU: scipy eigsh (默认, 与改造前逐字一致, L1 零回归;
+            # round_013: eigsh_tol 设置后本分支也用该 tol)
             _build_cpu_hop()
             op = LinearOperator((dim, dim), matvec=_counted(hop), dtype=np.float64)
-            ev, cv = eigsh(op, k=1, which="SA", maxiter=3000, **kw)
+            ev, cv = eigsh(op, k=1, which="SA", maxiter=3000, **_kw_tol, **kw)
             E, c1d = float(ev[0]), np.asarray(cv).ravel()
         c2d = c1d.reshape(nA, nB)
         # round_010: diag 成功后缓存 (gate 在 warm_start 上; 含 prune 收缩后的新态)
@@ -940,6 +955,8 @@ def solve_sqd_active(
     backend: str = "cpu",
     # ---- round_012: BFS 覆盖闭包 (默认关零回归) ----
     coverage_closure: bool = False,
+    # ---- round_013: eigsh tol 覆盖 (默认 None = 原行为零回归) ----
+    eigsh_tol: Optional[float] = None,
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
 
@@ -1068,6 +1085,15 @@ def solve_sqd_active(
         自描述)。护栏: BFS 补全受 ``max_strings`` 上界约束 (默认 = ``C(norb,na)``，
         不会超全空间); 大体系全空间不可对角化时给较小 ``max_strings``。
         默认 ``False`` 零回归 (triple pass 仍用 ``pt2_floor`` 门控)。
+    eigsh_tol : float | None
+        **round_013 eigsh 收敛容差覆盖**: ``None`` (默认) = 原逐分支行为
+        (GPU hybrid/cupyx/cpu_fallback 用 ``tol=1e-10``; except 回退与 CPU
+        分支不传 ``tol`` = 0 机器精度), 零回归。设置数值后**所有** eigsh
+        调用统一用该 tol。动机: round_005 实证 CPU 路径 ``tol=1e-10`` vs
+        ``tol=0`` 在 dim 1e5/5e5 快 **1.46×** (E diff ~1e-13); round_013
+        消融 GPU hybrid ``1e-10`` vs ``1e-8``。注意 tol 是**相对**容差
+        (ARPACK 停机准则 ``|Ritz 估计| ≤ tol·|E|``), 放松会减 matvec 次数
+        但终态能量精度同步下降, 最终 diag 前请核对 err 需求。
 
     Returns
     -------
@@ -1119,7 +1145,7 @@ def solve_sqd_active(
         max_strings = full_size
 
     sub = _Subspace(h1e, eri, norb, nelec, backend=backend,
-                    warm_start=warm_start)
+                    warm_start=warm_start, eigsh_tol=eigsh_tol)
     str_a: list = []
     str_b: list = []
     e_prev = np.inf
@@ -1450,6 +1476,8 @@ def solve_sqd_ev(
     backend: str = "cpu",
     # ---- round_012: BFS 覆盖闭包透传 (默认关零回归) ----
     coverage_closure: bool = False,
+    # ---- round_013: eigsh tol 覆盖透传 (默认 None 零回归) ----
+    eigsh_tol: Optional[float] = None,
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。
 
@@ -1520,6 +1548,7 @@ def solve_sqd_ev(
         warm_start=warm_start,
         backend=backend,
         coverage_closure=coverage_closure,
+        eigsh_tol=eigsh_tol,
     )
     if len(trajectory) < 2:
         raise ValueError(f"轨迹点不足 (<2), 无法修正: got {len(trajectory)}.")

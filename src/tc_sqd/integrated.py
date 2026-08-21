@@ -558,6 +558,8 @@ def solve_sqd_best(
     warm_start: bool = False,
     # ---- round_012: BFS 覆盖闭包透传 (默认关零回归) ----
     coverage_closure: bool = False,
+    # ---- round_013: eigsh tol 覆盖透传 (默认 None 零回归) ----
+    eigsh_tol: Optional[float] = None,
 ) -> Union[float, dict]:
     """当前最优 SQD 配置 (2026-08-10 跨体系实测最优; benchmark/测试用)。
 
@@ -659,7 +661,8 @@ def solve_sqd_best(
             n_triples_per_round=n_triples_per_round,
             warm_start=warm_start,
             backend=backend,
-            coverage_closure=coverage_closure)
+            coverage_closure=coverage_closure,
+            eigsh_tol=eigsh_tol)
         return E, (traj[-1] if traj else None)
 
     # baseline (n_shots): active 变分 + PT2

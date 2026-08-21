@@ -459,6 +459,51 @@ def test_p0_prime_per_matvec_eri_cache_isolation():
     )
 
 
+# --------------------------------------------------------------------------- #
+# round_013: eigsh_tol 覆盖 (hybrid 分支)
+# --------------------------------------------------------------------------- #
+@pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
+def test_hybrid_eigsh_tol_ablation():
+    """round_013 GPU hybrid 分支 eigsh_tol 消融锚。
+
+    固定子空间 (n_str=120, dim=14400 > 1000 -> GPU 分支):
+      - eigsh_tol=None (默认 = 原硬编码 1e-10) vs 显式 1e-10: 同 tol 值,
+        E 一致 (≤1e-10; 两次调用 ARPACK 内部 v0 随机, 非逐位)。
+      - eigsh_tol=1e-8: E 相对 None 在 1e-8 内 (放松一档仍收敛)。
+      - eigsh_tol=1e-4: E 相对 None 在 1e-3 内, 且 n_mv 显著少于 None
+        (松 tol 提前停机 -> 少 matvec, 参数确实到达 eigsh 调用)。
+    """
+    h1e, eri, norb, nelec, sa, sb = _large_subspace_ints(n_str=120)
+    dim = len(sa) * len(sb)
+    assert dim > 1000
+
+    sub_def = _Subspace(h1e, eri, norb, nelec, backend="gpu",
+                        gpu_eigsh_mode="hybrid")
+    sub_t10 = _Subspace(h1e, eri, norb, nelec, backend="gpu",
+                        gpu_eigsh_mode="hybrid", eigsh_tol=1e-10)
+    sub_t8 = _Subspace(h1e, eri, norb, nelec, backend="gpu",
+                       gpu_eigsh_mode="hybrid", eigsh_tol=1e-8)
+    sub_t4 = _Subspace(h1e, eri, norb, nelec, backend="gpu",
+                       gpu_eigsh_mode="hybrid", eigsh_tol=1e-4)
+
+    E_def, _, _, _ = sub_def.diag(sa, sb)
+    n_def = sub_def.last_n_mv
+    E_t10, _, _, _ = sub_t10.diag(sa, sb)
+    E_t8, _, _, _ = sub_t8.diag(sa, sb)
+    E_t4, _, _, _ = sub_t4.diag(sa, sb)
+    n_t4 = sub_t4.last_n_mv
+
+    assert abs(E_t10 - E_def) <= 1e-10, (
+        f"显式 1e-10 vs None (同 tol 值) 应一致: {E_t10:.12f} vs {E_def:.12f}")
+    assert abs(E_t8 - E_def) <= 1e-8, (
+        f"tol=1e-8 vs 1e-10: {E_t8:.12f} vs {E_def:.12f} diff "
+        f"{abs(E_t8 - E_def):.2e} >1e-8")
+    assert abs(E_t4 - E_def) <= 1e-3, (
+        f"tol=1e-4 vs 1e-10: diff {abs(E_t4 - E_def):.2e} >1e-3 (收敛过松)")
+    assert n_t4 < n_def, (
+        f"松 tol 应提前停机少 matvec: n_mv(1e-4)={n_t4} >= n_mv(None)={n_def}")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

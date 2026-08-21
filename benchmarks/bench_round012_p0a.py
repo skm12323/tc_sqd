@@ -64,22 +64,18 @@ results = []
 for label, pt2_floor in configs:
     _diag_log.clear()
     traj = []
+    triple_kwargs = ({"triple_injection": False} if pt2_floor is None
+                     else {"triple_injection": True, "n_triples_per_round": 0,
+                           "pt2_floor": pt2_floor})
     t0 = time.perf_counter()
-    kwargs = dict(
-        h1e=h1e, eri=eri, norb=NCAS, nelec=NELEC, ecore=ecore,
+    E = solve_sqd_active(
+        h1e, eri, NCAS, NELEC, ecore=ecore,
         bitstring_matrix=bsm, probabilities=probs,
         max_strings=None, n_active_per_round=30, rand_seed=0,
         tail_suppression=True, tail_shots_ref=100,
         backend="gpu", warm_start=True, verbose=False,
-        trajectory=traj,
+        trajectory=traj, **triple_kwargs,
     )
-    if pt2_floor is None:
-        kwargs["triple_injection"] = False
-    else:
-        kwargs["triple_injection"] = True
-        kwargs["n_triples_per_round"] = 0
-        kwargs["pt2_floor"] = pt2_floor
-    E = solve_sqd_active(**kwargs)
     wall = time.perf_counter() - t0
     err = abs(float(E) - E_FCI)
 
