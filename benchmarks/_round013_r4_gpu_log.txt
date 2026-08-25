@@ -1,0 +1,3 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+.....X....x.                                                             [100%]
+10 passed, 1 xfailed, 1 xpassed in 231.37s (0:03:51)

@@ -172,8 +172,9 @@ class _Subspace:
         # round_013 eigsh tol 覆盖: None = 逐分支默认 (hybrid/cupyx/cpu_fallback
         # 与 except/CPU 分支全用 tol=1e-10)。设置数值后**所有** eigsh 调用统一
         # 用该 tol。默认值来历: round_005 实证 cpu_fallback tol=1e-10 vs 0 在
-        # dim 1e5/5e5 快 1.46× (E diff ~1e-13); round_013 消融 (10o closure)
-        # tol=0→1e-10 快 1.8×、→1e-8 快 3.6×, err 均不变 (1.58e-10)。
+        # dim 1e5/5e5 快 1.46× (E diff ~1e-13); round_013 消融 (10o closure,
+        # bench_round013_fix 显式 tol 可复现) tol=0→1e-10 n_mv 0.62×、→1e-8
+        # n_mv 0.51× (wall 视机器负载 1.7-3.6×), err 均不变 (1.58e-10)。
         self.eigsh_tol = eigsh_tol
         # round_010 warm-start v0: 默认 False = 不读不写缓存, 三处 eigsh 逐字
         # 一致 (零回归)。True 时缓存上次成功 diag 的 (sa, sb, c2d), 下次 diag 经
@@ -957,7 +958,7 @@ def solve_sqd_active(
     backend: str = "cpu",
     # ---- round_012: BFS 覆盖闭包 (默认关零回归) ----
     coverage_closure: bool = False,
-    # ---- round_013: eigsh tol 覆盖 (默认 None = 原行为零回归) ----
+    # ---- round_013: eigsh tol 覆盖 (默认 None = 逐分支 1e-10; 54b0f65 起非零回归) ----
     eigsh_tol: Optional[float] = None,
 ) -> float:
     """主动采样 SQD: 采样/配置恢复 ↔ 受限 PT2 选态 双闭环 (AS-SQD 思想, 方向②)。
@@ -1086,6 +1087,8 @@ def solve_sqd_active(
         ``coverage_closure`` 是此修复的显式开关 (比 "把 pt2_floor 调到 0" 更
         自描述)。护栏: BFS 补全受 ``max_strings`` 上界约束 (默认 = ``C(norb,na)``，
         不会超全空间); 大体系全空间不可对角化时给较小 ``max_strings``。
+        注意: ``n_triples_per_round>0`` 会**截断闭包** (每轮只补 ≤N 串, 可能远未达
+        全空间); 完整闭包需保持默认 ``n_triples_per_round=0`` (无 cap)。
         默认 ``False`` 零回归 (triple pass 仍用 ``pt2_floor`` 门控)。
     eigsh_tol : float | None
         **round_013 eigsh 收敛容差覆盖**: ``None`` (默认) = 逐分支默认,
@@ -1093,9 +1096,12 @@ def solve_sqd_active(
         ``tol=0`` 机器精度 —— round_005/013 双实验实证 1e-10 快 1.46-1.8×
         且 E diff ≤1e-13, P0 门槛满足后已改为默认)。设置数值后**所有**
         eigsh 调用统一用该 tol。**加速配方** (round_013 消融实测, err 均不变):
-        - 闭包路径 (coverage_closure=True): GPU 可 ``eigsh_tol=1e-6``
-          (n_mv 2.2×, wall 0.54×) + ``n_active_per_round=90`` (n_mv 1.9×);
-        - CPU 路径可 ``eigsh_tol=1e-8`` (10o wall 0.27×, 3.6× 加速)。
+        - 闭包路径 (coverage_closure=True): GPU ``eigsh_tol=1e-6`` +
+          ``n_active_per_round=90``; 联合实测 (bench_round013_fix) n_mv 0.26×
+          (3.9× 少)、wall 0.37× (2.7×), err 1.13e-10 (不降)。单杠杆 tol=1e-6
+          n_mv 2.2× / n_active=90 n_mv 1.9×, 部分重叠故乘积外推 0.33× 略乐观于
+          实测 0.37×。
+        - CPU 路径可 ``eigsh_tol=1e-8`` (10o n_mv 0.51× vs tol=0; wall 视负载 2-3.6×)。
         注意 tol 是**相对**容差 (ARPACK 停机准则 ``|Ritz 估计| ≤ tol·|E|``),
         放松会减 matvec 次数; 实测 ARPACK 实际收敛远好于停机界, 但非闭包
         路径 (残余误差由缺串主导) 与大体系请自行核对 err 需求。
@@ -1481,7 +1487,7 @@ def solve_sqd_ev(
     backend: str = "cpu",
     # ---- round_012: BFS 覆盖闭包透传 (默认关零回归) ----
     coverage_closure: bool = False,
-    # ---- round_013: eigsh tol 覆盖透传 (默认 None 零回归) ----
+    # ---- round_013: eigsh tol 覆盖透传 (默认 None = 逐分支 1e-10) ----
     eigsh_tol: Optional[float] = None,
 ) -> float:
     """改进 SQD (方向 D/③): active 采样 + 基于方差的能量修正, 不增大维度降误差。

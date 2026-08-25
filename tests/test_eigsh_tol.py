@@ -1,7 +1,7 @@
 """tc_sqd.cipsi._Subspace eigsh_tol 覆盖测试 (round_013)。
 
 覆盖:
-  - P0' 零回归: eigsh_tol=None (默认) 与不传代码路径等价 (LiH dense 锚 +
+  - P0' 代码路径等价: eigsh_tol=None (默认) 与不传走同一路径 (LiH dense 锚 +
     active 层 E 一致)。
   - 功能 (CPU 分支, dim>1000 eigsh 路径): _Subspace.diag 直接消融 ——
     松 tol (1e-4) 比紧 tol (None=默认 1e-10) 少 matvec 且 E 在合理精度内;
@@ -21,6 +21,8 @@ import tc_sqd
 from tc_sqd.cipsi import _Subspace
 from pyscf import gto
 from pyscf.fci import cistring
+
+_ORIG_INIT = _Subspace.__init__  # 透传测试 patch 后恢复用
 
 
 # --------------------------------------------------------------------------- #
@@ -45,7 +47,7 @@ def _fixed_strings(norb, nelec, n_str=60):
 
 
 # --------------------------------------------------------------------------- #
-# P0' 零回归: eigsh_tol=None (默认) 与不传代码路径等价
+# P0' 代码路径等价: eigsh_tol=None (默认) 与不传走同一路径
 # --------------------------------------------------------------------------- #
 def test_eigsh_tol_default_none_path_equivalent_dense():
     """P0' 锚 (dense 路径): solve_sqd_active 不传 vs 显式 eigsh_tol=None
@@ -71,7 +73,7 @@ def test_eigsh_tol_default_none_path_equivalent_subspace():
     sa, sb = _fixed_strings(data.norb, data.nelec)
     sub = _Subspace(data.h1e, data.eri, data.norb, data.nelec)
     e1, _, _, _ = sub.diag(sa, sb)
-    e2, _, _, _ = sub.diag(sa, sb)   # 同实例第二次 (tol 仍 0)
+    e2, _, _, _ = sub.diag(sa, sb)   # 同实例第二次 (默认 1e-10)
     assert np.isclose(e1, e2, rtol=1e-12, atol=1e-12), (
         f"默认 tol 两次 diag 收敛值应稳定: {e1!r} vs {e2!r}")
 
@@ -89,7 +91,7 @@ def test_subspace_diag_tol_ablation_cpu():
 
     sub_tight = _Subspace(h1e, eri, norb, nelec)          # None = 默认 1e-10
     sub_112 = _Subspace(h1e, eri, norb, nelec, eigsh_tol=1e-12)
-    sub_loose = _Subspace(h1e, eri, norb, nelec, eigsh_tol=1e-4)
+    sub_loose = _Subspace(h1e, eri, norb, nelec, eigsh_tol=1e-6)
 
     e_tight, _, _, _ = sub_tight.diag(sa, sb)
     n_tight = sub_tight.last_n_mv
@@ -101,60 +103,77 @@ def test_subspace_diag_tol_ablation_cpu():
     assert np.isclose(e_tight, e_112, rtol=1e-10, atol=1e-10), (
         f"tol=1e-12 应与默认 1e-10 一致: {e_tight!r} vs {e_112!r}")
     assert abs(e_loose - e_tight) < 1e-3, (
-        f"松 tol=1e-4 E 仍应收敛到紧值附近: {e_tight!r} vs {e_loose!r} "
+        f"松 tol=1e-6 E 仍应收敛到紧值附近: {e_tight!r} vs {e_loose!r} "
         f"diff={abs(e_loose - e_tight):.2e}")
     assert n_loose < n_tight, (
         f"松 tol 应减少 matvec: loose={n_loose} vs tight={n_tight}")
-    assert n_112 + 100 >= n_tight, (       # 1e-12 更紧, 迭代不应显著少于 1e-10
-        f"tol=1e-12 (更紧) 迭代应 ≥ 默认 1e-10 (允许 v0 涨落): "
-        f"{n_112} vs {n_tight}")
+    # 1e-12 比默认 1e-10 更紧 -> 迭代不应更少 (收紧而非放松)
+    assert n_112 >= n_tight, (
+        f"tol=1e-12 (更紧) 迭代应 ≥ 默认 1e-10: {n_112} vs {n_tight}")
 
 
 # --------------------------------------------------------------------------- #
-# 透传: solve_sqd_active / ev / best 接 eigsh_tol
+# 透传: solve_sqd_active / ev / best 接 eigsh_tol (直接捕获 _Subspace.__init__ 收到的值)
 # --------------------------------------------------------------------------- #
+def _capture_eigsh_tol():
+    """patch _Subspace.__init__ 捕收到的 eigsh_tol; 返回 (applier, received_list)。"""
+    orig = _Subspace.__init__
+    received = []
+
+    def patched(self, *a, **kw):
+        received.append(kw.get("eigsh_tol", "NOT_PASSED"))
+        return orig(self, *a, **kw)
+    return patched, received
+
+
 def test_solve_sqd_active_eigsh_tol_plumbing():
-    """透传锚: solve_sqd_active(eigsh_tol=1e-10, CPU) 完成且 E 与默认
-    (1e-10) 一致 (rtol 1e-9, ARPACK v0 随机涨落内)。"""
+    """透传锚: eigsh_tol=1e-4 经 solve_sqd_active **到达 _Subspace.__init__**
+    (直接捕获 kwarg, 非 E 比较——后者在 default=1e-10 后会退化成永真断言)。"""
     data = _n2_data()
     h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
     bsm = np.random.default_rng(0).random((40, 2 * norb)) > 0.5
-    common = dict(max_strings=None, n_active_per_round=10, max_rounds=4,
-                  rand_seed=0)
-    e_default = tc_sqd.solve_sqd_active(
-        h1e, eri, norb, nelec, bitstring_matrix=bsm, **common)
-    e_tol = tc_sqd.solve_sqd_active(
-        h1e, eri, norb, nelec, bitstring_matrix=bsm,
-        eigsh_tol=1e-10, **common)
-    assert np.isclose(e_default, e_tol, rtol=1e-9, atol=1e-9), (
-        f"active 层 eigsh_tol=1e-10 E 应与默认一致: "
-        f"{e_default!r} vs {e_tol!r} diff={abs(e_default - e_tol):.2e}")
+    patched, received = _capture_eigsh_tol()
+    _Subspace.__init__ = patched
+    try:
+        e = tc_sqd.solve_sqd_active(
+            h1e, eri, norb, nelec, bitstring_matrix=bsm,
+            max_strings=None, n_active_per_round=10, max_rounds=4,
+            rand_seed=0, eigsh_tol=1e-4)
+    finally:
+        _Subspace.__init__ = _ORIG_INIT
+    assert np.isfinite(e)
+    assert 1e-4 in received, (
+        f"eigsh_tol=1e-4 未透传到 _Subspace; 收到 {received[:3]} ...")
+    assert "NOT_PASSED" not in received, (
+        "有 _Subspace 实例未收到 eigsh_tol kwarg")
 
 
 def test_solve_sqd_ev_eigsh_tol_passthrough():
-    """透传锚 (ev 层): solve_sqd_ev(eigsh_tol=1e-10) 完成且 E 与默认一致。"""
+    """透传锚 (ev 层): solve_sqd_ev(eigsh_tol=1e-4) → _Subspace 收到 1e-4。"""
     data = _n2_data()
     h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
     bsm = np.random.default_rng(0).random((40, 2 * norb)) > 0.5
-    common = dict(max_strings=None, n_active_per_round=10, rand_seed=0)
-    e_default = tc_sqd.solve_sqd_ev(
-        h1e, eri, norb, nelec, bitstring_matrix=bsm, **common)
-    e_tol = tc_sqd.solve_sqd_ev(
-        h1e, eri, norb, nelec, bitstring_matrix=bsm,
-        eigsh_tol=1e-10, **common)
-    assert np.isclose(e_default, e_tol, rtol=1e-8, atol=1e-8), (
-        f"ev 层透传 E 应一致: {e_default!r} vs {e_tol!r}")
+    patched, received = _capture_eigsh_tol()
+    _Subspace.__init__ = patched
+    try:
+        tc_sqd.solve_sqd_ev(
+            h1e, eri, norb, nelec, bitstring_matrix=bsm,
+            max_strings=None, n_active_per_round=10, rand_seed=0,
+            eigsh_tol=1e-4)
+    finally:
+        _Subspace.__init__ = _ORIG_INIT
+    assert 1e-4 in received, f"ev 透传失败; 收到 {received[:3]} ..."
 
 
 def test_solve_sqd_best_eigsh_tol_passthrough():
-    """透传锚 (best 层): solve_sqd_best(eigsh_tol=1e-10) 完成且 E 与默认一致。"""
+    """透传锚 (best 层): solve_sqd_best(eigsh_tol=1e-4) → _Subspace 收到 1e-4。"""
     data = _n2_data()
     h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
-    common = dict(n_shots=30, return_details=True, rand_seed=0)
-    d_default = tc_sqd.solve_sqd_best(h1e, eri, norb, nelec, **common)
-    d_tol = tc_sqd.solve_sqd_best(h1e, eri, norb, nelec,
-                                  eigsh_tol=1e-10, **common)
-    assert np.isclose(d_default["energy"], d_tol["energy"], rtol=1e-7,
-                      atol=1e-7), (
-        f"best 层透传 E 应一致: {d_default['energy']!r} vs "
-        f"{d_tol['energy']!r}")
+    patched, received = _capture_eigsh_tol()
+    _Subspace.__init__ = patched
+    try:
+        tc_sqd.solve_sqd_best(h1e, eri, norb, nelec, n_shots=30,
+                              rand_seed=0, eigsh_tol=1e-4, evpt2=False)
+    finally:
+        _Subspace.__init__ = _ORIG_INIT
+    assert 1e-4 in received, f"best 透传失败; 收到 {received[:3]} ..."

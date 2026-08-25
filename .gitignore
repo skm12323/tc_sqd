@@ -75,3 +75,8 @@ fig_c1v2_best_vs_shci_*.png
 # 遗留诊断脚本
 benchmarks/_diag_*.py
 benchmarks/_probe_*.py
+
+# 文献检索缓存 (Crossref/OpenAlex/arXiv 临时调研产物, 不入库)
+/cr*.json
+/oa_*.json
+/arx_*.xml

@@ -1,0 +1,16 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+........................................................................ [ 32%]
+........................................................................ [ 64%]
+........................................................................ [ 96%]
+.......                                                                  [100%]
+=============================== warnings summary ===============================
+tests/test_ansatz.py::test_include_excitations_not_fci_strong_correlation
+  /mnt/d/tc_sqd/src/tc_sqd/lucj.py:214: RuntimeWarning: CCSD did not converge; LUCJ amplitudes may be unreliable.
+    _t1, t2, _mycc = get_ccsd_amplitudes(mf)
+
+tests/test_lucj.py::test_ucj_assisted_n2_strong_correlation
+  /mnt/d/tc_sqd/src/tc_sqd/lucj.py:694: RuntimeWarning: CCSD did not converge; LUCJ amplitudes may be unreliable.
+    _t1, t2, _mycc = get_ccsd_amplitudes(mf)
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+223 passed, 2 warnings in 1709.36s (0:28:29)

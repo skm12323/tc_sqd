@@ -1,0 +1,16 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+====================================================================== 
+M1: CPU 10o closure, eigsh_tol 显式 (可复现) 
+======================================================================
+  tol=0.0(显式): E=-108.7593747187 err=1.58e-10 dim=63504 n_mv=827 wall=78.6s
+  tol=1e-10: E=-108.7593747187 err=1.58e-10 dim=63504 n_mv=516 wall=46.4s
+  tol=1e-8: E=-108.7593747187 err=1.59e-10 dim=63504 n_mv=426 wall=37.1s
+
+====================================================================== 
+M2: GPU 12,12 closure, baseline vs recipe(1e-6+n_active=90) 
+======================================================================
+  baseline(默认): E=-108.7686857377 err=2.25e-10 dim=853776 n_mv=2693 wall=121.2s
+  recipe(1e-6+n_active=90): E=-108.7686857376 err=1.13e-10 dim=853776 n_mv=699 wall=44.7s
+  实测联合比: n_mv 699/2693=0.26x wall 44.7/121.2=0.37x
+
+saved /mnt/d/tc_sqd/benchmarks/_round013_fix.json
