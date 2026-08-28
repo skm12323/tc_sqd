@@ -1,0 +1,25 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+subspace dim=824464 (908x908)
+口径锁: |replica - real sigma| max diff = 3.55e-14 (须 ≤1e-10)
+D2H (.get() 7MB): 3.50 ms
+
+=== 每 matvec 分段 (ms, N=15) ===
+section                              ms      %
+------------------------------------------------
+h2d_v+zeros_ci1                    0.78   1.4%  <- 可提升至 diag 生命周期
+links_tril(aaaa_a)                 0.52   0.9%  <- 可提升至 diag 生命周期
+zeros_t1(aaaa_a)                   0.29   0.5%  <- 可提升至 diag 生命周期
+kernels+matmul(aaaa_a)            13.13  23.3%
+links_tril(aaaa_b)                 0.49   0.9%  <- 可提升至 diag 生命周期
+zeros_t1b+transpose(aaaa_b)        0.32   0.6%  <- 可提升至 diag 生命周期
+kernels+matmul(aaaa_b)            13.13  23.3%
+links_tril(bbaa x2)                1.24   2.2%  <- 可提升至 diag 生命周期
+zeros_t1c(bbaa)                    0.65   1.1%  <- 可提升至 diag 生命周期
+kernels+matmul(bbaa)              25.73  45.7%
+------------------------------------------------
+复刻分段合计: 56.28 ms | 真 sigma 实测: 58.43 ms (差 = 段间 sync 开销)
+
+可消除段 (links_tril×4 + zeros×4 + h2d_v): 4.29 ms = 7.6% of 56.28 ms
+D2H .get(): 3.50 ms (sigma 外, hybrid matvec 另计)
+
+[P0a 判定] 可消除占比 7.6% -> <10%, 收档不优化
