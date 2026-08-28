@@ -1878,3 +1878,33 @@ diag 固定开销），实测 0.37× / 3.9× 更准。
   （残余误差由缺串主导）用户慎用。
 - 本机负载波动大（同配置 wall 跨进程 131s↔377s），跨进程 wall 绝对值不可比；
   同进程背靠背的 n_mv/wall 比可信。
+
+---
+
+## Round 014：GPU sigma persistent workspace——P0a 前提证伪收档（2026-08-21）
+
+### P0a 分段 profile（dim=824,464 = 908²，同真实 12,12 workload，N=15）
+
+| 段 | ms | % |
+|---|---|---|
+| kernels+matmul（GPU 计算） | 51.99 | **92.4%** |
+| ├─ bbaa GEMM (908,78,908) | 25.73 | 45.7% |
+| ├─ aaaa α/β GEMM | 26.26 | 46.7% |
+| links_tril ×4 | 2.25 | 4.0% |
+| zeros t1 ×3 + 转置 | 1.26 | 2.2% |
+| h2d_v | ~0.3 | 0.5% |
+
+口径锁：复刻分段版 vs 真 sigma max diff 3.55e-14。**可消除段（links+zeros+h2d）
+= 7.6% < 10% 门槛 → 按计划收档，零优化代码**（复刻 round_009 P0a 快速失败模式，
+~3min profile 避免数小时无效实现）。
+
+### 认知更新
+
+- 原假设"`_links_tril` 打包 + `cp.zeros` 工作区占 25-50%"**证伪**：cupy 缓存
+  分配器使 435MB zeros 仅 0.3ms，links_tril 仅 0.5-1.2ms/次。真瓶颈是 bbaa/aaaa
+  GEMM 的 FLOPs（92.4%）——算法计算量，非 host 开销。
+- D2H `.get()` 3.5ms（5.6%）——Round 015（GPU-resident Krylov）前提进一步削弱，
+  维持搁置。
+- **速度线收官**：round_005 GPU hybrid（~4×）→ round_010 warm-start（3.2×）→
+  round_013 tol/批量配方（联合实测 2.7×）。12,12 @500 closure 全空间 FCI
+  **44.7s**（err 1.13e-10）vs 纯 CPU 冷启动 1520s ≈ **34×**。
