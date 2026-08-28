@@ -1,0 +1,39 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+
+=== 12,12 @500 closure(配方) ===
+  E=-108.7686857376 err=1.13e-10 dim=853776 n_str=924 n_mv=699 n_diag=9 wall=51.4s
+  str_seq: head=[560, 769, 907, 918, 922, 924] tail=[924, 924, 924, 924]
+
+=== 12,12 @100 closure(配方) ===
+  E=-108.7686857373 err=1.83e-10 dim=853776 n_str=924 n_mv=1173 n_diag=13 wall=55.1s
+  str_seq: head=[154, 345, 468, 593, 702, 795] tail=[908, 908, 924, 924]
+
+=== 12,12 @50 closure(配方) ===
+  E=-108.7686857373 err=1.83e-10 dim=853776 n_str=924 n_mv=1233 n_diag=13 wall=51.5s
+  str_seq: head=[154, 345, 468, 593, 702, 795] tail=[908, 908, 924, 924]
+
+=== 12,12 @20 closure(配方) ===
+  E=-108.7686857373 err=1.81e-10 dim=853776 n_str=924 n_mv=1173 n_diag=13 wall=46.7s
+  str_seq: head=[154, 345, 468, 593, 702, 795] tail=[908, 908, 924, 924]
+  baseline @500: dim=824464 n_str=908 err=3.63e-07 wall=106.2s
+  baseline @100: dim=348100 n_str=590 err=2.76e-04 wall=50.9s
+  baseline @50: dim=341056 n_str=584 err=2.60e-04 wall=55.9s
+  baseline @20: dim=348100 n_str=590 err=2.76e-04 wall=49.6s
+  10o @100: dim=63504 n_str=252 err=1.58e-10 wall=37.4s
+  10o @50: dim=63504 n_str=252 err=1.58e-10 wall=37.0s
+  10o @20: dim=63504 n_str=252 err=1.58e-10 wall=38.1s
+
+==========================================================================
+=== round_015 低 shots closure 稳健性汇总 (12,12, 配方) ===
+==========================================================================
+ shots  base_dim   base_err |  clos_dim   clos_err clos_wall n_diag
+   500    824464   3.63e-07 |    853776   1.13e-10     51.4s      9
+   100    348100   2.76e-04 |    853776   1.83e-10     55.1s     13
+    50    341056   2.60e-04 |    853776   1.83e-10     51.5s     13
+    20    348100   2.76e-04 |    853776   1.81e-10     46.7s     13
+
+P0 (@100,@50 补全+err≤1e-9): PASS
+P1 (@20 补全+err≤1e-9):       PASS
+P1' (10o 全部补全):           PASS
+
+saved /mnt/d/tc_sqd/benchmarks/_round015_lshots.json

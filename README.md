@@ -64,6 +64,10 @@ numpy≥2 / jax 的硬性要求**。
   tol=0 基线 n_mv 减半，wall 视机器负载 2-3.6×）。
   CPU/except 分支默认 tol 已从 0 改为 1e-10（E diff ≤1e-13，n_mv 0.62×）。
   非闭包路径（残余误差由缺串主导）建议保持默认 tol。
+  **shots 无关性**（2026-08-28 round_015）：12,12 上 @20 与 @500 shots 给出同样的
+  全空间 FCI（err ~1.8e-10，wall 47-55s 平坦）——采样坍缩为种子，确定性 PT2 循环
+  + BFS 闭包完成全部工作。前提：全字符串空间可对角化（924 串/853k dim）；更大
+  活性空间须 `max_strings` 截断，此结论不外推。
 - **OBMP2 自洽方法 + OBDF 下折叠**（`obmp2`，2026-08-10）：自旋轨道显式实现 Tran 2021
   一体相关势（1st+2nd BCH、Ω̂ 对称化），`solve_obmp2` 自洽收敛 E≈CCSD（N₂/STO-3G 平衡差
   0.3 mHa）。`obdf_downfold` 把外部相关折叠进活性 h1e（`H_OBDF=H_CAS+scale·v^ext`，仅改
