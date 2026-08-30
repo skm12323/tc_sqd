@@ -318,8 +318,12 @@ def test_spin_resolved_raises():
         solve_sci(ci, h1e, eri, norb, nelec, n_roots=2)
     with pytest.raises(ValueError, match="cpu"):
         solve_sci(ci, h1e, eri, norb, nelec, backend="gpu")
-    with pytest.raises(ValueError, match="_Subspace"):
-        _Subspace(h1e[0], eri, norb, nelec)
+    # round_017: _Subspace 三元组已支持 (正向测试见下文 round_017 节);
+    # 但派发真值表两 raise 仍在 _Subspace.__init__ 校验 (与 solve_sci 同契约):
+    with pytest.raises(ValueError, match="三元组"):
+        _Subspace(h1e, eri_nd, norb, nelec)          # 不等 h + 单 eri
+    with pytest.raises(ValueError, match="h_alpha, h_beta"):
+        _Subspace(h1e[0], eri, norb, nelec)          # 单 h + 三块 eri
     with pytest.raises(ValueError, match="solve_sci_csf|Spin-resolved"):
         solve_sci_csf(ci, h1e, eri, norb, nelec, spin_sq=0.75)
     with pytest.raises(ValueError, match="sigma_linkstr_gpu"):
@@ -331,6 +335,124 @@ def test_spin_resolved_raises():
         from_pyscf(mf, n_core=1)
     with pytest.raises(ValueError, match="frozen-core"):
         from_pyscf(mf, n_active=2)
+
+
+# --------------------------------------------------------------------------- #
+#  round_017: UHF active 闭环扩展 (_Subspace 三元组 eri 支持)
+#
+#  P0  : CH/STO-3G UHF (4,3) active 全空间闭环, err ≤1e-8 vs direct_uhf
+#  P0' : N2/STO-3G R=2.5 UHF (7,7) @500 shots, active 准 FCI (实测锚定)
+#  P2  : CH (4,3) coverage_closure=True → dim=300 全空间, err ≤1e-9
+#  契约: backend="gpu" + 三元组 → NotImplementedError
+# --------------------------------------------------------------------------- #
+def test_subspace_spin_resolved_diag_matches_solve_sci_full(ch):
+    """round_017 改写锚 (原 _Subspace raise 守卫 → 正向): 三元组 _Subspace
+    接受; 全空间 diag 与 solve_sci 自旋分辨路径及 direct_uhf.kernel 一致。"""
+    h1e, eri, norb, nelec = ch
+    sub = _Subspace(h1e, eri, norb, nelec)
+    assert sub._spin_ints is not None            # 三元组 → 自旋分辨分支
+    assert sub.h2e is None and sub.myci is None  # 不 absorb_h1e
+    sa, sb = _full_strs(norb, nelec)
+    E, c2d, sa_o, sb_o = sub.diag(sa, sb)
+    res = solve_sci((sa, sb), h1e, eri, norb, nelec)
+    assert abs(E - res.energy) <= 1e-10
+    assert abs(E - _direct_uhf_ref(h1e, eri, norb, nelec)) <= 1e-10
+
+
+def test_sqd_active_uhf_ch_full_space_closure():
+    """P0: CH/STO-3G UHF (4,3) active 全空间闭环, err ≤1e-8 vs direct_uhf.kernel
+    (前置 assert C_α≠C_β 防假 UHF)。"""
+    from tc_sqd import solve_sqd_active
+    mf = _ch_uhf()
+    assert not np.allclose(mf.mo_coeff[0], mf.mo_coeff[1]), (
+        "UHF 未破坏对称, 本测试无效 (防假 UHF)")
+    h1e, eri, norb, nelec = _uhf_integrals(mf)
+    e_ref = _direct_uhf_ref(h1e, eri, norb, nelec)
+    bsm = np.random.default_rng(0).random((2000, 2 * norb)) > 0.5
+    st = []
+    e = solve_sqd_active(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm,
+        n_active_per_round=50, max_rounds=10, rand_seed=0, state_out=st)
+    nA_full = int(cistring.num_strings(norb, nelec[0]))
+    nB_full = int(cistring.num_strings(norb, nelec[1]))
+    assert st[0][1].shape[0] == nA_full and st[0][2].shape[0] == nB_full, (
+        f"active 应收敛到全空间 {nA_full}x{nB_full}, "
+        f"got {st[0][1].shape[0]}x{st[0][2].shape[0]}")
+    err = abs(e - e_ref)
+    assert err <= 1e-8, f"CH (4,3) active 全空间 err={err:.2e} > 1e-8"
+
+
+def test_sqd_active_uhf_n2_quasi_fci(n2):
+    """P0': N2/STO-3G R=2.5 UHF (7,7) @500 shots, active 收敛准 FCI
+    (阈值 = 实测 + 余量锚定, 预期 ≤1e-6)。"""
+    from tc_sqd import solve_sqd_active
+    h1e, eri, norb, nelec = n2
+    e_ref = _direct_uhf_ref(h1e, eri, norb, nelec)
+    bsm = np.random.default_rng(0).random((500, 2 * norb)) > 0.5
+    e = solve_sqd_active(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm,
+        n_active_per_round=50, max_rounds=10, rand_seed=0)
+    err = abs(e - e_ref)
+    assert err <= 1e-6, f"N2 (7,7) @500 active err={err:.2e} > 1e-6"
+
+
+def test_sqd_active_uhf_coverage_closure_full_space():
+    """P2: CH (4,3) coverage_closure=True → BFS 补全全空间 dim=300,
+    err ≤1e-9 vs direct_uhf.kernel。
+
+    注: 开壳层下 active 的加串预算门控 (``len(str_a)+len(add) >= max_strings``)
+    把 β 新串也计入 α 计数预算 (round_012 遗留口径, 闭壳层 str_a==str_b 不变式下
+    精确); 默认 ``max_strings=C(norb,na)=15`` 会在 α 满 15 串后挡住 β 补全。
+    显式 ``max_strings=C(norb,max(na,nb))=20`` 松开预算 → BFS 补全两扇区全空间。
+    """
+    from tc_sqd import solve_sqd_active
+    mf = _ch_uhf()
+    assert not np.allclose(mf.mo_coeff[0], mf.mo_coeff[1])
+    h1e, eri, norb, nelec = _uhf_integrals(mf)
+    e_ref = _direct_uhf_ref(h1e, eri, norb, nelec)
+    nA_full = int(cistring.num_strings(norb, nelec[0]))   # C(6,4)=15
+    nB_full = int(cistring.num_strings(norb, nelec[1]))   # C(6,3)=20
+    bsm = np.random.default_rng(0).random((30, 2 * norb)) > 0.5
+    st = []
+    e = solve_sqd_active(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm,
+        max_strings=max(nA_full, nB_full),
+        n_active_per_round=5, max_rounds=3, rand_seed=0,
+        coverage_closure=True, state_out=st)
+    dim = st[0][1].shape[0] * st[0][2].shape[0]
+    assert dim == nA_full * nB_full == 300, (
+        f"coverage_closure 应补全到全空间 dim=300, got {dim}")
+    err = abs(e - e_ref)
+    assert err <= 1e-9, f"coverage_closure 全空间 err={err:.2e} > 1e-9"
+
+
+def test_sqd_ev_and_best_uhf_smoke(ch):
+    """继承链 smoke: solve_sqd_ev / solve_sqd_best UHF 三元组不炸,
+    能量与 active/FCI 参考一致。"""
+    from tc_sqd import solve_sqd_ev, solve_sqd_best
+    h1e, eri, norb, nelec = ch
+    e_ref = _direct_uhf_ref(h1e, eri, norb, nelec)
+    bsm = np.random.default_rng(0).random((2000, 2 * norb)) > 0.5
+    e_ev = solve_sqd_ev(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm,
+        n_active_per_round=50, max_rounds=10, rand_seed=0, correction="pt2")
+    assert np.isfinite(e_ev)
+    assert abs(e_ev - e_ref) <= 1e-8, (
+        f"solve_sqd_ev CH (4,3) err={abs(e_ev - e_ref):.2e} > 1e-8")
+    d_best = solve_sqd_best(
+        h1e, eri, norb, nelec, bitstring_matrix=bsm, n_shots=2000,
+        n_active_per_round=50, rand_seed=0, return_details=True)
+    assert np.isfinite(d_best["energy"])
+    assert abs(d_best["energy"] - e_ref) <= 1e-8, (
+        f"solve_sqd_best CH (4,3) err={abs(d_best['energy'] - e_ref):.2e} > 1e-8")
+
+
+def test_subspace_spin_resolved_gpu_raises(ch):
+    """契约: backend='gpu' + 三元组 → NotImplementedError (GPU linkstr kernel
+    spin1 专用; 与 fermion.solve_sci 自旋分辨分支同契约, GPU 支持列后续轮)。"""
+    h1e, eri, norb, nelec = ch
+    with pytest.raises(NotImplementedError, match="cpu"):
+        _Subspace(h1e, eri, norb, nelec, backend="gpu")
 
 
 if __name__ == "__main__":

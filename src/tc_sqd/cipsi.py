@@ -33,6 +33,7 @@ from pyscf.fci import cistring, selected_ci, direct_spin1
 from pyscf import ao2mo
 from scipy.sparse.linalg import eigsh, LinearOperator
 
+from . import matrixfree
 from .configuration_recovery import recover_configurations
 from .fermion import bitstring_matrix_to_ci_strs, SCIState
 from .diagnostics import extrapolate_energy_variance, extrapolate_ev_pt2
@@ -146,12 +147,50 @@ class _Subspace:
                  warm_start: bool = False,
                  eigsh_tol: Optional[float] = None):
         self.h1e = np.asarray(h1e)
-        if isinstance(eri, (tuple, list)):
-            raise ValueError(
-                "_Subspace 不支持自旋分辨 eri (aa,ab,bb) 三元组 (spin1 "
-                "absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
-                "matrixfree 路径。"
-            )
+        # round_017: 自旋分辨 (eri (aa,ab,bb) 三元组 / 不等块 (2,norb,norb) h1e)
+        # → matrixfree ops 路径 (CPU)。等块 (2,norb,norb) h1e collapse 为单块
+        # (与入口 solve_sqd_active 语义一致); 单块输入逐字走旧路径 (零回归)。
+        if self.h1e.ndim == 3 and np.allclose(self.h1e[0], self.h1e[1]):
+            self.h1e = np.asarray(self.h1e[0])
+        self._spin_ints = None          # 非 None = (h_a,h_b,aa,ab,bb) 自旋分辨五积分
+        if isinstance(eri, (tuple, list)) or self.h1e.ndim == 3:
+            # 派发真值表与 fermion.solve_sci 一致 (round_011 §1.4):
+            #   不等块 h1e + 单块 eri → raise (物理矛盾: C_α≠C_β ⟹ eri 三块)
+            #   单块 h1e + 三元组 eri → raise (无自洽物理意义)
+            if self.h1e.ndim == 3 and not isinstance(eri, (tuple, list)):
+                raise ValueError(
+                    "h_alpha != h_beta 需要 eri=(eri_aa, eri_ab, eri_bb) 三元组 "
+                    "(UHF 式 C_alpha != C_beta 下三块 eri 必不同); 单块 eri 只能配 "
+                    "等块 (2, norb, norb) 或单个 (norb, norb) h1e。"
+                )
+            if self.h1e.ndim != 3:
+                raise ValueError(
+                    "eri 三元组 (eri_aa, eri_ab, eri_bb) 须配 h1e (2, norb, norb) "
+                    "= (h_alpha, h_beta); 单块 h1e 配三块 eri 无自洽物理意义。"
+                )
+            if backend == "gpu":
+                raise NotImplementedError(
+                    "_Subspace 自旋分辨路径首期仅 backend='cpu' (GPU linkstr "
+                    "kernel spin1 专用); 请用 fermion.solve_sci CPU matrixfree "
+                    "路径或 backend='cpu' (GPU 支持列后续轮)。"
+                )
+            self._spin_ints = matrixfree._split_spin_integrals(self.h1e, eri)
+            self.eri = None
+            self.norb = norb
+            self.nelec = nelec
+            # 自旋分辨不 absorb h1e (matrixfree 从不 absorb; diag 由 ops["diag"]
+            # 用五块直接算) → h2e/myci 无定义, 置 None。
+            self.h2e = None
+            self.myci = None
+            self.backend = backend
+            self.gpu_eigsh_mode = gpu_eigsh_mode
+            self.eigsh_tol = eigsh_tol
+            self.warm_start = warm_start
+            self._warm = None
+            self.last_n_mv = 0
+            self._eri1_aaaa = None
+            self._eri1_bbaa = None
+            return
         self.eri = np.asarray(eri)
         self.norb = norb
         self.nelec = nelec
@@ -261,7 +300,38 @@ class _Subspace:
                 return np.ascontiguousarray(hv, dtype=np.float64)
             return hop
 
-        if dim <= 1000:
+        if self._spin_ints is not None:
+            # round_017: 自旋分辨 → matrixfree ops matvec 路径 (模板照抄
+            # fermion.solve_sci 自旋分辨分支 ~830-848 行): 每轮
+            # prepare_sigma_operators 一次 + sigma_vector_ops 逐 matvec。
+            # GPU 分支在三元组不可达 (__init__ 已 raise) → 只有 ①/②-CPU 两分支。
+            # warm_start/_tol_fix/_kw_tol/last_n_mv 机制与 matvec 源解耦, 原样透传。
+            _h_ab = (self._spin_ints[0], self._spin_ints[1])
+            _eri3 = (self._spin_ints[2], self._spin_ints[3], self._spin_ints[4])
+            ops = matrixfree.prepare_sigma_operators(
+                sa, sb, self.norb, self.nelec, _h_ab, _eri3)
+
+            def _hop(v):
+                v2 = np.ascontiguousarray(v, np.float64).reshape(nA, nB)
+                return np.ascontiguousarray(
+                    matrixfree.sigma_vector_ops(v2, ops)).ravel()
+
+            if dim <= 1000:
+                # 分支 ① (自旋分辨): 逐列 _hop 建稠密 H → np.linalg.eigh
+                H = np.zeros((dim, dim))
+                for col in range(dim):
+                    e = np.zeros(dim)
+                    e[col] = 1.0
+                    H[:, col] = _hop(e)
+                ev, cv = np.linalg.eigh(H)
+                E, c1d = float(ev[0]), cv[:, 0]
+            else:
+                # 分支 ②-CPU (自旋分辨唯一大维度路径): scipy eigsh LinearOperator
+                op = LinearOperator((dim, dim), matvec=_counted(_hop),
+                                    dtype=np.float64)
+                ev, cv = eigsh(op, k=1, which="SA", maxiter=3000, **_kw_tol, **kw)
+                E, c1d = float(ev[0]), np.asarray(cv).ravel()
+        elif dim <= 1000:
             # 分支 ①: 始终 CPU numpy eigh (不读 backend; GPU 小维度 25× 启动开销无优势)
             _build_cpu_hop()
             H = np.zeros((dim, dim))
@@ -369,12 +439,24 @@ class _Subspace:
         for ia in range(len(sa)):
             for ib in range(len(sb)):
                 psi[idx_a[int(sa[ia])] * nB + idx_b2[int(sb[ib])]] = c2d[ia, ib]
-        link2 = selected_ci._all_linkstr_index((sA, sB), self.norb, self.nelec)
-        hdiag = selected_ci.make_hdiag(self.h1e, self.eri, (sA, sB),
-                                       self.norb, self.nelec)
-        Hpsi = self.myci.contract_2e(
-            self.h2e, selected_ci._as_SCIvector(psi, (sA, sB)),
-            self.norb, self.nelec, link2).reshape(-1)
+        if self._spin_ints is not None:
+            # round_017: 自旋分辨 → 扩展空间 (sA, sB) 建 ops。位序 k=ia*nB+ib:
+            # ops["diag"] 形状 (len(sA), nB), ravel 后与 make_hdiag 输出同序;
+            # psi 按同序展平 → reshape (len(sA), nB) 喂 sigma_vector_ops。
+            ops2 = matrixfree.prepare_sigma_operators(
+                sA, sB, self.norb, self.nelec,
+                (self._spin_ints[0], self._spin_ints[1]),
+                (self._spin_ints[2], self._spin_ints[3], self._spin_ints[4]))
+            hdiag = ops2["diag"].ravel()
+            Hpsi = matrixfree.sigma_vector_ops(
+                psi.reshape(len(sA), nB), ops2).ravel()
+        else:
+            link2 = selected_ci._all_linkstr_index((sA, sB), self.norb, self.nelec)
+            hdiag = selected_ci.make_hdiag(self.h1e, self.eri, (sA, sB),
+                                           self.norb, self.nelec)
+            Hpsi = self.myci.contract_2e(
+                self.h2e, selected_ci._as_SCIvector(psi, (sA, sB)),
+                self.norb, self.nelec, link2).reshape(-1)
 
         out = {}
         for ca, cb in cand:
@@ -1111,21 +1193,21 @@ def solve_sqd_active(
     energy : float
         基态能量 (含 ``ecore``)。
     """
+    # round_017: UHF 自旋分辨放行 —— 不等块 (2,norb,norb) h1e 与 eri
+    # (aa,ab,bb) 三元组透传给 _Subspace (matrixfree ops 路径, CPU); 等块
+    # (2,norb,norb) h1e 照旧 collapse 为单块 (零回归)。组合合法性由
+    # _Subspace.__init__ 派发真值表校验 (与 fermion.solve_sci 一致)。
     if one_body_tensor.ndim == 3:
-        if not np.allclose(one_body_tensor[0], one_body_tensor[1]):
-            raise ValueError(
-                "solve_sqd_active 不支持自旋分辨 h1e; 请传闭壳层 (norb, norb)。"
-            )
-        h1e = np.asarray(one_body_tensor[0])
+        if np.allclose(one_body_tensor[0], one_body_tensor[1]):
+            h1e = np.asarray(one_body_tensor[0])
+        else:
+            h1e = np.asarray(one_body_tensor)
     else:
         h1e = np.asarray(one_body_tensor)
     if isinstance(two_body_tensor, (tuple, list)):
-        raise ValueError(
-            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
-            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
-            "matrixfree 路径。"
-        )
-    eri = np.asarray(two_body_tensor)
+        eri = two_body_tensor
+    else:
+        eri = np.asarray(two_body_tensor)
     na, nb = nelec
     open_shell = na != nb
     # 方向 B (round_007): prune_keep 越界提前报错 (1.0 = 不剪枝零回归, 不报错)
