@@ -1,0 +1,7 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+P0 CH(4,3): dim=300/300 err=7.11e-15 wall=0.4s
+P2 CH closure: dim=300/300 err=7.11e-15 wall=0.6s
+P0' N2(7,7) @500: dim=14161/14400 err=3.47e-08 wall=314.3s
+
+P0: PASS  P0': PASS  P2: PASS
+saved /mnt/d/tc_sqd/benchmarks/_round017_uhf.json

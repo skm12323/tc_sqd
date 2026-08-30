@@ -1992,3 +1992,32 @@ C2/cc-pVDZ CAS(10,10) **根跳**（-75.5509，比真基态高 9.3e-3，conv_tol=
 验收路径 = round_012 closure + round_013 配方 + round_015 shots 轴坍缩的集成
 确认；精度压线（2.97×），速度大余量（0.05×）。采样式"少 shots 量子优势"叙事
 在全空间可对角化体系上正式终结，后续价值转向全空间不可对角化的大体系。
+
+---
+
+## Round 017：UHF active 闭环扩展（2026-08-31，已验证）
+
+### 实测（bench_round017_uhf，CPU，参考 direct_uhf conv_tol=1e-12）
+
+| 预测 | 实测 | 判定 |
+|---|---|---|
+| P0：CH/STO-3G UHF (4,3) 全空间 | dim=300/300，err **7.11e-15**，0.4s | 通过（≤1e-8） |
+| P0'：N₂ (7,7) R=2.5 @500 | dim=14,161/14,400，err **3.47e-08**，314s | 通过（≤1e-6） |
+| P1：零回归 | 全库 CPU 229 passed 0 failed（R4 独立复现）；GPU 10p/1xf/1xp | 通过 |
+| P2：CH coverage_closure | dim=300/300，err **7.11e-15** | 通过（≤1e-9） |
+
+### 改动与契约
+
+`_Subspace` 三元组 eri 支持（cipsi.py 三处：init/diag/pt2_matrix_elements），
+复用 round_011 matrixfree ops 路径；legacy 单块路径逐字未动。范围外显式
+raise：GPU+三元组（NotImplementedError）、HCI/CIPSI/adaptive/distill。
+
+### 认知更新
+
+- **active 加串预算门控的开壳层口径问题**（R1，列后续轮）：
+  `len(str_a)+len(add) >= max_strings` 把 β 串计入 α 预算，闭壳层
+  str_a==str_b 不变式下精确、开壳层会挡 β 补全。本轮用例显式
+  `max_strings=C(norb,max(na,nb))` 绕开。
+- **UHF active 性能画像**：ops einsum matvec ~9× 慢于 contract_2e C 核
+  （N₂ @500 314s）；GPU 化是后续提速方向。
+- UHF 精度线闭环：round_011（基态计算）+ round_017（采样 SQD 工作流）。
