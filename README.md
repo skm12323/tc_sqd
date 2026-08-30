@@ -286,22 +286,45 @@ e = tc_sqd.compute_ground_state_energy(
 
 ## 运行测试
 
+27 个测试模块，**235 个测试函数**（2026-08-28 统计；GPU 测试须拆分单跑，避免与
+CPU 全库并行造成计时污染）：
+
 ```bash
-PYTHONPATH=src python -m tests.test_h2_sqd      # 9 个测试函数，约 50 项断言
-PYTHONPATH=src python -m tests.test_noise        # noise 模块 8 个测试
-PYTHONPATH=src python -m tests.test_predict      # predict 模块 7 个测试
-PYTHONPATH=src python -m tests.test_molecule     # molecule 模块 5 个测试
-PYTHONPATH=src python -m tests.test_diagnostics  # diagnostics 模块 4 个测试
-PYTHONPATH=src python -m tests.test_lucj         # lucj 模块 10 个测试（含 UCJ 分解/子空间/电路）
-PYTHONPATH=src python -m tests.test_open_shell   # 开壳层 5 个测试（CH (3,2)）
-PYTHONPATH=src python -m tests.test_hardware     # 真机 mock 3 个测试（REM/字节序/select_qubits）
-PYTHONPATH=src python -m tests.test_subsampling  # subsampling 模块 5 个测试
-PYTHONPATH=src python -m tests.test_t1_recovery  # T1 感知恢复 3 个测试
-PYTHONPATH=src python -m tests.test_excited      # 激发态采样策略 4 个测试
-PYTHONPATH=src python -m tests.test_sampler      # 统一采样后端 5 个测试
-PYTHONPATH=src python -m tests.test_ansatz       # SQD+VQE 4 个测试
-PYTHONPATH=src python -m tests.test_obmp2        # OBMP2/OBDF 8 个测试
-PYTHONPATH=src python -m tests.test_matrixfree   # matrix-free σ-vector + GPU 3 个测试
+PYTHONPATH=src python -m pytest tests/ -q --ignore=tests/test_subspace_gpu.py
+PYTHONPATH=src python -m pytest tests/test_subspace_gpu.py -q
+```
+
+| 模块 | 数量 | 覆盖 |
+|---|---|---|
+| test_h2_sqd | 18 | H₂ SQD 主路径 / FCI 一致性 |
+| test_tail_sampling | 22 | C1 尾部发现采样（tail_suppression / 预算缩放） |
+| test_sqd_active | 14 | active 循环 solve_sqd_active |
+| test_subspace_gpu | 12 | GPU _Subspace（hybrid/cupyx/fallback + eigsh_tol 消融） |
+| test_noise | 11 | 噪声模型 / T1 反卷积 |
+| test_molecule | 11 | 分子体系集成 |
+| test_lucj | 11 | LUCJ/UCJ 分解 / 电路 |
+| test_triple_injection | 10 | 三激发定向注入 |
+| test_spin_resolved | 10 | 自旋分辨积分 / UHF |
+| test_predict | 10 | 误差预测 / 校准 |
+| test_pruning | 9 | PT2 排序剪枝 prune_keep |
+| test_obmp2 | 8 | OBMP2/OBDF |
+| test_excited | 8 | 激发态采样 |
+| test_coverage_closure | 8 | BFS 覆盖闭包 coverage_closure |
+| test_basis | 8 | 基组 / 自然轨道 |
+| test_warm_start | 7 | warm-start eigsh 初猜 |
+| test_recovery_clustered | 7 | CSQD 聚类恢复 |
+| test_diagnostics | 7 | 诊断 |
+| test_ansatz | 7 | SQD+VQE |
+| test_eigsh_tol | 6 | eigsh_tol 透传 / 等价性 |
+| test_subsampling | 5 | subsampling |
+| test_sampler | 5 | 统一采样后端 |
+| test_open_shell | 5 | 开壳层 CH (3,2) |
+| test_cipsi | 5 | CIPSI/HCI 基础路径 |
+| test_t1_recovery | 4 | T1 感知恢复 |
+| test_matrixfree | 4 | matrix-free σ-vector |
+| test_hardware | 3 | 真机 mock |
+
+```bash
 PYTHONPATH=src python examples/h2_sqd_demo.py    # H2 完整演示
 PYTHONPATH=src python examples/excited_sqd_demo.py  # 激发态 SQD 全链路 (LiH)
 PYTHONPATH=src python examples/noise_aware_demo.py  # 噪声感知全链路 (T1反卷积+规划+诊断)
@@ -328,8 +351,8 @@ tc_sqd/
 ├── README.md                 # 本文件
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
-├── src/tc_sqd/               # counts, configuration_recovery, subsampling, fermion, qubit, lucj, integrated, noise, predict, hardware, molecule, diagnostics, sampler, obmp2, matrixfree, _compat
-├── tests/                    # test_h2_sqd, test_noise, test_predict, test_molecule, test_diagnostics, test_lucj, test_open_shell, test_subsampling, test_t1_recovery, test_excited, test_sampler, test_ansatz, test_hardware, test_obmp2, test_matrixfree
+├── src/tc_sqd/               # _compat, basis, cipsi, configuration_recovery, counts, diagnostics, fermion, hardware, integrated, lucj, matrixfree, molecule, noise, obmp2, predict, qubit, sampler, selected_ci_gpu, subsampling, tail_sampling
+├── tests/                    # 27 个测试模块 / 235 个测试函数（清单见"运行测试"节）
 └── examples/
     ├── h2_sqd_demo.py        # H2 完整演示
     ├── excited_sqd_demo.py   # 激发态 SQD 全链路 (LiH: n_roots + 激发配置强制纳入)
@@ -338,7 +361,7 @@ tc_sqd/
     └── ucj_demo.py           # UCJ 全链 (分解 → 确定性 SQD → 电路采样，LiH 7.5e-4 → ~2e-4)
 ```
 
-> 审查与验证历史（4 轮）见 [`REVIEW.md`](REVIEW.md)。
+> 审查与验证历史（逐轮追加）见 [`REVIEW.md`](REVIEW.md)。
 
 ## License
 

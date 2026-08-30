@@ -1,0 +1,29 @@
+Please first ``pip install -U qiskit`` to enable related functionality in translation module
+=== Part A: 12,12 @500 closure (n_active=90, GPU) tol 变体 ===
+  tol=1e-06: E=-108.7686857376 err=1.13e-10 dim=853776 n_mv=699 n_diag=9 wall=42.1s
+  tol=1e-10: E=-108.7686857377 err=2.25e-10 dim=853776 n_mv=1459 n_diag=9 wall=85.5s
+  tol=0: E=-108.7686857377 err=2.25e-10 dim=853776 n_mv=2639 n_diag=9 wall=152.9s
+
+=== Part B: 4 体系 @500 closure vs baseline (不回归) ===
+  n2_ccpvdz_10o: closure dim=63504 err=1.59e-10 wall=2.2s | baseline dim=63504 err=1.59e-10
+  c2_sto3g: closure dim=44100 err=2.42e-13 wall=4.1s | baseline dim=44100 err=2.56e-13
+  n2_sto3g: closure dim=14400 err=4.26e-14 wall=1.6s | baseline dim=14400 err=0.00e+00
+  c2_ccpvdz_10o: closure dim=63504 err=1.42e-13 wall=4.5s | baseline dim=63504 err=1.42e-13
+
+==========================================================================
+=== round_016 北极星验收汇总 ===
+==========================================================================
+体系                     full clos_dim   clos_err    SHCI 参考      比值
+n2_ccpvdz_1212       853776   853776   1.13e-10   3.80e-11    2.97
+n2_ccpvdz_10o         63504    63504   1.59e-10   9.50e-11    1.67
+c2_sto3g              44100    44100   2.42e-13   9.30e-11    0.00
+n2_sto3g              14400    14400   4.26e-14   8.40e-07    0.00
+c2_ccpvdz_10o         63504    63504   1.42e-13   2.60e-13    0.55
+
+P0 (12,12 三指标: dim/err≤1.14e-10/wall≤2436s): PASS
+   err=1.13e-10 = 2.97×SHCI; wall=42.1s vs 3×812s
+P1 (4 体系不回归: 全空间 + err≤baseline):       PASS
+P2 (tol 收紧降低底噪):                          FAIL
+   tol=1e-6: 1.13e-10  1e-10: 2.25e-10  0: 2.25e-10
+
+saved /mnt/d/tc_sqd/benchmarks/_round016_northstar.json
