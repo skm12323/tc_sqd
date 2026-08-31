@@ -343,7 +343,8 @@ def test_spin_resolved_raises():
 #  P0  : CH/STO-3G UHF (4,3) active 全空间闭环, err ≤1e-8 vs direct_uhf
 #  P0' : N2/STO-3G R=2.5 UHF (7,7) @500 shots, active 准 FCI (实测锚定)
 #  P2  : CH (4,3) coverage_closure=True → dim=300 全空间, err ≤1e-9
-#  契约: backend="gpu" + 三元组 → NotImplementedError
+#  契约: backend="gpu" + 三元组 → NotImplementedError (round_019 起转为可用,
+#        见本文件末 round_019 节)
 # --------------------------------------------------------------------------- #
 def test_subspace_spin_resolved_diag_matches_solve_sci_full(ch):
     """round_017 改写锚 (原 _Subspace raise 守卫 → 正向): 三元组 _Subspace
@@ -447,12 +448,118 @@ def test_sqd_ev_and_best_uhf_smoke(ch):
         f"solve_sqd_best CH (4,3) err={abs(d_best['energy'] - e_ref):.2e} > 1e-8")
 
 
-def test_subspace_spin_resolved_gpu_raises(ch):
-    """契约: backend='gpu' + 三元组 → NotImplementedError (GPU linkstr kernel
-    spin1 专用; 与 fermion.solve_sci 自旋分辨分支同契约, GPU 支持列后续轮)。"""
+# --------------------------------------------------------------------------- #
+#  round_019: 自旋分辨 GPU 化 (hybrid = scipy eigsh + GPU ops matvec)
+#
+#  P0  : CH (4,3) active backend="gpu" 全空间闭环 err ≤1e-8, 与 CPU |ΔE|≤1e-9
+#  P0' : _Subspace 级 N2 (7,7) 子空间 (dim=1600>1000 走 GPU 分支) gpu vs cpu
+#  P2  : mock GPU OOM → except 回退 CPU ops (能量 ≤1e-12); cupyx 模式 smoke
+#  契约: backend="gpu" + 三元组从 NotImplementedError 转为可用 (无 GPU 静默
+#        回退 CPU, round_003 §6.4 语义)
+# --------------------------------------------------------------------------- #
+def _have_gpu():
+    """cupy + 真实 GPU 设备可用?"""
+    try:
+        import cupy
+        if not cupy.cuda.runtime.getDeviceCount():
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def _n2_sub_strs(n2, step=3):
+    """N2 (7,7) 全空间 120x120 每 step 取 1 → 40x40 (dim 1600 > 1000,
+    触发 GPU 分支 ②-GPU; dense 分支 ≤1000 不触达)。"""
+    _, _, norb, nelec = n2
+    sa, sb = _full_strs(norb, nelec)
+    return np.asarray(sa[::step]), np.asarray(sb[::step])
+
+
+def test_subspace_spin_resolved_gpu_accepted(ch):
+    """round_019 改写锚 (原 gpu_raises): 三元组 + backend='gpu' 不再 raise;
+    有 GPU → backend 保持 'gpu', 无 GPU → 静默回退 'cpu' (round_003 §6.4)。"""
     h1e, eri, norb, nelec = ch
-    with pytest.raises(NotImplementedError, match="cpu"):
-        _Subspace(h1e, eri, norb, nelec, backend="gpu")
+    sub = _Subspace(h1e, eri, norb, nelec, backend="gpu")
+    assert sub._spin_ints is not None
+    if _have_gpu():
+        assert sub.backend == "gpu"
+    else:
+        assert sub.backend == "cpu"
+
+
+@pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
+def test_subspace_spin_resolved_gpu_hybrid_matches_cpu(n2):
+    """P0' (_Subspace 级): 同一 N2 (7,7) 子空间 (dim=1600), backend='gpu'
+    (hybrid: scipy 引擎 + GPU ops matvec) 与 'cpu' diag 能量一致 ≤1e-10。"""
+    h1e, eri, norb, nelec = n2
+    sa, sb = _n2_sub_strs(n2)
+    E_cpu, c_cpu, _, _ = _Subspace(h1e, eri, norb, nelec,
+                                   backend="cpu").diag(sa, sb)
+    sub_gpu = _Subspace(h1e, eri, norb, nelec, backend="gpu")
+    E_gpu, c_gpu, _, _ = sub_gpu.diag(sa, sb)
+    assert sub_gpu.backend == "gpu"
+    assert sub_gpu.last_n_mv > 0, "GPU matvec 计数器未动 (未走 GPU 分支?)"
+    assert abs(E_gpu - E_cpu) <= 1e-10, (
+        f"GPU hybrid E={E_gpu:.12f} != CPU E={E_cpu:.12f} "
+        f"(diff={abs(E_gpu - E_cpu):.2e})")
+
+
+@pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
+def test_subspace_spin_resolved_gpu_fallback_oom(n2, monkeypatch):
+    """P2: mock GPU matvec OOM → except 回退 CPU ops, 能量与纯 CPU ≤1e-12。
+
+    monkeypatch matrixfree.sigma_vector_ops: xp 非 numpy (cupy) 时抛
+    MemoryError; numpy (回退路径) 透传原函数。"""
+    from tc_sqd import matrixfree
+    orig = matrixfree.sigma_vector_ops
+
+    def _oom_on_gpu(v, ops, xp=np):
+        if xp is not np:
+            raise MemoryError("mock GPU ops matvec OOM (round_019 回退测试)")
+        return orig(v, ops, xp)
+
+    monkeypatch.setattr(matrixfree, "sigma_vector_ops", _oom_on_gpu)
+    h1e, eri, norb, nelec = n2
+    sa, sb = _n2_sub_strs(n2)
+    E_cpu, _, _, _ = _Subspace(h1e, eri, norb, nelec, backend="cpu").diag(sa, sb)
+    E_fb, _, _, _ = _Subspace(h1e, eri, norb, nelec, backend="gpu").diag(sa, sb)
+    assert abs(E_fb - E_cpu) <= 1e-12, (
+        f"OOM 回退 E={E_fb:.12f} != CPU E={E_cpu:.12f}")
+
+
+@pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
+def test_subspace_spin_resolved_cupyx_smoke(n2):
+    """P2: gpu_eigsh_mode='cupyx' 诊断基线 smoke (dim=1600 小维度可收敛;
+    若 stall 触发 maxiter 护栏则 except 回退, 能量同样正确)。"""
+    h1e, eri, norb, nelec = n2
+    sa, sb = _n2_sub_strs(n2)
+    E_cpu, _, _, _ = _Subspace(h1e, eri, norb, nelec, backend="cpu").diag(sa, sb)
+    E_cx, _, _, _ = _Subspace(h1e, eri, norb, nelec, backend="gpu",
+                              gpu_eigsh_mode="cupyx").diag(sa, sb)
+    assert abs(E_cx - E_cpu) <= 1e-10, (
+        f"cupyx 模式 E={E_cx:.12f} != CPU E={E_cpu:.12f}")
+
+
+@pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
+def test_sqd_active_uhf_ch_full_space_closure_gpu():
+    """P0 (端到端): CH (4,3) active backend='gpu' 全空间闭环 err ≤1e-8,
+    且与同种子 CPU backend |ΔE| ≤1e-9 (dim=300 走 dense 分支, 本测试锚定
+    'gpu 三元组可用且结果正确' 的入口契约; GPU matvec 分支由
+    test_subspace_spin_resolved_gpu_hybrid_matches_cpu 覆盖)。"""
+    from tc_sqd import solve_sqd_active
+    mf = _ch_uhf()
+    h1e, eri, norb, nelec = _uhf_integrals(mf)
+    e_ref = _direct_uhf_ref(h1e, eri, norb, nelec)
+    bsm = np.random.default_rng(0).random((2000, 2 * norb)) > 0.5
+    common = dict(bitstring_matrix=bsm, n_active_per_round=50,
+                  max_rounds=10, rand_seed=0)
+    e_gpu = solve_sqd_active(h1e, eri, norb, nelec, backend="gpu", **common)
+    e_cpu = solve_sqd_active(h1e, eri, norb, nelec, backend="cpu", **common)
+    assert abs(e_gpu - e_ref) <= 1e-8, (
+        f"CH (4,3) active gpu err={abs(e_gpu - e_ref):.2e} > 1e-8")
+    assert abs(e_gpu - e_cpu) <= 1e-9, (
+        f"gpu/cpu |ΔE|={abs(e_gpu - e_cpu):.2e} > 1e-9")
 
 
 if __name__ == "__main__":

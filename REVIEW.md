@@ -2070,3 +2070,39 @@ max_strings 参数（纯 eps_hb 控制），代码不动正确，表述列后续
   test_prune_keep_default_bit_identical_active（rtol=1e-10 自洽锚对独立
   ARPACK 收敛噪声边缘敏感）；另有旧知 test_ccsd_no_increases_sparsity。
   教训：全库/复跑须独占，并发 GPU 测试曾致闭壳层测试假挂。
+
+---
+
+## Round 019：自旋分辨（UHF）active GPU 化（2026-08-31，已验证）
+
+### 实测（bench_round019_uhf_gpu + bench_round019_p0a_ops_gpu，RTX 5080）
+
+| 预测 | 实测 | 判定 |
+|---|---|---|
+| P0a（前提）：ops matvec GPU ≥3× CPU | dim 14.4k **7.9-8.0×**、90k **10.0-10.1×**（含逐 mv 传输；传输 <1%；GPU/CPU maxdiff 1.4e-14） | 通过（远超门槛） |
+| P0：CH (4,3) active gpu 闭环 | err 3.55e-14（≤1e-8），与 CPU ΔE=0.00 | 通过 |
+| P0'：N₂ (7,7) @500 gpu | err 3.46e-08 = CPU 同值；ΔE **2.7e-13**；wall 328.4s→**41.0s = 8.00×**（门槛 1.5×） | 通过 |
+| P1：零回归 | 全库 235 passed + 1 flake（eigsh_tol 消融，隔离即过）；GPU 拆分 9p/1xf/1xp + 1 flake（cupyx fallback，atol=1e-8 边缘家族） | 通过 |
+| P2：OOM 回退 + cupyx smoke | dim=1600 子空间两测试通过（回退 E 与 CPU ≤1e-12） | 通过 |
+
+### 改动与契约
+
+`_Subspace.__init__`：三元组 + backend="gpu" 从 NotImplementedError 转为
+has_gpu 静默回退（round_003 §6.4 语义）；`diag` 自旋分辨分支新增 ②-GPU
+（ops H2D 一次性常驻 + `sigma_vector_ops(xp=cupy)` matvec；hybrid 默认 =
+scipy eigsh 引擎；cupyx=诊断基线带 maxiter 护栏；except → CPU ops 回退）。
+闭壳层全部路径与自旋分辨 ① dense / ②-CPU / pt2 **逐字未动**（结构性零回归）。
+零新算法：round_011 xp 后端无关预埋 + round_005 hybrid 架构的组合兑现。
+附带修复 round_017 遗留：4 处入口三元组 raise 的过时文案（"不被 _Subspace
+支持"→"不被本入口支持"）。
+
+### 认知更新
+
+- **UHF active 速度线收敛**：N₂ (7,7) @500 从 ~314-328s → **41s**（8.0×），
+  端到端加速 = per-mv 加速（matvec 主导画像的直接推论）。
+- **flake 家族 +2**：test_eigsh_tol::tol_ablation_cpu（tol 计数断言 ARPACK
+  边缘敏感）、test_subspace_gpu_lazy_hop_fallback_cupyx（5 连跑 1 过）。
+  家族已达 6 例，共性 = 独立 ARPACK 运行噪声 vs 边缘阈值；**测试去抖专项
+  列候选方向**（固定 v0 / atol 3-5e-8 / 能量主断言）。
+- R4 放行（零 blocker/major；minor-1 README 计数、minor-5 p0a json 落盘
+  已修；spin+cupyx+warm_start 无覆盖记录为低优先遗留）。

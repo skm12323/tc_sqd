@@ -169,11 +169,12 @@ class _Subspace:
                     "= (h_alpha, h_beta); 单块 h1e 配三块 eri 无自洽物理意义。"
                 )
             if backend == "gpu":
-                raise NotImplementedError(
-                    "_Subspace 自旋分辨路径首期仅 backend='cpu' (GPU linkstr "
-                    "kernel spin1 专用); 请用 fermion.solve_sci CPU matrixfree "
-                    "路径或 backend='cpu' (GPU 支持列后续轮)。"
-                )
+                # round_019: 自旋分辨 GPU 化 (hybrid = scipy eigsh 引擎 + GPU
+                # ops matvec, P0a 实测 per-mv 8-10× CPU, 逐 mv 传输 <1%);
+                # 与闭壳层同语义: 无 GPU 静默回退 CPU (绝不 raise, round_003 §6.4)
+                from .noise import has_gpu
+                if not has_gpu():
+                    backend = "cpu"
             self._spin_ints = matrixfree._split_spin_integrals(self.h1e, eri)
             self.eri = None
             self.norb = norb
@@ -304,7 +305,7 @@ class _Subspace:
             # round_017: 自旋分辨 → matrixfree ops matvec 路径 (模板照抄
             # fermion.solve_sci 自旋分辨分支 ~830-848 行): 每轮
             # prepare_sigma_operators 一次 + sigma_vector_ops 逐 matvec。
-            # GPU 分支在三元组不可达 (__init__ 已 raise) → 只有 ①/②-CPU 两分支。
+            # round_019: dim>1000 且 backend="gpu" 走 GPU ops matvec 分支。
             # warm_start/_tol_fix/_kw_tol/last_n_mv 机制与 matvec 源解耦, 原样透传。
             _h_ab = (self._spin_ints[0], self._spin_ints[1])
             _eri3 = (self._spin_ints[2], self._spin_ints[3], self._spin_ints[4])
@@ -325,8 +326,51 @@ class _Subspace:
                     H[:, col] = _hop(e)
                 ev, cv = np.linalg.eigh(H)
                 E, c1d = float(ev[0]), cv[:, 0]
+            elif self.backend == "gpu" and self.gpu_eigsh_mode != "cpu_fallback":
+                # round_019 分支 ②-GPU (自旋分辨): ops 一次性 H2D 常驻 +
+                # sigma_vector_ops(xp=cupy) matvec。hybrid (默认) = scipy eigsh
+                # 引擎 (继承 N_matvec 分布, 绕开 cupyx stall round_003/004);
+                # cupyx = 诊断基线 (maxiter 护栏 + except 回退); 异常 →
+                # ②-CPU ops 回退 (round_004 护栏同构)。cpu_fallback 不入本分支。
+                try:
+                    import cupy as cp
+                    ops_g = {kk: cp.asarray(aa) for kk, aa in ops.items()
+                             if hasattr(aa, "shape")}
+
+                    def _gpu_mv(v):
+                        self.last_n_mv += 1
+                        xv = cp.asarray(v).reshape(nA, nB)
+                        return matrixfree.sigma_vector_ops(xv, ops_g, cp)
+
+                    if self.gpu_eigsh_mode == "cupyx":
+                        from cupyx.scipy.sparse.linalg import eigsh as cp_eigsh
+                        from cupyx.scipy.sparse.linalg import (
+                            LinearOperator as cp_LO)
+                        A = cp_LO((dim, dim), matvec=lambda v: _gpu_mv(v).reshape(-1),
+                                  dtype=np.float64)
+                        ev, cv = cp_eigsh(A, k=1, which="SA", tol=_tol_fix,
+                                          maxiter=3000, **kw)
+                    else:  # "hybrid" (默认): scipy 引擎 + GPU matvec (.get D2H)
+                        def matvec(v):
+                            return np.asarray(_gpu_mv(v).get()).ravel()
+                        op = LinearOperator((dim, dim), matvec=matvec,
+                                            dtype=np.float64)
+                        ev, cv = eigsh(op, k=1, which="SA", tol=_tol_fix,
+                                       maxiter=3000, **kw)
+                    if hasattr(ev, "get"):
+                        ev = ev.get()
+                    if hasattr(cv, "get"):
+                        cv = cv.get()
+                    E, c1d = float(ev[0]), np.asarray(cv).ravel()
+                except Exception:
+                    # OOM / cupyx 不收敛 → CPU ops 回退 (与 ②-CPU 逐字同式)
+                    op = LinearOperator((dim, dim), matvec=_counted(_hop),
+                                        dtype=np.float64)
+                    ev, cv = eigsh(op, k=1, which="SA", maxiter=3000,
+                                   **_kw_tol, **kw)
+                    E, c1d = float(ev[0]), np.asarray(cv).ravel()
             else:
-                # 分支 ②-CPU (自旋分辨唯一大维度路径): scipy eigsh LinearOperator
+                # 分支 ②-CPU (自旋分辨 CPU 大维度路径): scipy eigsh LinearOperator
                 op = LinearOperator((dim, dim), matvec=_counted(_hop),
                                     dtype=np.float64)
                 ev, cv = eigsh(op, k=1, which="SA", maxiter=3000, **_kw_tol, **kw)
@@ -535,9 +579,9 @@ def solve_cipsi(
         h1e = np.asarray(one_body_tensor)
     if isinstance(two_body_tensor, (tuple, list)):
         raise ValueError(
-            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
-            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
-            "matrixfree 路径。"
+            "自旋分辨 eri (aa,ab,bb) 三元组不被本入口支持; 自旋分辨选态请用 "
+            "solve_sqd_active (CPU/GPU, round_017/019) 或 fermion.solve_sci "
+            "(CPU matrixfree) 路径。"
         )
     eri = np.asarray(two_body_tensor)
 
@@ -720,9 +764,9 @@ def solve_hci(
         h1e = np.asarray(one_body_tensor)
     if isinstance(two_body_tensor, (tuple, list)):
         raise ValueError(
-            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
-            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
-            "matrixfree 路径。"
+            "自旋分辨 eri (aa,ab,bb) 三元组不被本入口支持; 自旋分辨选态请用 "
+            "solve_sqd_active (CPU/GPU, round_017/019) 或 fermion.solve_sci "
+            "(CPU matrixfree) 路径。"
         )
     eri = np.asarray(two_body_tensor)
     na, nb = nelec
@@ -891,9 +935,9 @@ def solve_sqd_adaptive(
         h1e = np.asarray(one_body_tensor)
     if isinstance(two_body_tensor, (tuple, list)):
         raise ValueError(
-            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
-            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
-            "matrixfree 路径。"
+            "自旋分辨 eri (aa,ab,bb) 三元组不被本入口支持; 自旋分辨选态请用 "
+            "solve_sqd_active (CPU/GPU, round_017/019) 或 fermion.solve_sci "
+            "(CPU matrixfree) 路径。"
         )
     eri = np.asarray(two_body_tensor)
     na, nb = nelec
@@ -1860,9 +1904,9 @@ def solve_sqd_distill(
         h1e = np.asarray(one_body_tensor)
     if isinstance(two_body_tensor, (tuple, list)):
         raise ValueError(
-            "自旋分辨 eri (aa,ab,bb) 三元组不被 _Subspace (active/PT2/HCI/CIPSI) "
-            "支持 (spin1 absorb_h1e 专用); 自旋分辨请用 fermion.solve_sci CPU "
-            "matrixfree 路径。"
+            "自旋分辨 eri (aa,ab,bb) 三元组不被本入口支持; 自旋分辨选态请用 "
+            "solve_sqd_active (CPU/GPU, round_017/019) 或 fermion.solve_sci "
+            "(CPU matrixfree) 路径。"
         )
     eri = np.asarray(two_body_tensor)
 

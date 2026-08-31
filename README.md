@@ -286,7 +286,7 @@ e = tc_sqd.compute_ground_state_energy(
 
 ## 运行测试
 
-27 个测试模块，**244 个测试函数**（2026-08-31 统计；GPU 测试须拆分单跑，避免与
+27 个测试模块，**248 个测试函数**（2026-08-31 统计；GPU 测试须拆分单跑，避免与
 CPU 全库并行造成计时污染）：
 
 ```bash
@@ -333,7 +333,7 @@ PYTHONPATH=src python examples/ucj_demo.py          # UCJ 全链 (分解 → 确
 
 ## 限制与已知边界
 
-- **开壳层 / UHF**：SQD 核心（`solve_sci`/三路径）与 `recover_configurations`/`estimate_true_occupancies` 原生支持 `n_α≠n_β`；`from_pyscf` 支持 ROHF（`mol.spin!=0` 自动）；**UHF 支持**（round_011：`from_pyscf`/`solve_sci`/`build_ci_matrix`/`compute_ground_state_energy(method="fci")` 走自旋分辨 matrixfree / `pyscf.fci.direct_uhf` 路径，全空间与任意子空间，CPU；round_017 起 **active/PT2/ev/best/auto 闭环与 coverage_closure 也支持三元组 eri**（matrixfree ops 路径，CPU）；仍首期 raise：HCI/CIPSI/adaptive/distill、CSF、GPU、linkstr、UHF+frozen-core）；UHF 轨道基下的 S² 为共享轨道近似（与 `direct_uhf` 行为一致）；UHF 基下的采样/电路恢复行为未验证（实验性）。`build_lucj_circuit`/`build_ucj_circuit` 仍闭壳层（开壳层用 HF 电路采样）。
+- **开壳层 / UHF**：SQD 核心（`solve_sci`/三路径）与 `recover_configurations`/`estimate_true_occupancies` 原生支持 `n_α≠n_β`；`from_pyscf` 支持 ROHF（`mol.spin!=0` 自动）；**UHF 支持**（round_011：`from_pyscf`/`solve_sci`/`build_ci_matrix`/`compute_ground_state_energy(method="fci")` 走自旋分辨 matrixfree / `pyscf.fci.direct_uhf` 路径，全空间与任意子空间，CPU；round_017 起 **active/PT2/ev/best/auto 闭环与 coverage_closure 也支持三元组 eri**（matrixfree ops 路径，CPU）；round_019 起上述 _Subspace 系路径 **GPU 可用**（hybrid：scipy eigsh 引擎 + GPU ops matvec，per-mv 实测 8-10× CPU；无 GPU 静默回退 CPU）；仍首期 raise：HCI/CIPSI/adaptive/distill、CSF、`solve_sci` GPU、linkstr 三元组、UHF+frozen-core）；UHF 轨道基下的 S² 为共享轨道近似（与 `direct_uhf` 行为一致）；UHF 基下的采样/电路恢复行为未验证（实验性）。`build_lucj_circuit`/`build_ucj_circuit` 仍闭壳层（开壳层用 HF 电路采样）。
 - **一电子积分**：单个 `(norb, norb)`（或两块相同的 `(2, norb, norb)`，collapse）；
   自旋分辨 `h_alpha ≠ h_beta` 须配 `eri (aa,ab,bb)` 三元组（round_011 新路径），非法组合显式 raise。
 - **`max_dim`**：已实现（`limit_subspace` 按概率贪心裁剪；int=总行列式数、tuple=(na, nb)）。`include_configurations` / carryover 强制配置不受裁剪。
@@ -352,7 +352,7 @@ tc_sqd/
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
 ├── src/tc_sqd/               # _compat, basis, cipsi, configuration_recovery, counts, diagnostics, fermion, hardware, integrated, lucj, matrixfree, molecule, noise, obmp2, predict, qubit, sampler, selected_ci_gpu, subsampling, tail_sampling
-├── tests/                    # 27 个测试模块 / 244 个测试函数（清单见"运行测试"节）
+├── tests/                    # 27 个测试模块 / 248 个测试函数（清单见"运行测试"节）
 └── examples/
     ├── h2_sqd_demo.py        # H2 完整演示
     ├── excited_sqd_demo.py   # 激发态 SQD 全链路 (LiH: n_roots + 激发配置强制纳入)
