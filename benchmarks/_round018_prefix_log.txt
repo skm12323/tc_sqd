@@ -1,0 +1,7 @@
+closure_default: dim=165/300 err=1.19e-01 wall=78.8s
+closure_cap15: dim=165/300 err=1.19e-01 wall=72.3s
+cipsi_default: err=2.27e-03
+
+P0 (closure 默认补全 300): FAIL
+P0' (cipsi 默认=FCI):       FAIL
+saved benchmarks/_round018_budget.json

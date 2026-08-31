@@ -98,6 +98,77 @@ def test_open_shell_estimate_true_occupancies():
     assert abs(est_b.sum() - 2) < 1e-8
 
 
+# --------------------------------------------------------------------------- #
+#  round_018: 开壳层预算门控按扇区修正 (β 串不再计入 α 预算)
+# --------------------------------------------------------------------------- #
+def _ch73_data():
+    """CH/STO-3G ROHF 积分, nelec=(4,3) —— α 全空间 C(6,4)=15 < β C(6,3)=20
+    (旧门控 β 新串计入 α 预算 + 默认上限=C(norb,na) → β 永远补不全)。"""
+    d = _ch_data()
+    d["nelec"] = (4, 3)
+    return d
+
+
+def test_open_shell_budget_per_sector_closure_default():
+    """round_018 P0: 开壳层 (4,3) coverage_closure 用**默认** max_strings
+    补全全空间 300 (修复前默认上限=15 且 β 计入 α 预算 → 停 270)。"""
+    d = _ch73_data()
+    norb, nelec = d["norb"], d["nelec"]
+    e_ref = fci.direct_spin1.kernel(d["h1e"], d["eri"], norb, nelec,
+                                    conv_tol=1e-12)[0]
+    bsm = np.random.default_rng(0).random((30, 2 * norb)) > 0.5
+    st = []
+    e = tc_sqd.solve_sqd_active(
+        d["h1e"], d["eri"], norb, nelec, bitstring_matrix=bsm,
+        n_active_per_round=5, max_rounds=3, rand_seed=0,
+        coverage_closure=True, state_out=st)
+    nA = int(fci.cistring.num_strings(norb, nelec[0]))   # 15
+    nB = int(fci.cistring.num_strings(norb, nelec[1]))   # 20
+    assert st[0][1].shape[0] == nA and st[0][2].shape[0] == nB, (
+        f"closure 应补全两扇区全空间 {nA}x{nB}, got "
+        f"{st[0][1].shape[0]}x{st[0][2].shape[0]}")
+    assert abs(e - e_ref) <= 1e-9, f"closure 全空间 err={abs(e - e_ref):.2e}"
+
+
+def test_open_shell_budget_per_sector_cap():
+    """round_018 P0': max_strings=8 小上限 → 两扇区各自 ≤8 (按扇区计数;
+    采样覆盖本就不受上限约束, 用小 shots 种子使 PT2 扩展主导)。"""
+    d = _ch73_data()
+    norb, nelec = d["norb"], d["nelec"]
+    bsm = np.random.default_rng(0).random((4, 2 * norb)) > 0.5
+    st = []
+    tc_sqd.solve_sqd_active(
+        d["h1e"], d["eri"], norb, nelec, bitstring_matrix=bsm,
+        max_strings=8, n_active_per_round=10, max_rounds=8, rand_seed=0,
+        state_out=st)
+    na_fin, nb_fin = st[0][1].shape[0], st[0][2].shape[0]
+    assert na_fin <= 8 and nb_fin <= 8, f"扇区上限 8, got {na_fin}x{nb_fin}"
+
+
+def test_open_shell_cipsi_budget_fix_fci():
+    """round_018 P0': solve_cipsi 开壳层默认上限修复后补全全空间 → E = FCI
+    (修复前 β 扇区被挡, 达不到)。
+
+    注: solve_cipsi 的 seed 位串不经 recover_configurations 粒子数修复
+    (预存行为, 与 round_018 无关) —— 种子必须电子数合法。"""
+    d = _ch73_data()
+    norb, nelec = d["norb"], d["nelec"]
+    e_ref = fci.direct_spin1.kernel(d["h1e"], d["eri"], norb, nelec,
+                                    conv_tol=1e-12)[0]
+    rng = np.random.default_rng(0)
+    rows = []
+    for _ in range(40):                      # [β | α] 合法填充 (4α, 3β)
+        a = np.zeros(norb, dtype=bool)
+        a[rng.choice(norb, nelec[0], replace=False)] = True
+        b = np.zeros(norb, dtype=bool)
+        b[rng.choice(norb, nelec[1], replace=False)] = True
+        rows.append(np.concatenate([b, a]))
+    e = tc_sqd.solve_cipsi(d["h1e"], d["eri"], norb, nelec,
+                           seed_bitstring_matrix=np.array(rows),
+                           pt2_floor=0.0, max_iter=12)
+    assert abs(e - e_ref) <= 1e-9, f"cipsi 全空间 err={abs(e - e_ref):.2e}"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_"):

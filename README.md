@@ -286,7 +286,7 @@ e = tc_sqd.compute_ground_state_energy(
 
 ## 运行测试
 
-27 个测试模块，**241 个测试函数**（2026-08-31 统计；GPU 测试须拆分单跑，避免与
+27 个测试模块，**244 个测试函数**（2026-08-31 统计；GPU 测试须拆分单跑，避免与
 CPU 全库并行造成计时污染）：
 
 ```bash
@@ -352,7 +352,7 @@ tc_sqd/
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
 ├── src/tc_sqd/               # _compat, basis, cipsi, configuration_recovery, counts, diagnostics, fermion, hardware, integrated, lucj, matrixfree, molecule, noise, obmp2, predict, qubit, sampler, selected_ci_gpu, subsampling, tail_sampling
-├── tests/                    # 27 个测试模块 / 235 个测试函数（清单见"运行测试"节）
+├── tests/                    # 27 个测试模块 / 244 个测试函数（清单见"运行测试"节）
 └── examples/
     ├── h2_sqd_demo.py        # H2 完整演示
     ├── excited_sqd_demo.py   # 激发态 SQD 全链路 (LiH: n_roots + 激发配置强制纳入)

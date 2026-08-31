@@ -2021,3 +2021,52 @@ raise：GPU+三元组（NotImplementedError）、HCI/CIPSI/adaptive/distill。
 - **UHF active 性能画像**：ops einsum matvec ~9× 慢于 contract_2e C 核
   （N₂ @500 314s）；GPU 化是后续提速方向。
 - UHF 精度线闭环：round_011（基态计算）+ round_017（采样 SQD 工作流）。
+
+---
+
+## Round 018：开壳层预算门控口径修正（2026-08-31，已验证）
+
+### 实测（bench_round018_openshell_budget，CH/STO-3G (4,3) ROHF 积分，全空间 300）
+
+| 预测 | 实测 | 判定 |
+|---|---|---|
+| P0：closure 默认上限补全全空间 | 修复前 dim=165/300 err 1.19e-01 → 修复后 **dim=300/300 err 1.42e-14** | 通过（≤1e-9） |
+| P0'：max_strings 按扇区生效 | cap=15 → dim=225=15×15，两扇区均 ≤cap | 通过 |
+| P1：零回归 | 全库 CPU 232 passed 0 failed（R3 代码）；R4 修正后复跑 230 passed + 2 failed 均为 flake（隔离即过） | 通过 |
+| P2：去显式 max_strings 仍补全 | 同 P0；solve_cipsi 默认 err **1.42e-14** = FCI | 通过 |
+
+（修复前 270/165 的数字差异为 bsm 种子不同，均 <300，不影响判定方向；
+wall 因与全库测试并发污染未采用。）
+
+### 改动与契约
+
+`max_strings` 语义修正为**每自旋扇区**字符串数上限：PT2 对循环 ×3
+（solve_cipsi/solve_sqd_active/solve_sqd_adaptive）开壳层分支 pend 挂起集合
+按扇区精确计数（已存在串不计入）；BFS 单串循环按所属扇区 `_pa_n/_pb_n`
+计数（na≠nb 时 popcount 不同，扇区归属必唯一）；默认值三处改
+`max(C(norb,na), C(norb,nb))`。闭壳层一律走逐字保留的 elif 旧表达式 +
+max(x,x)=x —— 结构性零回归。
+
+### R4 结论与修正
+
+放行（独立审查）。两处 minor 已修正并复跑：**M1** pend 集合无条件 add
+导致已存在串混入、门控偏严（安全方向但偏离"精确计数"设计）→ 三处改条件
+add；**M2** coverage_closure docstring 默认值描述漏改 → 补齐。
+**M3**（文档表述）：theory 题述列 solve_hci 入 bug 范围，实际 solve_hci 无
+max_strings 参数（纯 eps_hb 控制），代码不动正确，表述列后续文档维护。
+遗留观察（预存）：predict.py 推荐启发式仍 α-only；solve_cipsi 循环顶 guard
+大扇区满即整体停。
+
+### 认知更新
+
+- **开壳层预算口径**：修复前默认 `C(norb,na)` 在 nb>na 时 β 扇区永远补不全
+  （CH (4,3) 停 165-270/300，err 0.119）；修复后两扇区均可默认补全全空间。
+- **预存坑（数据纪律）**：solve_cipsi 种子不经 recover_configurations 粒子数
+  修复——随机 bsm 直喂会在 pyscf des_des_linkstr 触发非法电子数 native
+  crash（malloc abort）；测试种子须按 (na,nb) 合法构造。入口校验列候选。
+- **已知 flake 清单扩充**（均与本轮改动路径无关，隔离复跑即过）：
+  test_subspace_gpu_lazy_hop_fallback_hybrid、test_sigma_cached_eri_correctness
+  （GPU，ARPACK 随机 v0，atol=1e-8 边缘）、
+  test_prune_keep_default_bit_identical_active（rtol=1e-10 自洽锚对独立
+  ARPACK 收敛噪声边缘敏感）；另有旧知 test_ccsd_no_increases_sparsity。
+  教训：全库/复跑须独占，并发 GPU 测试曾致闭壳层测试假挂。

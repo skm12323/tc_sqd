@@ -496,8 +496,9 @@ def solve_cipsi(
         种子 det 集合 (位串矩阵, 如 ``ucj_assisted_configurations`` 输出或
         ``np.vstack([exc, ucj])``)。
     max_strings : int | None
-        字符串集合上限 (对角化维度 ≈ n_str_a × n_str_b)。``None`` = 默认
-        补全到全空间 ``C(norb, nelec[0])``。
+        每自旋扇区字符串数上限 (对角化维度 ≈ n_str_a × n_str_b)。``None`` = 默认
+        补全到全空间 ``max(C(norb,na), C(norb,nb))``（round_018 起开壳层按扇区
+        精确计数；闭壳层语义不变）。
     dom_thresh : float
         主导 det 的 |c| 阈值 (低于此的 det 不参与生成集扩展)。
     pt2_floor : float
@@ -551,7 +552,10 @@ def solve_cipsi(
         str_a = sorted(set(int(x) for x in ci_a))
         str_b = sorted(set(int(x) for x in ci_b))
 
-    full_size = int(cistring.num_strings(norb, na))
+    # round_018: 开壳层默认上限取两扇区较大者 (C(norb,nb) 可能 > C(norb,na));
+    # 闭壳层 na==nb 同值, 零回归
+    full_size = max(int(cistring.num_strings(norb, na)),
+                    int(cistring.num_strings(norb, nb)))
     if max_strings is None:
         max_strings = full_size
 
@@ -594,10 +598,24 @@ def solve_cipsi(
 
         add = []
         pt2_sum = 0.0
+        _pend_a, _pend_b = set(), set()   # round_018: 开壳层挂起新串 (按扇区预算)
+        _sa0, _sb0 = set(str_a), set(str_b)
         for det_, v in ranked:
             if abs(v) < pt2_floor:
                 break
-            if len(str_a) + len(add) >= max_strings:
+            if na != nb:
+                # round_018: 开壳层按扇区精确计数 (β-only 新增不占 α 预算);
+                # 闭壳层 str_a==str_b 逐字走旧口径 (零回归)
+                ca, cb = det_
+                wa = len(str_a) + len(_pend_a) + (0 if ca in _sa0 or ca in _pend_a else 1)
+                wb = len(str_b) + len(_pend_b) + (0 if cb in _sb0 or cb in _pend_b else 1)
+                if wa > max_strings or wb > max_strings:
+                    break
+                if ca not in _sa0:       # 已存在串不计入挂起 (R4-M1)
+                    _pend_a.add(ca)
+                if cb not in _sb0:
+                    _pend_b.add(cb)
+            elif len(str_a) + len(add) >= max_strings:
                 break
             add.append(det_)
             pt2_sum += v
@@ -897,7 +915,10 @@ def solve_sqd_adaptive(
         occ_b = np.zeros(norb, dtype=np.float64)
         occ_b[:nb] = 1.0
 
-    full_size = int(cistring.num_strings(norb, na))
+    # round_018: 开壳层默认上限取两扇区较大者 (C(norb,nb) 可能 > C(norb,na));
+    # 闭壳层 na==nb 同值, 零回归
+    full_size = max(int(cistring.num_strings(norb, na)),
+                    int(cistring.num_strings(norb, nb)))
     if max_strings is None:
         max_strings = full_size
 
@@ -943,10 +964,22 @@ def solve_sqd_adaptive(
                    if abs(E - Ea) > 1e-12}
             ranked = sorted(pt2.items(), key=lambda kv: -abs(kv[1]))
             add = []
+            _pend_a, _pend_b = set(), set()   # round_018: 开壳层挂起新串 (按扇区预算)
+            _sa0, _sb0 = set(str_a), set(str_b)
             for d, v in ranked:
                 if abs(v) < pt2_floor:
                     break
-                if len(str_a) + len(add) >= max_strings:
+                if open_shell:
+                    ca, cb = d
+                    wa = len(str_a) + len(_pend_a) + (0 if ca in _sa0 or ca in _pend_a else 1)
+                    wb = len(str_b) + len(_pend_b) + (0 if cb in _sb0 or cb in _pend_b else 1)
+                    if wa > max_strings or wb > max_strings:
+                        break
+                    if ca not in _sa0:   # 已存在串不计入挂起 (R4-M1)
+                        _pend_a.add(ca)
+                    if cb not in _sb0:
+                        _pend_b.add(cb)
+                elif len(str_a) + len(add) >= max_strings:
                     break
                 add.append(d)
             if len(add) > n_active_per_round:
@@ -1072,8 +1105,9 @@ def solve_sqd_active(
     avg_occupancies : tuple(ndarray, ndarray), optional
         初始平均占据 (采样偏置)。省略时退化为 HF。
     max_strings : int | None
-        字符串集合上限 (对角化维度 ≈ n_str_a × n_str_b)。``None`` = 默认
-        全空间 ``C(norb, nelec[0])`` (受限时给较小值)。
+        每自旋扇区字符串数上限 (对角化维度 ≈ n_str_a × n_str_b)。``None`` = 默认
+        全空间 ``max(C(norb,na), C(norb,nb))`` (受限时给较小值；round_018 起
+        开壳层按扇区精确计数)。
     n_active_per_round : int
         每轮 PT2 选态注入的 top 候选 det 数上限 (受限核心参数)。
     dom_thresh : float
@@ -1167,8 +1201,8 @@ def solve_sqd_active(
         (1600×), sigma²→0, wall 1.02× (仅补 16 串 +1-2 次 diag)。
 
         ``coverage_closure`` 是此修复的显式开关 (比 "把 pt2_floor 调到 0" 更
-        自描述)。护栏: BFS 补全受 ``max_strings`` 上界约束 (默认 = ``C(norb,na)``，
-        不会超全空间); 大体系全空间不可对角化时给较小 ``max_strings``。
+        自描述)。护栏: BFS 补全受 ``max_strings`` 上界约束 (默认 =
+        ``max(C(norb,na), C(norb,nb))`` (round_018 按扇区)，不会超全空间); 大体系全空间不可对角化时给较小 ``max_strings``。
         注意: ``n_triples_per_round>0`` 会**截断闭包** (每轮只补 ≤N 串, 可能远未达
         全空间); 完整闭包需保持默认 ``n_triples_per_round=0`` (无 cap)。
         默认 ``False`` 零回归 (triple pass 仍用 ``pt2_floor`` 门控)。
@@ -1233,7 +1267,10 @@ def solve_sqd_active(
         occ_b = np.zeros(norb, dtype=np.float64)
         occ_b[:nb] = 1.0
 
-    full_size = int(cistring.num_strings(norb, na))
+    # round_018: 开壳层默认上限取两扇区较大者 (C(norb,nb) 可能 > C(norb,na));
+    # 闭壳层 na==nb 同值, 零回归
+    full_size = max(int(cistring.num_strings(norb, na)),
+                    int(cistring.num_strings(norb, nb)))
     if max_strings is None:
         max_strings = full_size
 
@@ -1341,10 +1378,22 @@ def solve_sqd_active(
             e_pt2_sum = float(sum(pt2.values()))
             ranked = sorted(pt2.items(), key=lambda kv: -abs(kv[1]))
             add = []
+            _pend_a, _pend_b = set(), set()   # round_018: 开壳层挂起新串 (按扇区预算)
+            _sa0, _sb0 = set(str_a), set(str_b)
             for d, v in ranked:
                 if abs(v) < pt2_floor:
                     break
-                if len(str_a) + len(add) >= max_strings:
+                if open_shell:
+                    ca, cb = d
+                    wa = len(str_a) + len(_pend_a) + (0 if ca in _sa0 or ca in _pend_a else 1)
+                    wb = len(str_b) + len(_pend_b) + (0 if cb in _sb0 or cb in _pend_b else 1)
+                    if wa > max_strings or wb > max_strings:
+                        break
+                    if ca not in _sa0:   # 已存在串不计入挂起 (R4-M1)
+                        _pend_a.add(ca)
+                    if cb not in _sb0:
+                        _pend_b.add(cb)
+                elif len(str_a) + len(add) >= max_strings:
                     break
                 add.append(d)
             if len(add) > n_active_per_round:
@@ -1439,12 +1488,23 @@ def solve_sqd_active(
                 agg[key] = agg.get(key, 0.0) + h * h / (E - Ea)
             ranked = sorted(agg.items(), key=lambda kv: -abs(kv[1]))
             add = []
+            _pa_n, _pb_n = 0, 0             # round_018: 开壳层按扇区挂起计数
             for s_new, v in ranked:
                 if abs(v) < _triple_floor:
                     break
                 if n_triples_per_round > 0 and len(add) >= n_triples_per_round:
                     break
-                if len(str_a) + len(add) >= max_strings:
+                if open_shell:
+                    # round_018: BFS 单串按所属扇区计预算 (β 串不占 α)
+                    if s_new in new_a:
+                        if len(str_a) + _pa_n + 1 > max_strings:
+                            break
+                        _pa_n += 1
+                    else:
+                        if len(str_b) + _pb_n + 1 > max_strings:
+                            break
+                        _pb_n += 1
+                elif len(str_a) + len(add) >= max_strings:
                     break
                 add.append(s_new)
             if not add:
