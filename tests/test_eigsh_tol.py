@@ -81,9 +81,25 @@ def test_eigsh_tol_default_none_path_equivalent_subspace():
 # --------------------------------------------------------------------------- #
 # 功能: _Subspace.diag tol 消融 (CPU 分支, dim>1000)
 # --------------------------------------------------------------------------- #
-def test_subspace_diag_tol_ablation_cpu():
+def test_subspace_diag_tol_ablation_cpu(monkeypatch):
     """功能锚: 固定字符串集 (dim=3600) 上松 tol (1e-4) 比紧 tol (None=0)
-    少 matvec (ARPACK 早停) 且 E 仍在合理精度 (<1e-3); 1e-12 与 None 一致。"""
+    少 matvec (ARPACK 早停) 且 E 仍在合理精度 (<1e-3); 1e-12 与 None 一致。
+
+    round_020 去抖: ARPACK v0=None 时由其内部 Fortran RNG 生成 (scipy ≥1.15
+    info=0 分支), np.random.seed 对之为 no-op —— 三次 diag 各拿不同 v0 时
+    n_loose < n_tight / n_112 ≥ n_tight 计数断言曾边缘翻转 (round_019 全库挂
+    一次)。此处 monkeypatch cipsi.eigsh 注入同一固定 v0 → 轨迹共享前缀:
+    松 tol 是紧 tol 的早停、更紧 tol 只会 ≥, 两断言结构性成立。
+    """
+    import tc_sqd.cipsi as _cipsi_mod
+    _real_eigsh = _cipsi_mod.eigsh
+
+    def _pinned_v0_eigsh(op, *a, **kw):
+        if kw.get("v0") is None:
+            kw["v0"] = np.random.default_rng(1234).standard_normal(op.shape[0])
+        return _real_eigsh(op, *a, **kw)
+
+    monkeypatch.setattr(_cipsi_mod, "eigsh", _pinned_v0_eigsh)
     data = _n2_data()
     h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
     sa, sb = _fixed_strings(norb, nelec, n_str=60)

@@ -216,7 +216,8 @@ def test_gpu_performance_large_subspace():
 # --------------------------------------------------------------------------- #
 @pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
 def test_sigma_cached_eri_correctness():
-    """P1 (sigma 接口级): 缓存版 sigma_selected_ci_gpu 输出 vs 重算版 ≤2e-13。
+    """P1 (sigma 接口级): 缓存版 sigma_selected_ci_gpu 输出 vs 重算版 ≤1e-12
+    (round_020 起; 原 2e-13 骑 atomicAdd 顺序噪底, 见下方注释)。
 
     round_004 方式 C 在 sigma 加 eri1_aaaa/bbaa=None 可选参数。本测验证:
       (a) 缓存版 (传入 _Subspace 预算的 cupy eri1_*) 与重算版 (None) 数值一致;
@@ -255,8 +256,12 @@ def test_sigma_cached_eri_correctness():
         eri1_aaaa=eri1_aaaa, eri1_bbaa=eri1_bbaa)
 
     diff = float(cp.abs(sigma_cached - sigma_recompute).max())
-    assert diff <= 2e-13, (
-        f"缓存版 vs 重算版 sigma 输出 max|Δ|={diff:.2e} >2e-13 "
+    # round_020 去抖: 阈值 2e-13 → 1e-12。噪底 = linkstr RawKernel atomicAdd
+    # 浮点求和顺序非确定 (缓存/重算两侧各含一次 scatter/gather, 单调用噪声
+    # ~1e-13-1e-14, diff 尾部偶超 2e-13 —— round_018 全库挂过一次, 隔离即过);
+    # 真实接线 bug (eri 用错) 给 O(1e-6+) diff, 1e-12 仍远小于信号。
+    assert diff <= 1e-12, (
+        f"缓存版 vs 重算版 sigma 输出 max|Δ|={diff:.2e} >1e-12 "
         "(缓存 eri1 与重算 eri1 不一致, 查 _selci_eri_* 接合 bug)")
 
 
@@ -286,14 +291,13 @@ def test_subspace_gpu_lazy_hop_fallback_cupyx(monkeypatch):
     # 能量逐位一致 (回退路径与纯 CPU 走同一 scipy eigsh)
     assert abs(E_gpu - E_cpu) < 1e-10, (
         f"GPU 回退路径 E={E_gpu:.10f} != CPU E={E_cpu:.10f} (懒构 hop 接合 bug)")
-    # 本征矢: ARPACK 起步随机 v0 -> 收敛到 ±v 均合法 (相位模糊), 符号不可定。
-    # 用 abs 比较 (or 等价于 allclose(c, ±c_cpu))。atol=1e-8: round_013 起
-    # 默认 tol=1e-10, 独立 ARPACK 运行的本征矢分量收敛到 ~1e-9 级 (能量仍
-    # <1e-10 一致, 主检查); 真接合 bug 会给 O(1e-3) 级差异, 1e-8 足够抓。
-    assert np.allclose(np.abs(c_gpu), np.abs(c_cpu), atol=1e-8) or \
-        np.allclose(c_gpu, c_cpu, atol=1e-8) or \
-        np.allclose(c_gpu, -c_cpu, atol=1e-8), (
-        "GPU 回退本征矢与 CPU 既非 +c 也非 -c (相位模糊外的不一致)")
+    # 本征矢: round_020 去抖 —— 逐元素 atol=1e-8 骑独立 ARPACK 运行 (不同 v0)
+    # 的收敛噪声尾 (~1e-9 典型, 尾部偶超 1e-8, 已知 flake F1/F2), 改重叠度:
+    # 相位/符号天然免疫; 元素噪声 δ 下重叠偏差 ~N·δ² ≤1e-12 (dim 1.4e4),
+    # 真接合 bug O(1e-3) 级 → 重叠偏差 ~1e-6, 仍 1e4× 裕度被抓。
+    ov = abs(float(np.dot(c_gpu.ravel(), c_cpu.ravel())))
+    assert ov >= 1 - 1e-10, (
+        f"GPU 回退本征矢与 CPU 重叠 {ov:.15f} < 1-1e-10 (懒构 hop 接合 bug)")
 
 
 @pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")
@@ -317,12 +321,12 @@ def test_subspace_gpu_lazy_hop_fallback_hybrid(monkeypatch):
     E_cpu, c_cpu, _, _ = sub_cpu.diag(sa, sb)
     assert abs(E_gpu - E_cpu) < 1e-10, (
         f"hybrid 回退路径 E={E_gpu:.10f} != CPU E={E_cpu:.10f} (懒构 hop 接合 bug)")
-    # 本征矢 atol=1e-8: round_013 起默认 tol=1e-10, 独立 ARPACK 运行的本征矢
-    # 分量收敛到 ~1e-9 级; 能量 <1e-10 一致才是主检查 (见 cupyx 版注释)。
-    assert np.allclose(np.abs(c_gpu), np.abs(c_cpu), atol=1e-8) or \
-        np.allclose(c_gpu, c_cpu, atol=1e-8) or \
-        np.allclose(c_gpu, -c_cpu, atol=1e-8), (
-        "hybrid 回退本征矢与 CPU 既非 +c 也非 -c (相位模糊外的不一致)")
+    # 本征矢: round_020 去抖 —— 同 test_subspace_gpu_lazy_hop_fallback_cupyx,
+    # 逐元素 atol=1e-8 (骑独立 ARPACK 噪声尾, flake) 改重叠度 (相位免疫,
+    # 噪声 ~N·δ² ≤1e-12, 真 bug O(1e-3) → 重叠偏差 ~1e-6 仍被抓)。
+    ov = abs(float(np.dot(c_gpu.ravel(), c_cpu.ravel())))
+    assert ov >= 1 - 1e-10, (
+        f"hybrid 回退本征矢与 CPU 重叠 {ov:.15f} < 1-1e-10 (懒构 hop 接合 bug)")
 
 
 @pytest.mark.skipif(not _have_gpu(), reason="cupy / GPU 不可用")

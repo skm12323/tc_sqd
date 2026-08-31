@@ -101,11 +101,19 @@ def test_ccsd_no_increases_sparsity():
     e_cn, c_cn = direct_spin1.kernel(h1e_cn, eri_cn, norb, nelec, conv_tol=1e-12)
     e_mo, _ = direct_spin1.kernel(h1e, eri, norb, nelec, conv_tol=1e-12)
     assert abs(e_cn - e_mo) < 1e-7
-    # 稀疏度不劣化 (实测 N2 平衡: k999 MO=97 -> CCSD-NO=92; +3 容差吸收 CCSD
-    # 在近简并轨道组的收敛波动, 该波动全量运行时可使 k999 偶发超 MO 达 +2)
+    # 稀疏度不劣化 (+3 容差吸收 CCSD 在近简并轨道组的收敛波动; 原始实测快照
+    # 为早期环境 k999 MO=97 -> CCSD-NO=92, 当前环境 MO 稳定 122 —— 基线随
+    # pyscf/BLAS 版本漂移, 两数字为不同时代快照)
+    # round_020 去抖: margin +3 → +10。6 连测分布 (round_020 R1 探测):
+    # MO 稳定 122, CCSD-NO 84-102 (diff -38~-20, 正常时 CCSD-NO 显著更优);
+    # 历史失败 diff +2~+5 = CCSD 近简并收敛波动尾部 (BLAS 线程噪声经占据
+    # 矩阵 eigh 近简并旋转放大, 不可 seed)。本测试是"不劣化"的定性物理锚
+    # (docstring 自述强版本不可断言), +10 (~基线 8%) 仍抓真回归 (换基接线
+    # bug 给 O(100) 级劣化)。
     m_mo = _sparsity(c_mo)
     m_cn = _sparsity(c_cn)
-    assert m_cn["k999"] <= m_mo["k999"] + 3, f"CCSD-NO 稀疏度劣化: {m_mo} -> {m_cn}"
+    assert m_cn["k999"] <= m_mo["k999"] + 10, (
+        f"CCSD-NO 稀疏度劣化: {m_mo} -> {m_cn}")
 
 
 def test_solve_sqd_natural_orbitals_converges():

@@ -2106,3 +2106,31 @@ scipy eigsh 引擎；cupyx=诊断基线带 maxiter 护栏；except → CPU ops �
   列候选方向**（固定 v0 / atol 3-5e-8 / 能量主断言）。
 - R4 放行（零 blocker/major；minor-1 README 计数、minor-5 p0a json 落盘
   已修；spin+cupyx+warm_start 无覆盖记录为低优先遗留）。
+
+---
+
+## Round 020：测试去抖专项（flake 家族 6 例）（2026-08-31，已验证）
+
+### 治理与实测
+
+| # | 测试 | 机制 | 修复 | 验证 |
+|---|---|---|---|---|
+| F1/F2 | lazy_hop_fallback_hybrid/cupyx | 独立 ARPACK 运行本征矢噪声尾跨 atol=1e-8 | 重叠度 \|⟨c1,c2⟩\| ≥ 1-1e-10 | 各 5/5（F2 修复前 5 连跑 1 过） |
+| F3 | sigma_cached_eri_correctness | atomicAdd 顺序噪声骑 2e-13 | 阈值 →1e-12（真 bug O(1e-6+)，裕度 1e6×） | 5/5 |
+| F4 | prune_keep_default_bit_identical | 独立 v0 收敛噪声 ~1e-9 压 rtol=1e-10 | monkeypatch cipsi.eigsh 注入固定 v0 | 8/8 |
+| F5 | eigsh_tol tol_ablation_cpu | 独立 v0 → n_mv 计数断言翻转 | 同上（共享轨迹前缀） | 8/8 |
+| F6 | ccsd_no_increases_sparsity | CCSD 近简并收敛波动（不可 seed） | margin +3→+10（分布依据 -38~-20） | 5/5 |
+
+- P0' 判别力注入：1e-3 噪声 → overlap 0.993 FAIL（判别力保持）；1e-8 噪声
+  → overlap 1-1e-12 PASS 而旧 atol=1e-8 FAIL（去抖点成立）。
+- P1 零回归：全库 CPU **236 passed 0 failed** + GPU 拆分 10p/1xf/1xp
+  **0 失败**——flake 豁免取消后首次全绿（248 收集）；src/ 零改动。
+
+### 认知更新
+
+- **scipy eigsh 的 v0 不可经 np.random.seed 控制**（scipy ≥1.15 v0=None →
+  info=0，ARPACK Fortran 内部 RNG；系与 svds 的 random_state 混淆）。
+  钉迭代轨迹须 monkeypatch 库内 eigsh 注入显式 v0。R4 首轮抓出初稿注释的
+  错误机制声明，修正循环后过审——seed-only 版 F4 实测仍 1/5 挂，证实判断。
+- **flake 治理范式**：钉 v0（可钉时）/ 换不变量指标（重叠度）/ 按噪底分布
+  校准阈值。

@@ -63,13 +63,26 @@ def _assert_traj_close(ta, tb, tag=""):
 # --------------------------------------------------------------------------- #
 # P0' 零回归: prune_keep=1.0 (默认) 与不传逐位一致
 # --------------------------------------------------------------------------- #
-def test_prune_keep_default_bit_identical_active():
+def test_prune_keep_default_bit_identical_active(monkeypatch):
     """P0' 锚: solve_sqd_active 不传 prune_keep (默认 1.0) 与显式 prune_keep=1.0
     代码路径等价 (剪枝分支整体跳过), 能量 + 轨迹逐位一致。
 
-    与 test_tail_sampling 默认关回归同口径: rtol=1e-10 远严于真实逻辑分歧 (~1e-4),
-    远松于多线程 BLAS eigh 的 ULP 噪声 (~1e-13)。
+    与 test_tail_sampling 默认关回归同口径: rtol=1e-10 远严于真实逻辑分歧 (~1e-4)。
+    round_020 去抖: ARPACK v0=None 时由其内部 Fortran RNG 生成 (scipy ≥1.15
+    info=0 分支), np.random.seed 对之为 no-op —— 独立两次运行 v0 不同 →
+    收敛噪声 ~1e-9 压 rtol=1e-10 边缘 (round_018/019 各偶挂一次)。此处
+    monkeypatch cipsi.eigsh 注入固定 v0 (按 dim 确定性生成), 两次运行迭代
+    轨迹逐位一致 (残差仅 BLAS 线程噪声 ~1e-14, 4 个量级裕度)。
     """
+    import tc_sqd.cipsi as _cipsi_mod
+    _real_eigsh = _cipsi_mod.eigsh
+
+    def _pinned_v0_eigsh(op, *a, **kw):
+        if kw.get("v0") is None:
+            kw["v0"] = np.random.default_rng(1234).standard_normal(op.shape[0])
+        return _real_eigsh(op, *a, **kw)
+
+    monkeypatch.setattr(_cipsi_mod, "eigsh", _pinned_v0_eigsh)
     data = _n2_stretch_data()
     h1e, eri, norb, nelec = data.h1e, data.eri, data.norb, data.nelec
     bsm = np.random.default_rng(0).random((100, 2 * norb)) > 0.5
