@@ -16,5 +16,16 @@ dependencies = [
     "pyscf>=2.0",
 ]
 
+[project.optional-dependencies]
+# Web 计算面板 (python -m tc_sqd.webui) 的唯一额外依赖
+webui = ["flask>=3.0"]
+
+[project.scripts]
+tc-sqd-webui = "tc_sqd.webui.__main__:main"
+
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# 前端单页随包分发 (无构建链, 直接被 Flask 静态服务)
+"tc_sqd.webui" = ["static/*.html", "static/*.js", "static/*.css"]

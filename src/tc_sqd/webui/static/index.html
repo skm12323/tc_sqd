@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>tc_sqd · 参数化计算面板</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header>
+  <div class="brand">tc_sqd <span>参数化计算面板</span></div>
+  <div id="caps" class="caps">加载中…</div>
+</header>
+
+<main>
+<!-- ============================ 左列: 参数表单 ============================ -->
+<section class="col-left">
+
+  <div class="card">
+    <h2>① 体系</h2>
+    <label>预设体系
+      <select id="sys_preset"></select>
+    </label>
+    <p class="hint" id="preset_desc"></p>
+    <label>几何 (PySCF atom 串, 单位 Å, 分号或换行分隔)
+      <textarea id="sys_geometry" rows="2" spellcheck="false"></textarea>
+    </label>
+    <div class="row3">
+      <label>基组 <input id="sys_basis" spellcheck="false"></label>
+      <label>电荷 <input id="sys_charge" type="number" step="1" value="0"></label>
+      <label>自旋 nα−nβ <input id="sys_spin" type="number" step="1" value="0"></label>
+    </div>
+    <div class="row3">
+      <label>冻结核 n_core <input id="sys_ncore" type="number" min="0" step="1" value="0"></label>
+      <label>冻结虚 n_virtual <input id="sys_nvirt" type="number" min="0" step="1" value="0"></label>
+      <label>SCF
+        <select id="sys_scf">
+          <option value="auto">auto (RHF/ROHF)</option>
+          <option value="uhf">UHF (自旋分辨五积分)</option>
+        </select>
+      </label>
+    </div>
+    <div id="sys_preview" class="preview-box">—</div>
+  </div>
+
+  <div class="card">
+    <h2>② 方法与参数</h2>
+    <label>方法
+      <select id="method">
+        <option value="sqd_active">SQD active — 采样↔PT2 双闭环 (主方法)</option>
+        <option value="cipsi">CIPSI — 纯经典迭代精化</option>
+        <option value="hci">SHCI — heat-bath CI + PT2 修正</option>
+        <option value="fci">全空间 SCI — 精确对角化 (确定性参考)</option>
+      </select>
+    </label>
+    <div class="row2">
+      <label>backend
+        <select id="backend"><option value="cpu">cpu</option><option value="gpu">gpu</option></select>
+      </label>
+      <span class="hint self-end">gpu 需本机 cupy; 不可用时自动隐藏</span>
+    </div>
+
+    <div class="method-group" data-for="sampling">
+      <h3>采样</h3>
+      <div class="row3">
+        <label>shots <input id="shots" type="number" min="1" value="500"></label>
+        <label>随机种子 <input id="seed" type="number" step="1" value="0"></label>
+        <label>采样模式
+          <select id="sample_mode">
+            <option value="uniform">均匀随机</option>
+            <option value="hf">HF 偏置</option>
+          </select>
+        </label>
+      </div>
+      <div class="row2 hf-only" id="hf_weight_row">
+        <label>HF 偏置权重 w
+          <input id="hf_weight" type="range" min="0" max="1" step="0.05" value="0.8">
+        </label>
+        <span class="hint self-end"><code id="hf_weight_val">0.80</code> · w=0 均匀 / w=1 全 HF</span>
+      </div>
+      <label class="chk"><input id="multiseed" type="checkbox">
+        多 seed 平均 (同一配方跑 n 个种子, 汇总 mean±std)</label>
+      <div class="row2 multiseed-only">
+        <label>种子个数 <input id="n_seeds" type="number" min="1" max="50" value="3"></label>
+        <span class="hint self-end">种子取 基准种子, 基准种子+1, …</span>
+      </div>
+    </div>
+
+    <div class="method-group" data-for="sqd_active">
+      <div class="row3">
+        <label>max_rounds <input id="sqd_max_rounds" type="number" min="1" value="10"></label>
+        <label>max_strings <input id="sqd_max_strings" type="number" min="0" step="1" value="0" placeholder="0 = 全空间"></label>
+        <label>n_active_per_round <input id="sqd_n_active" type="number" min="1" value="50"></label>
+      </div>
+      <div class="row2">
+        <label>dom_thresh <input id="sqd_dom_thresh" value="1e-3" spellcheck="false"></label>
+        <label>pt2_floor <input id="sqd_pt2_floor" value="1e-7" spellcheck="false"></label>
+      </div>
+      <details>
+        <summary>高级参数</summary>
+        <label class="chk"><input id="sqd_coverage_closure" type="checkbox"> coverage_closure (BFS 覆盖闭包)</label>
+        <label class="chk"><input id="sqd_warm_start" type="checkbox" checked> warm_start (上轮波函数作 eigsh 初猜)</label>
+        <label class="chk"><input id="sqd_tail_suppression" type="checkbox"> tail_suppression (大体系慎用, 见 round_021)</label>
+        <div class="row3">
+          <label>tail_shots_ref <input id="sqd_tail_shots_ref" type="number" min="0" step="1" value="0"></label>
+          <label>prune_keep <input id="sqd_prune_keep" value="1.0" spellcheck="false"></label>
+          <label>eigsh_tol <input id="sqd_eigsh_tol" value="" placeholder="空 = 默认" spellcheck="false"></label>
+        </div>
+        <label>energy_tol <input id="sqd_energy_tol" value="" placeholder="空 = 不启用能量停采" spellcheck="false"></label>
+      </details>
+    </div>
+
+    <div class="method-group" data-for="cipsi">
+      <div class="row3">
+        <label>max_strings <input id="cip_max_strings" type="number" min="0" step="1" value="0" placeholder="0 = 全空间"></label>
+        <label>max_iter <input id="cip_max_iter" type="number" min="1" value="40"></label>
+        <label>dom_thresh <input id="cip_dom_thresh" value="1e-3" spellcheck="false"></label>
+      </div>
+      <div class="row2">
+        <label>pt2_floor <input id="cip_pt2_floor" value="1e-7" spellcheck="false"></label>
+      </div>
+    </div>
+
+    <div class="method-group" data-for="hci">
+      <div class="row3">
+        <label>eps_hb <input id="hci_eps_hb" value="1e-3" spellcheck="false"></label>
+        <label>max_iter <input id="hci_max_iter" type="number" min="1" value="40"></label>
+        <label>dom_thresh <input id="hci_dom_thresh" value="1e-3" spellcheck="false"></label>
+      </div>
+      <div class="row3">
+        <label>pt2_floor <input id="hci_pt2_floor" value="1e-7" spellcheck="false"></label>
+      </div>
+      <label class="chk"><input id="hci_use_seed" type="checkbox"> 用采样位串作种子 (否则 HF 单参考)</label>
+    </div>
+
+    <div class="method-group" data-for="fci">
+      <p class="hint">确定性全空间对角化 (维度受参考设置的上限保护); 与
+      seed/shots 无关。大体系请改用采样方法 + PT2。</p>
+    </div>
+
+    <h3>参考能量 (err 口径)</h3>
+    <label>模式
+      <select id="ref_mode">
+        <option value="auto">auto — 库内 solve_sci 全空间真基态</option>
+        <option value="none">none — 不算 err</option>
+        <option value="manual">manual — 手动输入 E_ref</option>
+      </select>
+    </label>
+    <div class="row2 ref-limit-only">
+      <label>全空间维度上限 <input id="ref_dim_limit" type="number" min="1" value="200000"></label>
+      <span class="hint self-end">超过上限自动跳过 (12,12 全空间 85 万维 ≈ 1.5h, 慎开)</span>
+    </div>
+    <div class="row2 ref-manual-only">
+      <label>E_ref (Hartree) <input id="ref_value" value="" placeholder="如 -108.78188769" spellcheck="false"></label>
+    </div>
+  </div>
+
+  <div class="card actions">
+    <button id="btn_run" class="primary">▶ 运行</button>
+    <button id="btn_cancel" class="danger" disabled>取消</button>
+    <span class="hint" id="run_note"></span>
+  </div>
+
+</section>
+
+<!-- ============================ 右列: 状态与结果 ============================ -->
+<section class="col-right">
+  <div class="card">
+    <h2>状态</h2>
+    <div id="status_body"><p class="hint">空闲 — 配好参数后点「运行」。计算在本机执行。</p></div>
+  </div>
+  <div class="card" id="results_card" hidden>
+    <h2>结果</h2>
+    <div id="results_body"></div>
+  </div>
+</section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

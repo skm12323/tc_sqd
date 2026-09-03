@@ -142,6 +142,35 @@ e = tc_sqd.compute_ground_state_energy(
 print(f"E(SQD) = {e:.8f}")   # -1.13728383
 ```
 
+## Web 计算面板（WebUI）
+
+克隆仓库后**不写一行代码**，在浏览器里调参并在本机跑计算：
+
+```bash
+pip install flask          # 唯一额外依赖（或 pip install -e .[webui]）
+python -m tc_sqd.webui     # 自动打开 http://127.0.0.1:8765
+```
+
+面板能力：
+
+- **体系**：预设下拉（H₂/CH/N₂ 拉伸/C₂ 等，均为项目验证过的体系）或自定义
+  （PySCF 几何串 + 基组 + 电荷/自旋 + 冻结核/虚轨道 + RHF/ROHF/UHF）；
+  提交前实时预览活性空间 (nα,nb)@norb 与全空间维度。
+- **方法**：SQD active（采样↔PT2 双闭环，全配方参数：max_strings、
+  coverage_closure、warm_start、tail_suppression、eigsh_tol 等）、CIPSI、
+  SHCI、全空间 SCI；backend 可选 cpu/gpu（本机装有 cupy 时）。
+- **采样**：shots、随机种子、均匀/HF 偏置两种采样模式；**多 seed 平均**
+  （同一配方跑 n 个种子，汇总 mean±std，逐 seed 轨迹叠加对比）。
+- **参考能量**：auto（库内 `solve_sci` 全空间真基态，带维度上限保护）/
+  手动输入 / 关闭；err 口径与库内一致。
+- **实时进度与可视化**：运行中逐轮刷新 E/dim/σ²；结束后出能量收敛、
+  err-per-seed、维度增长、σ² 四张图 + 汇总卡片 + 原始 JSON。
+
+注意：单时间只跑一个任务（避免 CPU/GPU 抢占污染计时）；取消在 seed 间生效；
+服务重启后任务历史清空；积分按体系指纹缓存于仓库根 `_webui_*_ints.npz`
+（已 gitignore），换 shots/seed/方法重跑不重复 SCF。测试见
+`tests/test_webui.py`（flask 未安装时自动跳过）。
+
 ## 三种求解方法
 
 `compute_ground_state_energy(h1e, eri, norb, nelec, *, ecore, method, ...)` 一键切换：
@@ -286,7 +315,7 @@ e = tc_sqd.compute_ground_state_energy(
 
 ## 运行测试
 
-27 个测试模块，**248 个测试函数**（2026-08-31 统计；GPU 测试须拆分单跑，避免与
+28 个测试模块，**255 个测试函数**（2026-09-03 统计；GPU 测试须拆分单跑，避免与
 CPU 全库并行造成计时污染）：
 
 ```bash
@@ -351,8 +380,8 @@ tc_sqd/
 ├── README.md                 # 本文件
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
-├── src/tc_sqd/               # _compat, basis, cipsi, configuration_recovery, counts, diagnostics, fermion, hardware, integrated, lucj, matrixfree, molecule, noise, obmp2, predict, qubit, sampler, selected_ci_gpu, subsampling, tail_sampling
-├── tests/                    # 27 个测试模块 / 248 个测试函数（清单见"运行测试"节）
+├── src/tc_sqd/               # _compat, basis, cipsi, configuration_recovery, counts, diagnostics, fermion, hardware, integrated, lucj, matrixfree, molecule, noise, obmp2, predict, qubit, sampler, selected_ci_gpu, subsampling, tail_sampling, webui (可选 flask)
+├── tests/                    # 28 个测试模块 / 255 个测试函数（清单见"运行测试"节）
 └── examples/
     ├── h2_sqd_demo.py        # H2 完整演示
     ├── excited_sqd_demo.py   # 激发态 SQD 全链路 (LiH: n_roots + 激发配置强制纳入)
