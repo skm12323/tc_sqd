@@ -153,9 +153,12 @@ python -m tc_sqd.webui     # 自动打开 http://127.0.0.1:8765
 
 面板能力：
 
-- **体系**：预设下拉（H₂/CH/N₂ 拉伸/C₂ 等，均为项目验证过的体系）或自定义
-  （PySCF 几何串 + 基组 + 电荷/自旋 + 冻结核/虚轨道 + RHF/ROHF/UHF）；
-  提交前实时预览活性空间 (nα,nb)@norb 与全空间维度。
+- **体系**：预设下拉（H₂/CH/N₂ 拉伸/C₂ 等，均为项目验证过的体系）或完全自定义
+  ——PySCF 几何串或直接粘贴 .xyz 文件（单位 Å/bohr）、基组名或分元素基组
+  （JSON，如 `{"N": "cc-pvdz", "H": "sto-3g"}`）、电荷/自旋、冻结核/虚轨道、
+  初轨道 RHF/ROHF/UHF/RKS/UKS（DFT 泛函任填，改善强关联体系初猜）；
+  常用自定义体系可**存为「我的体系」**（浏览器本地保存，支持 JSON 导入/导出
+  分享）；提交前实时预览活性空间 (nα,nb)@norb 与全空间维度。
 - **方法**：SQD active（采样↔PT2 双闭环，全配方参数：max_strings、
   coverage_closure、warm_start、tail_suppression、eigsh_tol 等）、CIPSI、
   SHCI、全空间 SCI；backend 可选 cpu/gpu（本机装有 cupy 时）。
@@ -315,7 +318,7 @@ e = tc_sqd.compute_ground_state_energy(
 
 ## 运行测试
 
-28 个测试模块，**255 个测试函数**（2026-09-03 统计；GPU 测试须拆分单跑，避免与
+28 个测试模块，**257 个测试函数**（2026-09-04 统计；GPU 测试须拆分单跑，避免与
 CPU 全库并行造成计时污染）：
 
 ```bash
@@ -381,7 +384,7 @@ tc_sqd/
 ├── REVIEW.md                 # 代码审查与验证历史
 ├── requirements.txt
 ├── src/tc_sqd/               # _compat, basis, cipsi, configuration_recovery, counts, diagnostics, fermion, hardware, integrated, lucj, matrixfree, molecule, noise, obmp2, predict, qubit, sampler, selected_ci_gpu, subsampling, tail_sampling, webui (可选 flask)
-├── tests/                    # 28 个测试模块 / 255 个测试函数（清单见"运行测试"节）
+├── tests/                    # 28 个测试模块 / 257 个测试函数（清单见"运行测试"节）
 └── examples/
     ├── h2_sqd_demo.py        # H2 完整演示
     ├── excited_sqd_demo.py   # 激发态 SQD 全链路 (LiH: n_roots + 激发配置强制纳入)

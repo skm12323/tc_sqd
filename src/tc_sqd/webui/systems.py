@@ -25,7 +25,7 @@ import numpy as np
 __all__ = ["PRESETS", "build_system", "preview_system", "normalize_system_spec",
            "gpu_available"]
 
-_CACHE_VERSION = 1
+_CACHE_VERSION = 2   # v2: scf 增加 rks/uks + xc 入指纹 (同几何不同泛函不共缓存)
 
 # ---------------------------------------------------------------------------
 #  预设体系 (均为项目历轮验证过的; dim_full = C(norb,na)*C(norb,nb))
@@ -98,14 +98,18 @@ PRESETS: List[Dict[str, Any]] = [
 ]
 
 _SYSTEM_KEYS = ("geometry", "basis", "charge", "spin", "n_core", "n_virtual",
-                "scf", "unit")
+                "scf", "unit", "xc")
+_SCF_MODES = ("auto", "uhf", "rks", "uks")   # auto: RHF/ROHF 按 spin 自动
 
 
 def normalize_system_spec(body: Any) -> Dict[str, Any]:
     """POST body 的 system 字段 → 完整体系 spec (展开预设 / 补默认值)。
 
     支持两种形式: ``{"preset": "<id>"}`` (预设字段可被同级键覆盖) 或
-    直接的完整 spec dict。几何输入 ";" 或换行分隔, 单位 Å。
+    直接的完整 spec dict。几何输入 ";" 或换行分隔 (也接受粘贴的标准
+    .xyz 文件块: 首行原子数 + 次行注释自动剥去), 单位 Å / bohr。
+    ``basis`` 为基组名, 或分元素字典的 JSON 串 (如
+    ``{"O": "sto-3g", "H": "cc-pvdz"}``)。
     """
     if not isinstance(body, dict):
         raise ValueError("system 必须是对象 (preset 或完整字段)")
@@ -126,21 +130,48 @@ def normalize_system_spec(body: Any) -> Dict[str, Any]:
     spec.setdefault("n_virtual", 0)
     spec.setdefault("scf", "auto")
     spec.setdefault("unit", "angstrom")
+    spec.setdefault("xc", "")
     spec["charge"] = int(spec["charge"])
     spec["spin"] = int(spec["spin"])
     spec["n_core"] = int(spec["n_core"])
     spec["n_virtual"] = int(spec["n_virtual"])
-    if spec["scf"] not in ("auto", "uhf"):
-        raise ValueError("scf 只支持 auto (RHF/ROHF) 或 uhf")
+    if spec["scf"] not in _SCF_MODES:
+        raise ValueError(f"scf 只支持 {_SCF_MODES}, got {spec['scf']}")
+    if spec["unit"] not in ("angstrom", "bohr"):
+        raise ValueError("unit 只支持 angstrom / bohr")
+    if not isinstance(spec["xc"], str):
+        raise ValueError("xc 泛函须是字符串 (如 b3lyp / pbe)")
     return spec
 
 
 def _atom_block(geometry: str) -> str:
+    """几何串 → pyscf atom 块。接受 ";" 或换行分隔; 若首行是纯整数
+    (粘贴的标准 .xyz 文件), 剥去原子数行 + 注释行。"""
     parts = [ln.strip() for ln in geometry.replace(";", "\n").splitlines()
              if ln.strip()]
     if not parts:
         raise ValueError("geometry 为空")
+    if len(parts) >= 3 and parts[0].isdigit():
+        parts = parts[2:]
     return "\n".join(parts)
+
+
+def _parse_basis(basis: Any) -> Any:
+    """基组 → pyscf 基组名或分元素 dict (JSON 串 / 已是 dict)。"""
+    if isinstance(basis, dict):
+        if not basis:
+            raise ValueError("分元素基组不能为空 dict")
+        return basis
+    s = str(basis).strip()
+    if s.startswith("{"):
+        try:
+            d = json.loads(s)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"分元素基组 JSON 解析失败: {exc}") from exc
+        if not isinstance(d, dict) or not d:
+            raise ValueError('分元素基组 JSON 须形如 {"N": "cc-pvdz", "H": "sto-3g"}')
+        return d
+    return s
 
 
 def _formula(mol) -> str:
@@ -156,7 +187,8 @@ def _active_layout(spec: Dict[str, Any]) -> Dict[str, Any]:
     """Mole 级布局推断 (norb/nelec/dim), 不跑 SCF。"""
     from pyscf import gto
 
-    mol = gto.M(atom=_atom_block(spec["geometry"]), basis=spec["basis"],
+    mol = gto.M(atom=_atom_block(spec["geometry"]),
+                basis=_parse_basis(spec["basis"]),
                 charge=spec["charge"], spin=spec["spin"],
                 unit=spec["unit"], verbose=0)
     norb_full = int(mol.nao)
@@ -178,7 +210,8 @@ def _active_layout(spec: Dict[str, Any]) -> Dict[str, Any]:
         "na": nelec[0], "nb": nelec[1],
         "n_core": n_core, "n_virtual": n_virtual,
         "dim_full": dim,
-        "spin_resolved": spec["scf"] == "uhf",
+        "spin_resolved": spec["scf"] in ("uhf", "uks"),
+        "scf": spec["scf"], "xc": (spec.get("xc") or "").strip() or None,
     }
 
 
@@ -257,11 +290,21 @@ def build_system(spec: Dict[str, Any]) -> Dict[str, Any]:
 
     import tc_sqd
 
-    mol = gto.M(atom=_atom_block(spec["geometry"]), basis=spec["basis"],
+    mol = gto.M(atom=_atom_block(spec["geometry"]),
+                basis=_parse_basis(spec["basis"]),
                 charge=spec["charge"], spin=spec["spin"],
                 unit=spec["unit"], verbose=0)
+    xc = (spec.get("xc") or "").strip() or "b3lyp"
     if spec["scf"] == "uhf":
         mf = scf.UHF(mol).run()
+    elif spec["scf"] == "uks":
+        mf = scf.UKS(mol)
+        mf.xc = xc
+        mf.run()
+    elif spec["scf"] == "rks":
+        mf = scf.RKS(mol)
+        mf.xc = xc
+        mf.run()
     else:
         # from_pyscf 对 Mole 自动跑 RHF (闭壳层) / ROHF (spin!=0)
         mf = None
@@ -273,8 +316,10 @@ def build_system(spec: Dict[str, Any]) -> Dict[str, Any]:
     meta = _active_layout(spec)
     meta["e_scf"] = float(mf.e_tot)
     meta["scf_converged"] = bool(getattr(mf, "converged", False))
-    meta["scf_type"] = ("UHF" if spec["scf"] == "uhf"
-                        else ("ROHF" if spec["spin"] else "RHF"))
+    if spec["scf"] == "auto":
+        meta["scf_type"] = "ROHF" if spec["spin"] else "RHF"
+    else:
+        meta["scf_type"] = spec["scf"].upper() + (f"({xc})" if spec["scf"] in ("rks", "uks") else "")
 
     sysd = {
         "h1e": np.asarray(data.h1e), "eri": data.eri,

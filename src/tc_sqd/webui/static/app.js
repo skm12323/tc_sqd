@@ -146,16 +146,58 @@ function barChart(container, items, opts = {}) {
 /* ---------------- 表单 ---------------- */
 let PRESETS = [];
 let LAST_PREVIEW = null;
+const CUSTOM_KEY = "tc_sqd_custom_systems";
 
-function applyPreset(p) {
-  $("sys_geometry").value = p.geometry;
-  $("sys_basis").value = p.basis;
-  $("sys_charge").value = p.charge;
-  $("sys_spin").value = p.spin;
-  $("sys_ncore").value = p.n_core;
-  $("sys_nvirt").value = p.n_virtual;
-  $("sys_scf").value = p.scf;
-  $("preset_desc").textContent = p.desc || "";
+function loadCustomSystems() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(CUSTOM_KEY) || "[]");
+    return Array.isArray(arr) ? arr.filter((e) => e && e.geometry) : [];
+  } catch (e) { return []; }
+}
+function persistCustomSystems(arr) {
+  localStorage.setItem(CUSTOM_KEY, JSON.stringify(arr));
+}
+
+function rebuildPresetSelect(keepValue) {
+  const sel = $("sys_preset");
+  const prev = keepValue === undefined ? sel.value : keepValue;
+  sel.innerHTML = "";
+  const optCustom = document.createElement("option");
+  optCustom.value = "";
+  optCustom.textContent = "— 自定义 (手填下方字段) —";
+  sel.appendChild(optCustom);
+  const g1 = document.createElement("optgroup");
+  g1.label = "内置预设";
+  for (const p of PRESETS) {
+    const o = document.createElement("option");
+    o.value = p.id; o.textContent = p.label; g1.appendChild(o);
+  }
+  sel.appendChild(g1);
+  const customs = loadCustomSystems();
+  if (customs.length) {
+    const g2 = document.createElement("optgroup");
+    g2.label = "我的体系 (本机保存)";
+    for (const c of customs) {
+      const o = document.createElement("option");
+      o.value = c.id; o.textContent = c.label; g2.appendChild(o);
+    }
+    sel.appendChild(g2);
+  }
+  sel.value = [...sel.options].some((o) => o.value === prev) ? prev : "";
+}
+
+function applySystemEntry(entry) {
+  $("sys_geometry").value = entry.geometry;
+  $("sys_basis").value = entry.basis;
+  $("sys_charge").value = entry.charge;
+  $("sys_spin").value = entry.spin;
+  $("sys_ncore").value = entry.n_core;
+  $("sys_nvirt").value = entry.n_virtual;
+  $("sys_scf").value = entry.scf || "auto";
+  $("sys_unit").value = entry.unit || "angstrom";
+  $("sys_xc").value = entry.xc || "b3lyp";
+  $("preset_desc").textContent = entry.desc || "";
+  refreshVisibility();
   refreshPreview();
 }
 
@@ -168,7 +210,74 @@ function currentSystem() {
     n_core: +$("sys_ncore").value || 0,
     n_virtual: +$("sys_nvirt").value || 0,
     scf: $("sys_scf").value,
+    unit: $("sys_unit").value,
+    xc: $("sys_xc").value.trim(),
   };
+}
+
+/* 「我的体系」: 保存 / 删除 / 导出 / 导入 (纯前端 localStorage) */
+function saveCurrentAsCustom() {
+  const sys = currentSystem();
+  if (!sys.geometry.trim()) { alert("几何为空, 先填写体系字段"); return; }
+  const label = window.prompt("体系名称 (显示在「我的体系」下拉):",
+    LAST_PREVIEW ? `${LAST_PREVIEW.formula} 自定义` : "我的体系");
+  if (label === null) return;
+  const entry = { ...sys, id: "custom_" + Date.now().toString(36),
+                  label: label.trim() || "未命名" };
+  const arr = loadCustomSystems();
+  arr.push(entry);
+  persistCustomSystems(arr);
+  rebuildPresetSelect(entry.id);
+}
+
+function deleteSelectedCustom() {
+  const sel = $("sys_preset");
+  if (!sel.value.startsWith("custom_")) {
+    alert("下拉里先选中一个「我的体系」条目再删除");
+    return;
+  }
+  const entry = loadCustomSystems().find((c) => c.id === sel.value);
+  if (!entry || !window.confirm(`删除「${entry.label}」?`)) return;
+  persistCustomSystems(loadCustomSystems().filter((c) => c.id !== sel.value));
+  rebuildPresetSelect("");
+}
+
+function exportCustomSystems() {
+  const arr = loadCustomSystems();
+  if (!arr.length) { alert("没有已保存的自定义体系"); return; }
+  const blob = new Blob([JSON.stringify(arr, null, 2)], { type: "application/json" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "tc_sqd_my_systems.json";
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+function importCustomSystems(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    try {
+      const arr = JSON.parse(reader.result);
+      if (!Array.isArray(arr)) throw new Error("顶层须是数组");
+      const valid = arr.filter((e) => e && typeof e.geometry === "string" && e.geometry.trim());
+      if (!valid.length) throw new Error("无有效条目 (需 geometry 字段)");
+      const cur = loadCustomSystems();
+      const seen = new Set(cur.map((c) => c.label));
+      let added = 0;
+      for (const e of valid) {
+        e.label = e.label || "导入体系";
+        e.id = "custom_" + Date.now().toString(36) + "_" + added;
+        if (seen.has(e.label)) e.label += " (导入)";
+        cur.push(e); added++;
+      }
+      persistCustomSystems(cur);
+      rebuildPresetSelect();
+      alert(`导入 ${added} 个体系 (共 ${cur.length} 个)`);
+    } catch (e) {
+      alert("导入失败: " + e.message);
+    }
+  };
+  reader.readAsText(file);
 }
 
 async function refreshPreview() {
@@ -184,7 +293,7 @@ async function refreshPreview() {
           ? `  (n_core=${preview.n_core}, n_virtual=${preview.n_virtual}, 全 ${preview.norb_full} 轨道)` : ""),
       `全空间维度 = ${fmtInt(preview.dim_full)}`,
     ];
-    if (preview.spin_resolved) lines.push("UHF 自旋分辨五积分 (active/SCI 路径已支持)");
+    if (preview.spin_resolved) lines.push("自旋分辨五积分 (UHF/UKS 轨道)");
     box.textContent = lines.join("\n");
     if ((preview.warnings || []).length) {
       box.classList.add("err");
@@ -211,6 +320,7 @@ function refreshVisibility() {
   document.querySelectorAll(".multiseed-only").forEach((el) => {
     el.style.display = $("multiseed").checked ? "" : "none";
   });
+  $("xc_row").style.display = ["rks", "uks"].includes($("sys_scf").value) ? "" : "none";
   const rm = $("ref_mode").value;
   document.querySelectorAll(".ref-limit-only").forEach((el) => {
     el.style.display = rm === "auto" ? "" : "none";
@@ -474,23 +584,32 @@ async function init() {
   try {
     const { presets } = await api("/api/presets");
     PRESETS = presets;
-    const sel = $("sys_preset");
-    for (const p of presets) {
-      const o = document.createElement("option");
-      o.value = p.id;
-      o.textContent = p.label;
-      sel.appendChild(o);
-    }
-    sel.onchange = () => applyPreset(presets.find((p) => p.id === sel.value));
-    applyPreset(presets[0]);
+    rebuildPresetSelect();
+    $("sys_preset").onchange = () => {
+      const v = $("sys_preset").value;
+      if (!v) { $("preset_desc").textContent = "自定义体系: 手填字段, 可「存为我的体系」"; return; }
+      const entry = PRESETS.find((p) => p.id === v) ||
+                    loadCustomSystems().find((c) => c.id === v);
+      if (entry) applySystemEntry(entry);
+    };
+    applySystemEntry(presets[0]);
+    $("sys_preset").value = presets[0].id;
   } catch (e) {
     $("preset_desc").textContent = "预设加载失败: " + e.message;
   }
 
   for (const id of ["sys_geometry", "sys_basis", "sys_charge", "sys_spin",
-                    "sys_ncore", "sys_nvirt", "sys_scf"]) {
+                    "sys_ncore", "sys_nvirt", "sys_scf", "sys_unit", "sys_xc"]) {
     $(id).addEventListener("change", () => { $("sys_preset").value = ""; refreshPreview(); });
   }
+  $("sys_scf").addEventListener("change", refreshVisibility);
+  $("btn_save_sys").addEventListener("click", saveCurrentAsCustom);
+  $("btn_del_sys").addEventListener("click", deleteSelectedCustom);
+  $("btn_export_sys").addEventListener("click", exportCustomSystems);
+  $("file_import_sys").addEventListener("change", (ev) => {
+    if (ev.target.files[0]) importCustomSystems(ev.target.files[0]);
+    ev.target.value = "";
+  });
   $("method").addEventListener("change", refreshVisibility);
   $("sample_mode").addEventListener("change", refreshVisibility);
   $("multiseed").addEventListener("change", refreshVisibility);

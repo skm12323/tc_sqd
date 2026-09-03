@@ -18,26 +18,48 @@
 
   <div class="card">
     <h2>① 体系</h2>
-    <label>预设体系
+    <label>体系选择
       <select id="sys_preset"></select>
     </label>
     <p class="hint" id="preset_desc"></p>
-    <label>几何 (PySCF atom 串, 单位 Å, 分号或换行分隔)
-      <textarea id="sys_geometry" rows="2" spellcheck="false"></textarea>
+    <label>几何 (PySCF atom 串 / 粘贴 .xyz 文件均可, ";" 或换行分隔)
+      <textarea id="sys_geometry" rows="3" spellcheck="false"></textarea>
     </label>
     <div class="row3">
-      <label>基组 <input id="sys_basis" spellcheck="false"></label>
+      <label>基组 <input id="sys_basis" spellcheck="false" placeholder="sto-3g 或 {&quot;N&quot;: &quot;cc-pvdz&quot;}"></label>
       <label>电荷 <input id="sys_charge" type="number" step="1" value="0"></label>
       <label>自旋 nα−nβ <input id="sys_spin" type="number" step="1" value="0"></label>
     </div>
     <div class="row3">
+      <label>坐标单位
+        <select id="sys_unit">
+          <option value="angstrom">Å (angstrom)</option>
+          <option value="bohr">bohr</option>
+        </select>
+      </label>
       <label>冻结核 n_core <input id="sys_ncore" type="number" min="0" step="1" value="0"></label>
       <label>冻结虚 n_virtual <input id="sys_nvirt" type="number" min="0" step="1" value="0"></label>
-      <label>SCF
+    </div>
+    <div class="row3">
+      <label>SCF / 初轨道
         <select id="sys_scf">
           <option value="auto">auto (RHF/ROHF)</option>
           <option value="uhf">UHF (自旋分辨五积分)</option>
+          <option value="rks">RKS (DFT 闭壳层轨道)</option>
+          <option value="uks">UKS (DFT + 自旋分辨)</option>
         </select>
+      </label>
+    </div>
+    <div class="row2 ks-only" id="xc_row">
+      <label>泛函 xc <input id="sys_xc" value="b3lyp" spellcheck="false"></label>
+      <span class="hint self-end">任意 PySCF 泛函名 (pbe / b3lyp / …)</span>
+    </div>
+    <div class="custom-sys-actions">
+      <button id="btn_save_sys" class="ghost" type="button">💾 存为我的体系</button>
+      <button id="btn_del_sys" class="ghost" type="button">🗑 删除选中</button>
+      <button id="btn_export_sys" class="ghost" type="button">⬇ 导出</button>
+      <label class="ghost file-label">⬆ 导入
+        <input id="file_import_sys" type="file" accept=".json,application/json" hidden>
       </label>
     </div>
     <div id="sys_preview" class="preview-box">—</div>

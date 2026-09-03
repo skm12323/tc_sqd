@@ -147,3 +147,60 @@ def test_webui_reference_skip_over_limit(client):
     assert j["status"] == "done", j.get("error")
     assert j["reference"]["skipped"] is True
     assert j["seed_results"][0]["err_vs_ref"] is None
+
+
+# ---------------------------------------------------------------- 自定义体系
+def test_webui_custom_xyz_basis_dict_bohr(client):
+    """自定义体系输入增强: .xyz 粘贴块 / 分元素基组 JSON / bohr 单位。"""
+    # 标准 .xyz 文件块 (原子数行 + 注释行) + 分元素基组 JSON → H₂O/STO-3G
+    r = client.post("/api/preview", json={"system": {
+        "geometry": "3\nwater xyz\n"
+                    "O 0.0 0.0 0.1173\n"
+                    "H 0.0 0.7572 -0.4692\n"
+                    "H 0.0 -0.7572 -0.4692",
+        "basis": '{"O": "sto-3g", "H": "sto-3g"}',
+        "charge": 0, "spin": 0, "n_core": 0, "n_virtual": 0,
+        "scf": "auto", "unit": "angstrom",
+    }})
+    assert r.status_code == 200, r.get_json()
+    pv = r.get_json()["preview"]
+    assert pv["formula"] == "H2O"
+    assert pv["norb"] == 7 and pv["nelec"] == [5, 5]
+    assert pv["dim_full"] == 441
+
+    # bohr 单位 (0.75 Å ≈ 1.417 bohr)
+    r = client.post("/api/preview", json={"system": {
+        "geometry": "H 0 0 0; H 0 0 1.417",
+        "basis": "sto-3g", "unit": "bohr",
+        "charge": 0, "spin": 0, "n_core": 0, "n_virtual": 0, "scf": "auto",
+    }})
+    assert r.status_code == 200
+    pv = r.get_json()["preview"]
+    assert pv["formula"] == "H2" and pv["dim_full"] == 4
+
+    # 坏 JSON 基组 → 400
+    r = client.post("/api/preview", json={"system": {
+        "geometry": "H 0 0 0; H 0 0 0.75", "basis": '{"O": ',
+        "charge": 0, "spin": 0, "n_core": 0, "n_virtual": 0,
+        "scf": "auto", "unit": "angstrom"}})
+    assert r.status_code == 400
+
+
+def test_webui_rks_uks_end_to_end(client):
+    """DFT (KS) 初轨道: RKS/UKS(pbe) 积分 → 全空间 FCI 轨道旋转不变 → err≈0。"""
+    for scf_mode in ("rks", "uks"):
+        _submit(client, {
+            "system": {**H2, "scf": scf_mode, "xc": "pbe"},
+            "method": "fci", "sampling": {},
+            "params": {},
+            "reference": {"mode": "auto", "dim_limit": 1000},
+        })
+        j = _wait_job(client)
+        assert j["status"] == "done", j.get("error")
+        si = j["system_info"]
+        assert si["scf_type"].startswith(scf_mode.upper())
+        assert si["scf_converged"] is True
+        if scf_mode == "uks":
+            assert si["spin_resolved"] is True   # 五积分路径 (round_011/017)
+        r0 = j["seed_results"][0]
+        assert r0["err_vs_ref"] < 1e-8   # 全空间 FCI 对轨道选择不变
